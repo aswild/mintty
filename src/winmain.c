@@ -1975,11 +1975,6 @@ static struct {
 
       return 0;
 
-    when WM_MOUSEACTIVATE:
-      // prevent accidental selection on activation (#717)
-      if (LOWORD(lp) == HTCLIENT && HIWORD(lp) == WM_LBUTTONDOWN)
-        return MA_ACTIVATEANDEAT;
-
     when WM_ACTIVATE:
       if ((wp & 0xF) != WA_INACTIVE) {
         flash_taskbar(false);  /* stop */
