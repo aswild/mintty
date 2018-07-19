@@ -756,7 +756,7 @@ void
 win_mouse_click(mouse_button b, LPARAM lp)
 {
   mouse_state = true;
-  bool click_focus = click_focus_token;
+  //bool click_focus = click_focus_token; // WILD REMOVE
   click_focus_token = false;
 
   static uint last_time, count;
@@ -774,6 +774,7 @@ win_mouse_click(mouse_button b, LPARAM lp)
 
   SetFocus(wnd);  // in case focus was in search bar
 
+#if 0 // WILD REMOVE START - disable click focus selection
   if (click_focus && b == MBT_LEFT && count == 1
       && // not in application mouse mode
          !(term.mouse_mode && term.report_focus &&
@@ -786,7 +787,9 @@ win_mouse_click(mouse_button b, LPARAM lp)
     last_skipped_time = t;
     //printf("last_skipped_time = %d\n", t);
   }
-  else {
+  else
+#endif // WILD REMOVE END
+  {
     if (last_skipped && b == last_button
         && p.x == last_click_pos.x && p.y == last_click_pos.y
        )
