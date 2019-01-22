@@ -1,3 +1,113 @@
+### 2.9.6 (20 January 2019) ###
+
+Terminal features
+  * Fixed bidi "run" handling (~#837).
+  * Fixed bidi embedding handling (#837).
+  * HTML export/copy: Fixed HTML style attributes.
+
+Window handling
+  * Flexible window grouping configuration (#789).
+  * If started from desktop shortcut, clone AppID from it (#784, mintty/wsltty#96).
+  * Display speedup by skipping refresh intervals (#835).
+  * Support for pasting from Windows clipboard history (mintty/wsltty#139).
+  * Option to lock title from being changed (mintty/wsltty#138).
+
+Keyboard handling
+  * Workaround for buggy StrokeIt tool sending right-Alt+Fn key events (#833).
+  * Optional support for external hotkeys (esp. to close window), overriding disabled Alt+Fn shortcuts.
+  * Workaround for Windows clipboard history pasting implementation (mintty/wsltty#139).
+  * Unified environment for external commands attached to keys (KeyFunctions) with those in context menu (UserCommands).
+
+Configuration
+  * New option UserCommandsPath to configure PATH for UserCommands, KeyFunctions, SysMenuFunctions.
+  * Option Class supports the same placeholders as AppID (#789).
+  * New option SupportExternalHotkeys.
+  * New option DisplaySpeedup (#835).
+  * New options CtxMenuFunctions and SysMenuFunctions to customize menus (#820).
+  * New user-definable functions lock-title, new-window, win-toggle-max.
+
+### 2.9.5 (5 December 2018) ###
+
+Window handling
+  * Fixed startup directory after cloning new window after starting from desktop shortcut (#784, mintty/wsltty#96).
+  * Avoiding stale hover indication in unfocussed window.
+  * Changed default handling of resolution change to HandleDPI=2 (#824).
+
+Tweaks to HTML clipboard/export feature
+  * Flexible HTML formatting levels.
+  * Configurable, also in Options dialog.
+  * No more table cell container.
+  * HTML escaping.
+  * Apply styles individually and other tweaks for increased compatibility.
+  * Font fallback 'monospace'.
+  * Find relative HTML file name on Shift+"HTML Screen Dump".
+
+Configuration
+  * CopyAsHTML (#825, #811).
+
+Other
+  * Ensuring /bin in PATH for user commands.
+
+### 2.9.4 (10 November 2018) ###
+
+Terminal features
+  * Copy as HTML (#811).
+  * Mitigate stalling on very long paste buffer lines (#810).
+  * New CSI DECLL (VT100, xterm) to switch keyboard LEDs (and their associated modifier function).
+  * New CSI > 0/2 p to switch option HideMouse (xterm pointerMode).
+
+Appearance
+  * Option Background== for floating window effect (using desktop wallpaper as background) (#18, ~#666, ~~#501).
+
+Window handling
+  * Fixed suspend-output-while-selecting buffer, size is configurable (#816, ~#799).
+  * Consider glyph width for font width determination (#808).
+  * Do not start process to construct process list for exit confirmation (~#448).
+  * Enhanced taskbar icon grouping behaviour (#784, mintty/wsltty#96, ?#495, ?#420, ??#801).
+  * Setting MINTTY_SHORTCUT when started from a desktop shortcut.
+  * Maintain proper terminal size after DPI change in DPI awareness mode V2 (#774).
+
+Configuration
+  * AppID supports placeholders for flexible customization of taskbar icon grouping behaviour (#784, mintty/wsltty#96, ?#495, ?#420, ??#801).
+  * Option SuspendWhileSelecting to set the max size of the suspend-output-while-selecting buffer (#816, ~#799).
+
+### 2.9.3 (4 October 2018) ###
+
+Terminal features
+  * Fixed failing recognition of single-char ESC sequences.
+
+Terminal interaction
+  * Enhanced ligature support redisplays previous cursor line (#601, mintty/wsltty#123).
+  * Support switching rectangular mode while mouse-dragging selection.
+
+Configuration
+  * Option Enable132ColumnSwitching to enable 132/80-column switching initially (#196).
+  * Option value LigaturesSupport=2 (#601, mintty/wsltty#123).
+
+### 2.9.2 (3 October 2018) ###
+
+Terminal interaction
+  * Fixed space consideration for wrap/resize/copy handling (#800, ~#82).
+  * Optionally include trailing space in selection (~#768, ~#800).
+  * Reduced occasional flickering by buffering terminal input (#799).
+  * Sanitized output buffering during selection (~#799).
+  * Ligatures display support while being input (mintty/wsltty#123, #601).
+  * Optionally suppress mouse wheel effects (#170).
+
+Terminal features
+  * Additional 96-character NRCS (xterm 336).
+  * Fixed "Latin-1/UK" NRCS.
+
+Window handling
+  * OSC I to set icon from file (shelltool, dtterm, xterm 333).
+  * OSC l to set window title (shelltool, dtterm, xterm 333).
+
+Configuration
+  * Option LigaturesSupport (mintty/wsltty#123, #601).
+  * Option SuppressMouseWheel (#170).
+  * Option TrimSelection (~#768, ~#800).
+  * Support multi-line splitting for all key:value list options.
+
 ### 2.9.1 (20 September 2018) ###
 
 Highlights (details see below)

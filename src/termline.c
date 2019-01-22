@@ -1,5 +1,5 @@
 // termline.c (part of mintty)
-// Copyright 2008-12 Andy Koppe, -2018 Thomas Wolff
+// Copyright 2008-12 Andy Koppe, -2019 Thomas Wolff
 // Adapted from code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -7,12 +7,17 @@
 #include "win.h"  // cfg.bidi
 
 
+#define newn_1(poi, type, count)	{poi = newn(type, count + 1); poi++;}
+#define renewn_1(poi, count)	{poi--; poi = renewn(poi, count + 1); poi++;}
+
+
 termline *
 newline(int cols, int bce)
 {
   termline *line = new(termline);
-  line->chars = newn(termchar, cols);
-  for (int j = 0; j < cols; j++)
+  newn_1(line->chars, termchar, cols);
+  //! Note: line->chars is based @ index -1
+  for (int j = -1; j < cols; j++)
     line->chars[j] = (bce ? term.erase_char : basic_erase_char);
   line->cols = line->size = cols;
   line->lattr = LATTR_NORM;
@@ -25,7 +30,8 @@ void
 freeline(termline *line)
 {
   assert(line);
-  free(line->chars);
+  //! Note: line->chars is based @ index -1
+  free(&line->chars[-1]);
   free(line);
 }
 
@@ -66,7 +72,7 @@ get(struct buf *b)
 void
 add_cc(termline *line, int col, wchar chr, cattr attr)
 {
-  assert(col >= 0 && col < line->cols);
+  assert(col >= -1 && col < line->cols);
 
  /*
   * Start by extending the cols array if the free list is empty.
@@ -74,7 +80,7 @@ add_cc(termline *line, int col, wchar chr, cattr attr)
   if (!line->cc_free) {
     int n = line->size;
     line->size += 16 + (line->size - line->cols) / 2;
-    line->chars = renewn(line->chars, line->size);
+    renewn_1(line->chars, line->size);
     line->cc_free = n;
     do
       line->chars[n].cc_next = 1;
@@ -111,7 +117,7 @@ clear_cc(termline *line, int col)
 {
   int oldfree, origcol = col;
 
-  assert(col >= 0 && col < line->cols);
+  assert(col >= -1 && col < line->cols);
 
   if (!line->chars[col].cc_next)
     return;     /* nothing needs doing */
@@ -377,10 +383,14 @@ static void
 makerle(struct buf *b, termline *line,
         void (*makeliteral) (struct buf *b, termchar *c))
 {
-  int hdrpos, hdrsize, n, prevlen, prevpos, thislen, thispos, prev2;
-  termchar *c = line->chars;
+  int hdrpos, hdrsize, prevlen, prevpos, thislen, thispos, prev2;
 
-  n = line->cols;
+  termchar *c = line->chars;
+  int n = line->cols;
+
+  //! Note: line->chars is based @ index -1
+  c--;
+  n++;
 
   hdrpos = b->len;
   hdrsize = 0;
@@ -576,7 +586,8 @@ static void
 readrle(struct buf *b, termline *line,
         void (*readliteral) (struct buf *b, termchar *c, termline *line))
 {
-  int n = 0;
+  //! Note: line->chars is based @ index -1
+  int n = -1;
 
   while (n < line->cols) {
     int hdr = get(b);
@@ -631,7 +642,7 @@ decompressline(uchar *data, int *bytes_used)
   * Now create the output termline.
   */
   line = new(termline);
-  line->chars = newn(termchar, ncols);
+  newn_1(line->chars, termchar, ncols);
   line->cols = line->size = ncols;
   line->temporary = true;
   line->cc_free = 0;
@@ -641,11 +652,9 @@ decompressline(uchar *data, int *bytes_used)
   * so that cc diagnostics that verify the integrity of the whole line 
   * will make sense while we're in the middle of building it up.
   */
-  {
-    int i;
-    for (i = 0; i < line->cols; i++)
-      line->chars[i].cc_next = 0;
-  }
+  //! Note: line->chars is based @ index -1
+  for (int i = -1; i < line->cols; i++)
+    line->chars[i].cc_next = 0;
 
  /*
   * Now read in the line attributes.
@@ -691,11 +700,12 @@ void
 clearline(termline *line)
 {
   line->lattr = LATTR_NORM;
-  for (int j = 0; j < line->cols; j++)
+  //! Note: line->chars is based @ index -1
+  for (int j = -1; j < line->cols; j++)
     line->chars[j] = term.erase_char;
   if (line->size > line->cols) {
     line->size = line->cols;
-    line->chars = renewn(line->chars, line->size);
+    renewn_1(line->chars, line->size);
     line->cc_free = 0;
   }
 }
@@ -714,7 +724,7 @@ resizeline(termline *line, int cols)
     * Leave the same amount of cc space as there was to begin with.
     */
     line->size += cols - oldcols;
-    line->chars = renewn(line->chars, line->size);
+    renewn_1(line->chars, line->size);
     line->cols = cols;
 
    /*
@@ -729,7 +739,8 @@ resizeline(termline *line, int cols)
     * relative offsets within the cc block.) Also do the same
     * to the head of the cc_free list.
     */
-    for (int i = 0; i < oldcols; i++)
+    //! Note: line->chars is based @ index -1
+    for (int i = -1; i < oldcols; i++)
       if (line->chars[i].cc_next)
         line->chars[i].cc_next += cols - oldcols;
     if (line->cc_free)
@@ -918,9 +929,14 @@ term_bidi_line(termline *line, int scr_y)
       term.wcTo = renewn(term.wcTo, term.wcFromTo_size);
     }
 
+    // UTF-16 string (including surrogates) for Windows bidi calculation
+    //wchar wcs[2 * term.cols];  /// size handling to be tweaked
+    //int wcsi = 0;
+
     ib = 0;
     for (it = 0; it < term.cols; it++) {
       ucschar c = line->chars[it].chr;
+      //wcs[wcsi++] = c;
 
       if ((c & 0xFC00) == 0xD800) {
         int off = line->chars[it].cc_next;
@@ -928,12 +944,14 @@ term_bidi_line(termline *line, int scr_y)
           ucschar low_surrogate = line->chars[it + off].chr;
           if ((low_surrogate & 0xFC00) == 0xDC00) {
             c = ((c - 0xD7C0) << 10) | (low_surrogate & 0x03FF);
+            //wcs[wcsi++] = low_surrogate;
           }
         }
       }
 
-      if (it) {
-        termchar * bp = &line->chars[it - 1];
+      if (!it) {
+        // Handle initial combining characters, esp. directional markers
+        termchar * bp = &line->chars[-1];
         // Unfold directional formatting characters which are handled 
         // like combining characters in the mintty structures 
         // (and would thus stay hidden from minibidi), and need to be 
@@ -951,14 +969,36 @@ term_bidi_line(termline *line, int scr_y)
             term.wcFrom[ib].origwc = term.wcFrom[ib].wc = bp->chr;
             term.wcFrom[ib].index = -1;
             ib++;
+            //wcs[wcsi++] = bp->chr;
           }
         }
       }
 
       term.wcFrom[ib].origwc = term.wcFrom[ib].wc = c;
       term.wcFrom[ib].index = it;
-
       ib++;
+
+      termchar * bp = &line->chars[it];
+      // Unfold directional formatting characters which are handled 
+      // like combining characters in the mintty structures 
+      // (and would thus stay hidden from minibidi), and need to be 
+      // exposed as separate characters for the minibidi algorithm
+      while (bp->cc_next) {
+        bp += bp->cc_next;
+        if (bp->chr == 0x200E || bp->chr == 0x200F
+            || (bp->chr >= 0x202A && bp->chr <= 0x202E)
+            || (bp->chr >= 0x2066 && bp->chr <= 0x2069)
+           )
+        {
+          term.wcFromTo_size++;
+          term.wcFrom = renewn(term.wcFrom, term.wcFromTo_size);
+          term.wcTo = renewn(term.wcTo, term.wcFromTo_size);
+          term.wcFrom[ib].origwc = term.wcFrom[ib].wc = bp->chr;
+          term.wcFrom[ib].index = -1;
+          ib++;
+          //wcs[wcsi++] = bp->chr;
+        }
+      }
     }
 
     trace_bidi("=", term.wcFrom);

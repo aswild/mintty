@@ -455,13 +455,11 @@ child_proc(void)
 
     if (select(win_fd + 1, &fds, 0, 0, timeout_p) > 0) {
       if (pty_fd >= 0 && FD_ISSET(pty_fd, &fds)) {
-#if CYGWIN_VERSION_DLL_MAJOR >= 1005
-        static char buf[4096];
-        int len = read(pty_fd, buf, sizeof buf);
-#else
-        // Pty devices on old Cygwin version deliver only 4 bytes at a time,
+        // Pty devices on old Cygwin versions (pre 1005) deliver only 4 bytes
+        // at a time, and newer ones or MSYS2 deliver up to 256 at a time.
         // so call read() repeatedly until we have a worthwhile haul.
-        static char buf[512];
+        // this avoids most partial updates, results in less flickering/tearing.
+        static char buf[4096];
         uint len = 0;
         do {
           int ret = read(pty_fd, buf + len, sizeof buf - len);
@@ -470,7 +468,6 @@ child_proc(void)
           else
             break;
         } while (len < sizeof buf);
-#endif
         if (len > 0) {
           term_write(buf, len);
           if (log_fd >= 0 && logging)
@@ -531,6 +528,130 @@ child_is_parent(void)
     }
   }
   closedir(d);
+  return res;
+}
+
+static struct procinfo {
+  int pid;
+  int ppid;
+  int winpid;
+  char * cmdline;
+} * ttyprocs = 0;
+static uint nttyprocs = 0;
+
+static char *
+procres(int pid, char * res)
+{
+  char fbuf[99];
+  char * fn = asform("/proc/%d/%s", pid, res);
+  int fd = open(fn, O_BINARY | O_RDONLY);
+  free(fn);
+  if (fd < 0)
+    return 0;
+  int n = read(fd, fbuf, sizeof fbuf - 1);
+  close(fd);
+  for (int i = 0; i < n - 1; i++)
+    if (!fbuf[i])
+      fbuf[i] = ' ';
+  fbuf[n] = 0;
+  char * nl = strchr(fbuf, '\n');
+  if (nl)
+    *nl = 0;
+  return strdup(fbuf);
+}
+
+static int
+procresi(int pid, char * res)
+{
+  char * si = procres(pid, res);
+  int i = atoi(si);
+  free(si);
+  return i;
+}
+
+#ifndef HAS_LOCALES
+#define wcwidth xcwidth
+#else
+#if CYGWIN_VERSION_API_MINOR < 74
+#define wcwidth xcwidth
+#endif
+#endif
+
+wchar *
+grandchild_process_list(void)
+{
+  if (!pid)
+    return 0;
+  DIR * d = opendir("/proc");
+  if (!d)
+    return 0;
+  char * tty = child_tty();
+  struct dirent * e;
+  while ((e = readdir(d))) {
+    char * pn = e->d_name;
+    int thispid = atoi(pn);
+    if (thispid && thispid != pid) {
+      char * ctty = procres(thispid, "ctty");
+      if (0 == strcmp(ctty, tty)) {
+        int ppid = procresi(thispid, "ppid");
+        int winpid = procresi(thispid, "winpid");
+        // not including the direct child (pid)
+        ttyprocs = renewn(ttyprocs, nttyprocs + 1);
+        ttyprocs[nttyprocs].pid = thispid;
+        ttyprocs[nttyprocs].ppid = ppid;
+        ttyprocs[nttyprocs].winpid = winpid;
+        char * cmd = procres(thispid, "cmdline");
+        ttyprocs[nttyprocs].cmdline = cmd;
+
+        nttyprocs++;
+      }
+      free(ctty);
+    }
+  }
+  closedir(d);
+
+  DWORD win_version = GetVersion();
+  win_version = ((win_version & 0xff) << 8) | ((win_version >> 8) & 0xff);
+
+  wchar * res = 0;
+  for (uint i = 0; i < nttyprocs; i++) {
+    char * proc = newn(char, 50 + strlen(ttyprocs[i].cmdline));
+    sprintf(proc, " %5u %5u %s", ttyprocs[i].winpid, ttyprocs[i].pid, ttyprocs[i].cmdline);
+    free(ttyprocs[i].cmdline);
+    wchar * procw = cs__mbstowcs(proc);
+    free(proc);
+    if (win_version >= 0x0601)
+      for (int i = 0; i < 13; i++)
+        if (procw[i] == ' ')
+          procw[i] = 0x2007;  // FIGURE SPACE
+    int wid = min(wcslen(procw), 40);
+    for (int i = 13; i < wid; i++)
+      if ((cfg.charwidth ? xcwidth(procw[i]) : wcwidth(procw[i])) == 2)
+        wid--;
+    procw[wid] = 0;
+
+    if (win_version >= 0x0601) {
+      if (!res)
+        res = wcsdup(W("╎ WPID   PID  COMMAND\n"));  // ┆┇┊┋╎╏
+      res = renewn(res, wcslen(res) + wcslen(procw) + 3);
+      wcscat(res, W("╎"));
+    }
+    else {
+      if (!res)
+        res = wcsdup(W("| WPID   PID  COMMAND\n"));  // ┆┇┊┋╎╏
+      res = renewn(res, wcslen(res) + wcslen(procw) + 3);
+      wcscat(res, W("|"));
+    }
+
+    wcscat(res, procw);
+    wcscat(res, W("\n"));
+    free(procw);
+  }
+  if (ttyprocs) {
+    nttyprocs = 0;
+    free(ttyprocs);
+    ttyprocs = 0;
+  }
   return res;
 }
 
@@ -657,10 +778,10 @@ foreground_prog()
 }
 
 void
-user_command(int n)
+user_command(wstring commands, int n)
 {
-  if (*cfg.user_commands) {
-    char * cmds = cs__wcstombs(cfg.user_commands);
+  if (*commands) {
+    char * cmds = cs__wcstombs(commands);
     char * cmdp = cmds;
     char sepch = ';';
     if ((uchar)*cmdp <= (uchar)' ')
@@ -694,12 +815,22 @@ user_command(int n)
           free(fgd);
         }
         term_cmd(progp);
+        unsetenv("MINTTY_CWD");
+        unsetenv("MINTTY_PROG");
+        unsetenv("MINTTY_PID");
         break;
       }
       n--;
 
-      if (sepp)
+      if (sepp) {
         cmdp = sepp + 1;
+        // check for multi-line separation
+        if (*cmdp == '\\' && cmdp[1] == '\n') {
+          cmdp += 2;
+          while (isspace(*cmdp))
+            cmdp++;
+        }
+      }
       else
         break;
     }
@@ -711,7 +842,7 @@ user_command(int n)
    used by win_open
 */
 wstring
-child_conv_path(wstring wpath)
+child_conv_path(wstring wpath, bool adjust_dir)
 {
   int wlen = wcslen(wpath);
   int len = wlen * cs_cur_max;
@@ -719,22 +850,22 @@ child_conv_path(wstring wpath)
   len = cs_wcntombn(path, wpath, len, wlen);
   path[len] = 0;
 
-  char *exp_path;  // expanded path
+  char * exp_path;  // expanded path
   if (*path == '~') {
     // Tilde expansion
-    char *name = path + 1;
-    char *rest = strchr(path, '/');
+    char * name = path + 1;
+    char * rest = strchr(path, '/');
     if (rest)
       *rest++ = 0;
     else
       rest = "";
-    char *base;
+    char * base;
     if (!*name)
       base = home;
     else {
 #if CYGWIN_VERSION_DLL_MAJOR >= 1005
       // Find named user's home directory
-      struct passwd *pw = getpwnam(name);
+      struct passwd * pw = getpwnam(name);
       base = (pw ? pw->pw_dir : 0) ?: "";
 #else
       // Pre-1.5 Cygwin simply copies HOME into pw_dir, which is no use here.
@@ -743,7 +874,7 @@ child_conv_path(wstring wpath)
     }
     exp_path = asform("%s/%s", base, rest);
   }
-  else if (*path != '/') {
+  else if (*path != '/' && adjust_dir) {
 #if CYGWIN_VERSION_DLL_MAJOR >= 1005
     // Handle relative paths. Finding the foreground process working directory
     // requires the /proc filesystem, which isn't available before Cygwin 1.5.
@@ -753,7 +884,7 @@ child_conv_path(wstring wpath)
     if (fg_pid <= 0)
       fg_pid = pid;
 
-    char *cwd = foreground_cwd();
+    char * cwd = foreground_cwd();
     exp_path = asform("%s/%s", cwd ?: home, path);
     if (cwd)
       free(cwd);
@@ -827,7 +958,7 @@ setup_sync()
 /*
   Called from Alt+F2 (or session launcher via child_launch).
  */
-void
+static void
 do_child_fork(int argc, char *argv[], int moni, bool launch)
 {
   setup_sync();
@@ -885,8 +1016,16 @@ do_child_fork(int argc, char *argv[], int moni, bool launch)
 
       chdir(set_dir);
       setenv("PWD", set_dir, true);  // avoid softlink resolution
-      if (!launch)
+      // prevent shell startup from setting current directory to $HOME
+      // unless cloned/Alt+F2 (!launch)
+      if (!launch) {
         setenv("CHERE_INVOKING", "mintty", true);
+        // if cloned and then launched from Windows shortcut (!shortcut) 
+        // (by sanitizing taskbar icon grouping, #784, mintty/wsltty#96) 
+        // indicate to set proper directory
+        if (shortcut)
+          setenv("MINTTY_PWD", set_dir, true);
+      }
 
       if (support_wsl)
         delete(set_dir);
@@ -937,6 +1076,14 @@ do_child_fork(int argc, char *argv[], int moni, bool launch)
     //setenv("MINTTY_CHILD", "1", true);
 
 #if CYGWIN_VERSION_DLL_MAJOR >= 1005
+    if (shortcut) {
+      //show_info(asform("Starting <%s>", cs__wcstoutf(shortcut)));
+      shell_exec(shortcut);
+      //show_info("Started");
+      sleep(5);  // let starting settle, or it will fail; 1s normally enough
+      exit(0);
+    }
+
     execv("/proc/self/exe", argv);
 #else
     // /proc/self/exe isn't available before Cygwin 1.5, so use argv[0] instead.
@@ -1009,8 +1156,15 @@ child_launch(int n, int argc, char * argv[], int moni)
       }
       n--;
 
-      if (sepp)
+      if (sepp) {
         cmdp = sepp + 1;
+        // check for multi-line separation
+        if (*cmdp == '\\' && cmdp[1] == '\n') {
+          cmdp += 2;
+          while (isspace(*cmdp))
+            cmdp++;
+        }
+      }
       else
         break;
     }

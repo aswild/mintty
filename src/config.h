@@ -80,6 +80,7 @@ typedef struct {
   bool ctrl_alt_is_altgr;
   int ctrl_alt_delay_altgr;
   bool old_altgr_detection;
+  int external_hotkeys;
   bool clip_shortcuts;
   bool window_shortcuts;
   bool switch_shortcuts;
@@ -99,6 +100,7 @@ typedef struct {
   // Mouse
   bool copy_on_select;
   bool copy_as_rtf;
+  char copy_as_html;
   bool clicks_place_cursor;
   char middle_click_action;
   char right_click_action;
@@ -120,6 +122,7 @@ typedef struct {
   string term;
   wstring answerback;
   bool old_wrapmodes;
+  bool enable_deccolm_init;
   bool bell_sound;
   int bell_type;
   wstring bell_file;
@@ -149,13 +152,17 @@ typedef struct {
   // "Hidden"
   int bidi;
   bool disable_alternate_screen;
+  int display_speedup;
   string suppress_sgr;
   string suppress_dec;
   string suppress_win;
   string suppress_osc;
   string suppress_nrc;
+  string suppress_wheel;
   string filter_paste;
   bool input_clears_selection;
+  int suspbuf_max;
+  bool trim_selection;
   char charwidth;
   char emojis;
   char emoji_placement;
@@ -164,6 +171,9 @@ typedef struct {
   wstring app_launch_cmd;
   wstring drop_commands;
   wstring user_commands;
+  wstring ctx_user_commands;
+  wstring sys_user_commands;
+  wstring user_commands_path;
   wstring session_commands;
   wstring task_commands;
   string menu_mouse;
@@ -174,6 +184,7 @@ typedef struct {
   int geom_sync;
   int col_spacing, row_spacing;
   int padding;
+  int ligatures_support;
   int handle_dpichanged;
   int check_version_update;
   string word_chars;
