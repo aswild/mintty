@@ -22,6 +22,7 @@
 
 #############################################################################
 NAME := mintty
+VERSION_SUFFIX ?= (Allen Wild)
 
 .PHONY: exe src pkg zip pdf clean
 
