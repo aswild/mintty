@@ -97,7 +97,7 @@ endif
 CFLAGS := -std=gnu99 -include std.h -Wall -Wextra -Wundef -Werror $(SECUR)
 
 ifeq ($(shell VER=`$(CC) -dumpversion`; expr $${VER%.*} '>=' 4.5), 1)
-  CFLAGS += -mtune=atom
+  CFLAGS += -march=native -mtune=native
 endif
 
 scriptlib=-lusp10
