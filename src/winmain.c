@@ -142,6 +142,19 @@ typedef struct {
 #endif
 
 
+unsigned long
+mtime(void)
+{
+#if CYGWIN_VERSION_API_MINOR >= 74
+  struct timespec tim;
+  clock_gettime(CLOCK_MONOTONIC, &tim);
+  return tim.tv_sec * 1000 + tim.tv_nsec / 1000000;
+#else
+  return time(0);
+#endif
+}
+
+
 #ifdef debug_resize
 #define SetWindowPos(wnd, after, x, y, cx, cy, flags)	{printf("SWP[%s] %ld %ld\n", __FUNCTION__, (long int)cx, (long int)cy); Set##WindowPos(wnd, after, x, y, cx, cy, flags);}
 static void
@@ -508,6 +521,45 @@ update_tab_titles()
     // tell the others to update their's
     EnumWindows(wnd_enum_tabs, 0);
   }
+}
+
+
+/*
+   Window system colour configuration.
+   Applicable to current window if switched via WM_SETFOCUS/WM_KILLFOCUS.
+   This is not enabled as it causes unpleasant flickering of the taskbar;
+   also there is no visible effect on border or caption colours...
+ */
+static void
+win_sys_style(bool focus)
+{
+#ifdef switch_sys_colours
+  static INT elements[] = {
+    COLOR_ACTIVEBORDER,
+    COLOR_ACTIVECAPTION,
+    COLOR_GRADIENTACTIVECAPTION,
+    COLOR_CAPTIONTEXT  // proof of concept
+  };
+  static COLORREF colours[] = {
+    RGB(0, 255, 0),
+    RGB(0, 255, 0),
+    RGB(0, 255, 0),
+    RGB(255, 0, 0),
+  };
+  static COLORREF * save = 0;
+
+  if (!save) {
+    save = newn(COLORREF, lengthof(elements));
+    for (uint i = 0; i < lengthof(elements); i++)
+      save[i] = GetSysColor(elements[i]);
+  }
+  if (focus)
+    SetSysColors(lengthof(elements), elements, colours);
+  else
+    SetSysColors(lengthof(elements), elements, save);
+#else
+(void)focus;
+#endif
 }
 
 
@@ -2160,6 +2212,7 @@ show_iconwarn(wchar * winmsg)
  */
 
 #define dont_debug_messages
+#define dont_debug_only_focus_messages
 #define dont_debug_only_sizepos_messages
 #define dont_debug_mouse_messages
 
@@ -2186,9 +2239,13 @@ static struct {
       && message != WM_MOUSEMOVE && message != WM_NCMOUSEMOVE
 # endif
      )
-#ifdef debug_only_sizepos_messages
+# ifdef debug_only_sizepos_messages
     if (strstr(wm_name, "POSCH") || strstr(wm_name, "SIZ"))
-#endif
+# else
+# ifdef debug_only_focus_messages
+    if (strstr(wm_name, "ACTIVATE") || strstr(wm_name, "FOCUS"))
+# endif
+# endif
     printf("[%d]->%8p %04X %s (%04X %08X)\n", (int)time(0), wnd, message, wm_name, (unsigned)wp, (unsigned)lp);
 #endif
   switch (message) {
@@ -2430,6 +2487,7 @@ static struct {
       }
 
     when WM_KEYDOWN or WM_SYSKEYDOWN:
+      //printf("[%ld] WM_KEY %02X\n", mtime(), (int)wp);
       if (win_key_down(wp, lp))
         return 0;
 
@@ -2549,6 +2607,7 @@ static struct {
     when WM_SETFOCUS:
       trace_resize(("# WM_SETFOCUS VK_SHIFT %02X\n", (uchar)GetKeyState(VK_SHIFT)));
       term_set_focus(true, false);
+      win_sys_style(true);
       CreateCaret(wnd, caretbm, 0, 0);
       //flash_taskbar(false);  /* stop; not needed when leaving search bar */
       win_update(false);
@@ -2558,6 +2617,7 @@ static struct {
     when WM_KILLFOCUS:
       win_show_mouse();
       term_set_focus(false, false);
+      win_sys_style(false);
       DestroyCaret();
       win_update(false);
 
@@ -3009,6 +3069,11 @@ static wchar *
 get_shortcut_appid(wchar * shortcut)
 {
 #if CYGWIN_VERSION_API_MINOR >= 74
+  DWORD win_version = GetVersion();
+  win_version = ((win_version & 0xff) << 8) | ((win_version >> 8) & 0xff);
+  if (win_version < 0x0601)
+    return 0;  // PropertyStore not supported on Windows XP
+
   HRESULT hres = OleInitialize(NULL);
   if (hres != S_FALSE && hres != S_OK)
     return 0;

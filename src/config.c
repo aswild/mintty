@@ -195,6 +195,7 @@ const config default_cfg = {
   .short_long_opts = false,
   .bold_as_special = false,
   .selection_show_size = false,
+  .hover_title = true,
   .old_bold = false,
   .ime_cursor_colour = DEFAULT_COLOUR,
   .ansi_colours = {
@@ -435,6 +436,7 @@ options[] = {
   {"ShortLongOpts", OPT_BOOL, offcfg(short_long_opts)},
   {"BoldAsRainbowSparkles", OPT_BOOL, offcfg(bold_as_special)},
   {"SelectionShowSize", OPT_INT, offcfg(selection_show_size)},
+  {"HoverTitle", OPT_BOOL, offcfg(hover_title)},
 
   // ANSI colours
   {"Black", OPT_COLOUR, offcfg(ansi_colours[BLACK_I])},
@@ -505,6 +507,7 @@ static opt_val
     {"shift", MDK_SHIFT},
     {"alt", MDK_ALT},
     {"ctrl", MDK_CTRL},
+    {"win", MDK_WIN},
     {0, 0}
   },
   [OPT_TRANS] = (opt_val[]) {
@@ -812,6 +815,7 @@ parse_option(string option, bool from_file)
 {
   const char *eq = strchr(option, '=');
   if (!eq) {
+    ((char *)option)[strcspn(option, "\r")] = 0;
     //__ %s: option name
     opterror(_("Ignoring option '%s' with missing value"), 
              from_file, option, 0);
@@ -3034,7 +3038,7 @@ setup_config_box(controlbox * b)
   );
   ctrl_radiobuttons(
     //__ Options - Mouse:
-    s, _("Modifier for overriding default"), 4,
+    s, _("Modifier for overriding default"), 5,
     dlg_stdradiobutton_handler, &new_cfg.click_target_mod,
     //__ Options - Mouse:
     _("&Shift"), MDK_SHIFT,
@@ -3042,6 +3046,8 @@ setup_config_box(controlbox * b)
     _("&Ctrl"), MDK_CTRL,
     //__ Options - Mouse:
     _("&Alt"), MDK_ALT,
+    //__ Options - Window:
+    _("&Win"), MDK_WIN,
     //__ Options - Mouse:
     _("&Off"), 0,
     null
@@ -3091,7 +3097,7 @@ setup_config_box(controlbox * b)
   );
   ctrl_radiobuttons(
     //__ Options - Window:
-    s, _("Modifier for scrolling"), 4,
+    s, _("Modifier for scrolling"), 5,
     dlg_stdradiobutton_handler, &new_cfg.scroll_mod,
     //__ Options - Window:
     _("&Shift"), MDK_SHIFT,
@@ -3099,6 +3105,8 @@ setup_config_box(controlbox * b)
     _("&Ctrl"), MDK_CTRL,
     //__ Options - Window:
     _("&Alt"), MDK_ALT,
+    //__ Options - Window:
+    _("&Win"), MDK_WIN,
     //__ Options - Window:
     _("&Off"), 0,
     null

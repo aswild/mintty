@@ -6,6 +6,7 @@
 #include "termpriv.h"
 #include "win.h"
 #include "child.h"
+#include "charset.h"  // cs__utftowcs
 
 /*
  * Fetch the character at a particular position in a line array.
@@ -394,7 +395,7 @@ send_keys(char *code, uint len, uint count)
 }
 
 static bool
-is_app_mouse(mod_keys *mods_p)
+check_app_mouse(mod_keys *mods_p)
 {
   if (term.locator_1_enabled)
     return true;
@@ -413,7 +414,7 @@ term_mouse_click(mouse_button b, mod_keys mods, pos p, int count)
     win_update(true);
   }
 
-  if (is_app_mouse(&mods)) {
+  if (check_app_mouse(&mods)) {
     if (term.mouse_mode == MM_X10)
       mods = 0;
     send_mouse_event(MA_CLICK, b, mods, box_pos(p));
@@ -459,7 +460,7 @@ term_mouse_click(mouse_button b, mod_keys mods, pos p, int count)
     }
     else if (b == MBT_LEFT && mods == MDK_SHIFT && rca == RC_EXTEND)
       term.mouse_state = MS_PASTING;
-    else if (b == MBT_LEFT && mods == MDK_CTRL) {
+    else if (b == MBT_LEFT && (mods & ~cfg.click_target_mod) == MDK_CTRL) {
       if (count == cfg.opening_clicks) {
         // Open word under cursor
         p = get_selpoint(box_pos(p));
@@ -505,11 +506,19 @@ term_mouse_release(mouse_button b, mod_keys mods, pos p)
   switch (state) {
     when MS_COPYING: term_copy();
     when MS_PASTING: win_paste();
-    when MS_OPENING:
-      term_open();
+    when MS_OPENING: {
+      termline *line = fetch_line(p.y);
+      int urli = line->chars[p.x].attr.link;
+      release_line(line);
+      char * url = geturl(urli);
+      if (url)
+        win_open(cs__utftowcs(url), true);  // win_open frees its argument
+      else
+        term_open();
       term.selected = false;
       term.hovering = false;
       win_update(true);
+    }
     when MS_SEL_CHAR or MS_SEL_WORD or MS_SEL_LINE: {
       // Finish selection.
       if (term.selected && cfg.copy_on_select)
@@ -572,7 +581,7 @@ term_mouse_release(mouse_button b, mod_keys mods, pos p)
       last_dest = dest;
     }
     otherwise:
-      if (is_app_mouse(&mods)) {
+      if (check_app_mouse(&mods)) {
         if (term.mouse_mode >= MM_VT200)
           send_mouse_event(MA_RELEASE, b, mods, box_pos(p));
       }
@@ -629,11 +638,14 @@ term_mouse_move(mod_keys mods, pos p)
       send_mouse_event(MA_MOVE, 0, mods, bp);
   }
 
-  if (mods == MDK_CTRL && term.has_focus) {
+  if (!check_app_mouse(&mods) && (mods & ~cfg.click_target_mod) == MDK_CTRL && term.has_focus) {
     p = get_selpoint(box_pos(p));
     term.hover_start = term.hover_end = p;
     if (!hover_spread_empty()) {
       term.hovering = true;
+      termline *line = fetch_line(p.y);
+      term.hoverlink = line->chars[p.x].attr.link;
+      release_line(line);
       win_update(true);
     }
     else if (term.hovering) {
@@ -656,7 +668,7 @@ term_mouse_wheel(int delta, int lines_per_notch, mod_keys mods, pos p)
   static int accu;
   accu += delta;
 
-  if (is_app_mouse(&mods)) {
+  if (check_app_mouse(&mods)) {
     if (strstr(cfg.suppress_wheel, "report"))
       return;
     // Send as mouse events, with one event per notch.

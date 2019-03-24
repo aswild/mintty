@@ -250,11 +250,13 @@ makeliteral_attr(struct buf *b, termchar *c)
   * user uses extended colour.
   */
   cattrflags attr = c->attr.attr & ~DATTR_MASK;
+  int link = c->attr.link;
   uint truefg = c->attr.truefg;
   uint truebg = c->attr.truebg;
   colour ulcolr = c->attr.ulcolr;
 
-  if (attr < 0x800000 && !truefg && !truebg && ulcolr != (colour)-1) {
+  if (attr < 0x800000 && !truefg && !truebg
+      && link == -1 && ulcolr == (colour)-1) {
     add(b, (uchar) ((attr >> 16) & 0xFF));
     add(b, (uchar) ((attr >> 8) & 0xFF));
     add(b, (uchar) (attr & 0xFF));
@@ -268,6 +270,10 @@ makeliteral_attr(struct buf *b, termchar *c)
     add(b, (uchar) ((attr >> 16) & 0xFF));
     add(b, (uchar) ((attr >> 8) & 0xFF));
     add(b, (uchar) (attr & 0xFF));
+    add(b, (uchar) ((link >> 24) & 0xFF));
+    add(b, (uchar) ((link >> 16) & 0xFF));
+    add(b, (uchar) ((link >> 8) & 0xFF));
+    add(b, (uchar) (link & 0xFF));
 
     add(b, (uchar) ((truefg >> 16) & 0xFF));
     add(b, (uchar) ((truefg >> 8) & 0xFF));
@@ -325,6 +331,7 @@ static void
 readliteral_attr(struct buf *b, termchar *c, termline *unused(line))
 {
   cattrflags attr;
+  int link = -1;
   uint fg = 0;
   uint bg = 0;
   colour ul = (colour)-1;
@@ -344,6 +351,10 @@ readliteral_attr(struct buf *b, termchar *c, termline *unused(line))
     attr |= get(b);
     attr <<= 8;
     attr |= get(b);
+    link = get(b) << 24;
+    link |= get(b) << 16;
+    link |= get(b) << 8;
+    link |= get(b);
 
     fg = get(b) << 16;
     fg |= get(b) << 8;
@@ -357,6 +368,7 @@ readliteral_attr(struct buf *b, termchar *c, termline *unused(line))
   }
 
   c->attr.attr = attr;
+  c->attr.link = link;
   c->attr.truefg = fg;
   c->attr.truebg = bg;
   c->attr.ulcolr = ul;
@@ -809,7 +821,7 @@ release_line(termline *line)
  * fed to the algorithm on each line of the display.
  */
 static int
-term_bidi_cache_hit(int line, termchar *lbefore, int width)
+term_bidi_cache_hit(int line, termchar *lbefore, ushort lattr, int width)
 {
   int i;
 
@@ -822,6 +834,9 @@ term_bidi_cache_hit(int line, termchar *lbefore, int width)
   if (!term.pre_bidi_cache[line].chars)
     return false;       /* cache doesn't contain _this_ line */
 
+  if (term.pre_bidi_cache[line].lattr != (lattr & LATTR_BIDIMASK))
+    return false;       /* bidi attributes may be different */
+
   if (term.pre_bidi_cache[line].width != width)
     return false;       /* line is wrong width */
 
@@ -833,8 +848,9 @@ term_bidi_cache_hit(int line, termchar *lbefore, int width)
 }
 
 static void
-term_bidi_cache_store(int line, termchar *lbefore, termchar *lafter,
-                      bidi_char *wcTo, int width, int size, int bidisize)
+term_bidi_cache_store(int line, 
+                      termchar *lbefore, termchar *lafter, bidi_char *wcTo, 
+                      ushort lattr, int width, int size, int bidisize)
 {
   int i;
 
@@ -845,6 +861,7 @@ term_bidi_cache_store(int line, termchar *lbefore, termchar *lafter,
     term.post_bidi_cache = renewn(term.post_bidi_cache, term.bidi_cache_size);
     while (j < term.bidi_cache_size) {
       term.pre_bidi_cache[j].chars = term.post_bidi_cache[j].chars = null;
+      term.pre_bidi_cache[j].lattr = -1;
       term.pre_bidi_cache[j].width = term.post_bidi_cache[j].width = -1;
       term.pre_bidi_cache[j].forward = term.post_bidi_cache[j].forward = null;
       term.pre_bidi_cache[j].backward = term.post_bidi_cache[j].backward = null;
@@ -857,6 +874,7 @@ term_bidi_cache_store(int line, termchar *lbefore, termchar *lafter,
   free(term.post_bidi_cache[line].forward);
   free(term.post_bidi_cache[line].backward);
 
+  term.pre_bidi_cache[line].lattr = lattr & LATTR_BIDIMASK;
   term.pre_bidi_cache[line].width = width;
   term.pre_bidi_cache[line].chars = newn(termchar, size);
   term.post_bidi_cache[line].width = width;
@@ -899,6 +917,59 @@ void trace_bidi(char * tag, bidi_char * wc)
 #define trace_bidi(tag, wc)	
 #endif
 
+wchar *
+wcsline(termline * line)
+{
+  static wchar * wcs = 0;
+  wcs = renewn(wcs, term.cols + 1);
+  for (int i = 0; i < term.cols; i++)
+    wcs[i] = line->chars[i].chr;
+  wcs[term.cols] = 0;
+  return wcs;
+}
+
+ushort
+getparabidi(termline * line)
+{
+  ushort parabidi = line->lattr & LATTR_BIDIMASK;
+  if (parabidi & (LATTR_BIDISEL | LATTR_AUTOSEL))
+    return parabidi;
+
+  // autodetection of line direction (UBA P2 and P3);
+  // this needs in fact to be done both when called from 
+  // write_char (output phase) and term_bidi_line (display phase)
+  bool det = false;
+  int isolateLevel = 0;
+  int paragraphLevel = !!(parabidi & LATTR_BIDIRTL);
+  for (int i = 0; i < line->cols; i++) {
+    int type = bidi_class(line->chars[i].chr);
+    if (type == LRI || type == RLI || type == FSI)
+      isolateLevel++;
+    else if (type == PDI)
+      isolateLevel--;
+    else if (isolateLevel == 0) {
+      if (type == R || type == AL) {
+        paragraphLevel = 1;
+        det = true;
+        break;
+      }
+      else if (type == L) {
+        paragraphLevel = 0;
+        det = true;
+        break;
+      }
+    }
+  }
+  if (paragraphLevel & 1)
+    parabidi |= LATTR_AUTORTL;
+  else
+    parabidi &= ~LATTR_AUTORTL;
+  if (det)
+    parabidi |= LATTR_AUTOSEL;
+
+  return parabidi;
+}
+
 /*
  * Prepare the bidi information for a screen line. Returns the
  * transformed list of termchars, or null if no transformation at
@@ -910,7 +981,111 @@ void trace_bidi(char * tag, bidi_char * wc)
 termchar *
 term_bidi_line(termline *line, int scr_y)
 {
-  if ((line->lattr & LATTR_NOBIDI) || term.disable_bidi
+  bool autodir = !(line->lattr & (LATTR_BIDISEL | LATTR_AUTOSEL));
+  int level = (line->lattr & LATTR_BIDIRTL) ? 1 : 0;
+  bool explicitRTL = (line->lattr & LATTR_NOBIDI) && level == 1;
+  //printf("bidilin @%d %04X %.22ls auto %d lvl %d\n", scr_y, line->lattr, wcsline(line), autodir, level);
+
+#define support_multiline_bidi
+  //TODO: this multi-line ("paragraph") bidi direction handling seems to work
+  // but the implementation is a mess, 
+  // also it handles direction autodetection only, not multi-line resolving;
+  // this should eventually be replaced by paragraph handling in term_paint
+
+#ifdef support_multiline_bidi
+  // within a "paragraph" (in a wrapped continuation line), 
+  // consult previous line (if there is one)
+  bool prevseldir = false;
+  if (autodir && line->lattr & LATTR_WRAPCONTD && scr_y > -sblines()) {
+    // look backward to beginning of paragraph or an already determined line,
+    // in case previous lines are not displayed (scrolled out)
+    int y = scr_y - 1;
+    int paray = scr_y;
+    ushort parabidi = (ushort)-1;
+    bool brk = false;
+    do {
+      termline *prevline = fetch_line(term.disptop + y);
+      //printf("back @%d %04X %.22ls auto %d lvl %d\n", y, prevline->lattr, wcsline(prevline), autodir, level);
+      if (prevline->lattr & LATTR_WRAPPED) {
+        paray = y;
+        if (prevline->lattr & (LATTR_BIDISEL | LATTR_AUTOSEL)) {
+          prevseldir = true;
+          parabidi = prevline->lattr & LATTR_BIDIMASK;
+          brk = true;
+        }
+        else if (!(prevline->lattr & LATTR_WRAPCONTD))
+          brk = true;
+      }
+      else
+        brk = true;
+      release_line(prevline);
+      if (brk)
+        break;
+      y--;
+    } while (y >= -sblines());
+
+    // if a previously determined direction was found, use it for current line
+    if (prevseldir) {
+#ifdef propagate_to_intermediate_apparently_useless
+      // also propagate it to intermediate lines
+      while (paray <= scr_y) {
+        termline *prevline = fetch_line(term.disptop + paray);
+        prevline->lattr = (prevline->lattr & ~LATTR_BIDIMASK) | parabidi;
+        //printf("prop @%d %04X %.22ls auto %d lvl %d\n", paray, prevline->lattr, wcsline(prevline), autodir, level);
+        release_line(prevline);
+        paray++;
+      }
+#else
+      (void)paray;
+#endif
+      line->lattr = (line->lattr & ~LATTR_BIDIMASK) | parabidi;
+      autodir = !(line->lattr & (LATTR_BIDISEL | LATTR_AUTOSEL));
+      level = (line->lattr & LATTR_BIDIRTL) ? 1 : 0;
+    }
+    //printf("line @%d %04X %.22ls auto %d lvl %d\n", scr_y, line->lattr, wcsline(line), autodir, level);
+  }
+  //printf("pluq @%d/%d %04X %.22ls auto %d prevsel %d\n", scr_y, term.disptop, line->lattr, wcsline(line), autodir, prevseldir);
+  if (autodir && !prevseldir && (line->lattr & LATTR_WRAPPED) && term.disptop + scr_y < 0) {
+    // if we are yet unsure about the direction, 
+    // and if we are displaying from scrollback buffer, 
+    // we may need to inspect the remainder of the paragraph
+    termline *succline = line;
+    ushort parabidi = getparabidi(line);
+    //printf("plus @%d %04X/%04X %.22ls auto %d lvl %d\n", scr_y, succline->lattr, parabidi, wcsline(succline), autodir, level);
+    autodir = !(parabidi & (LATTR_BIDISEL | LATTR_AUTOSEL));
+    int y = scr_y;
+    while (autodir) {
+      y++;
+      if (y >= term.rows)
+        break;
+
+      succline = fetch_line(term.disptop + y);
+      ushort lattr = succline->lattr;
+      parabidi = getparabidi(succline);
+      //printf("plus @%d %04X/%04X %.22ls auto %d lvl %d\n", y, lattr, parabidi, wcsline(succline), autodir, level);
+      release_line(succline);
+
+      if (!(lattr & LATTR_WRAPCONTD))
+        break;
+      autodir = !(parabidi & (LATTR_BIDISEL | LATTR_AUTOSEL));
+      if (!autodir) {
+        line->lattr = (line->lattr & ~LATTR_BIDIMASK) | parabidi;
+        level = (parabidi & LATTR_BIDIRTL) ? 1 : 0;
+      }
+      if (!(lattr & LATTR_WRAPPED))
+        break;
+    }
+  }
+#endif
+
+  // if we have autodetected the direction for this line already,
+  // determine its paragraph embedding level
+  if (line->lattr & LATTR_AUTOSEL)
+    level = (line->lattr & LATTR_AUTORTL) ? 1 : 0;
+
+  // if no bidi handling is required for this line, skip the rest
+  if (((line->lattr & LATTR_NOBIDI) && !explicitRTL)
+      || term.disable_bidi
       || cfg.bidi == 0
       || (cfg.bidi == 1 && (term.on_alt_screen ^ term.show_other_screen))
      )
@@ -921,7 +1096,7 @@ term_bidi_line(termline *line, int scr_y)
 
  /* Do Arabic shaping and bidi. */
 
-  if (!term_bidi_cache_hit(scr_y, line->chars, term.cols)) {
+  if (!term_bidi_cache_hit(scr_y, line->chars, line->lattr, term.cols)) {
 
     if (term.wcFromTo_size < term.cols) {
       term.wcFromTo_size = term.cols;
@@ -968,15 +1143,23 @@ term_bidi_line(termline *line, int scr_y)
             term.wcTo = renewn(term.wcTo, term.wcFromTo_size);
             term.wcFrom[ib].origwc = term.wcFrom[ib].wc = bp->chr;
             term.wcFrom[ib].index = -1;
+            term.wcFrom[ib].wide = false;
             ib++;
             //wcs[wcsi++] = bp->chr;
           }
         }
       }
 
-      term.wcFrom[ib].origwc = term.wcFrom[ib].wc = c;
-      term.wcFrom[ib].index = it;
-      ib++;
+      // collapse dummy wide second half placeholders
+      if (c != UCSWIDE) {
+        term.wcFrom[ib].origwc = term.wcFrom[ib].wc = c;
+        term.wcFrom[ib].index = it;
+        term.wcFrom[ib].wide = false;
+        ib++;
+      }
+      else if (ib) {
+        term.wcFrom[ib - 1].wide = true;
+      }
 
       termchar * bp = &line->chars[it];
       // Unfold directional formatting characters which are handled 
@@ -995,6 +1178,7 @@ term_bidi_line(termline *line, int scr_y)
           term.wcTo = renewn(term.wcTo, term.wcFromTo_size);
           term.wcFrom[ib].origwc = term.wcFrom[ib].wc = bp->chr;
           term.wcFrom[ib].index = -1;
+          term.wcFrom[ib].wide = false;
           ib++;
           //wcs[wcsi++] = bp->chr;
         }
@@ -1002,8 +1186,70 @@ term_bidi_line(termline *line, int scr_y)
     }
 
     trace_bidi("=", term.wcFrom);
-    do_bidi(term.wcFrom, ib);
+    int rtl = do_bidi(autodir, level, explicitRTL,
+                      line->lattr & LATTR_BOXMIRROR,
+                      term.wcFrom, ib);
     trace_bidi(":", term.wcFrom);
+
+#ifdef support_multiline_bidi
+    if (autodir && rtl >= 0) {
+      line->lattr |= LATTR_AUTOSEL;
+      if (rtl & 1)
+        line->lattr |= LATTR_AUTORTL;
+      else
+        line->lattr &= ~LATTR_AUTORTL;
+      if (true) {  // limiting to prevseldir does not work
+        ushort parabidi = line->lattr & LATTR_BIDIMASK;
+        //printf("bidi @%d %04X %.22ls rtl %d auto %d lvl %d\n", scr_y, line->lattr, wcsline(line), rtl, autodir, level);
+        termline * paraline = line;
+        int paray = scr_y;
+        while ((paraline->lattr & LATTR_WRAPCONTD) && paray > -sblines()) {
+          paraline = fetch_line(--paray);
+          bool brk = false;
+          if (paraline->lattr & LATTR_WRAPPED) {
+            paraline->lattr = (paraline->lattr & ~LATTR_BIDIMASK) | parabidi;
+            //printf("post @%d %04X %.22ls auto %d lvl %d\n", paray, paraline->lattr, wcsline(paraline), autodir, level);
+#ifdef use_invalidate_useless
+            if (paray >= 0)
+              term_invalidate(0, paray, term.cols, paray);
+#endif
+          }
+          else
+            brk = true;
+          release_line(paraline);
+          if (brk)
+            break;
+        }
+      }
+    }
+#else
+    (void)rtl;
+#endif
+
+#ifdef refresh_parabidi_after_bidi
+//? if at all, this is only useful after modification of wrapped lines
+    if (line->lattr & LATTR_WRAPPED && scr_y + 1 < term.rows) {
+      int conty = scr_y + 1;
+      do {
+        termline *contline = term.lines[conty];
+        if (!(contline->lattr & LATTR_WRAPCONTD))
+          break;
+        if (rtl)
+          contline->lattr |= (LATTR_AUTORTL | LATTR_AUTOSEL);
+        else {
+          contline->lattr &= ~LATTR_AUTORTL;
+          contline->lattr |= LATTR_AUTOSEL;
+        }
+        /// if changed, invalidate display line
+        /// also propagate back to beginning of paragraph
+
+        if (!(contline->lattr & LATTR_WRAPPED))
+          break;
+        conty++;
+      } while (conty < term.rows);
+    }
+#endif
+
     do_shape(term.wcFrom, term.wcTo, ib);
     trace_bidi("~", term.wcTo);
 
@@ -1012,24 +1258,32 @@ term_bidi_line(termline *line, int scr_y)
       term.ltemp = renewn(term.ltemp, term.ltemp_size);
     }
 
+    // copy line->chars to ltemp initially, esp. to preserve all combinings
     memcpy(term.ltemp, line->chars, line->size * sizeof(termchar));
 
+    // equip ltemp with reorder line->chars as determined in wcTo
     ib = 0;
     for (it = 0; it < term.cols; it++) {
       while (term.wcTo[ib].index == -1)
         ib++;
 
+      // copy character and combining reference from source as reordered
       term.ltemp[it] = line->chars[term.wcTo[ib].index];
       if (term.ltemp[it].cc_next)
         term.ltemp[it].cc_next -= it - term.wcTo[ib].index;
 
+      // update reshaped glyphs
       if (term.wcTo[ib].origwc != term.wcTo[ib].wc)
         term.ltemp[it].chr = term.wcTo[ib].wc;
+
+      // expand wide characters to their double-half representation
+      if (term.wcTo[ib].wide && it + 1 < term.cols && term.wcTo[ib].index + 1 < term.cols)
+        term.ltemp[++it] = line->chars[term.wcTo[ib].index + 1];
 
       ib++;
     }
     term_bidi_cache_store(scr_y, line->chars, term.ltemp, term.wcTo,
-                          term.cols, line->size, ib);
+                          line->lattr, term.cols, line->size, ib);
 
     lchars = term.ltemp;
   }

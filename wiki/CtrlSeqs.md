@@ -96,16 +96,38 @@ When shortcut override mode is on, all shortcut key combinations are sent to the
 
 Mintty supports bidi rendering by default. However, some applications 
 may prefer to control bidi appearance themselves. There is one option (Bidi) 
-and two control sequences to adjust the behaviour.
+and some control sequences to adjust the behaviour.
 
-| **option**  | **sequence**  | **bidi**     |
-|:------------|:--------------|:-------------|
-| `Bidi=0`    |               | disabled     |
-| `Bidi=1`    |               | disabled on alternate screen |
-|             | `^[[?77096h`  | disabled     |
-|             | `^[[?77096l`  | not disabled |
-|             | `^[[?7796h`   | disabled on current line |
-|             | `^[[?7796l`   | not disabled on current line |
+| **option**  | **bidi**     |
+|:------------|:-------------|
+| `Bidi=0`    | disabled     |
+| `Bidi=1`    | disabled on alternate screen |
+| `Bidi=2`    | (default) enabled |
+
+| **sequence**  | **bidi**     |
+|:--------------|:-------------|
+| `^[[?77096h`  | disabled     |
+| `^[[?77096l`  | enabled      |
+| `^[[?7796h`   | disabled on current line |
+| `^[[?7796l`   | not disabled on current line |
+| `^[[8h`       | BDSM (ECMA-48): implicit bidi mode (bidi-enabled lines) |
+| `^[[8l`       | BDSM (ECMA-48): explicit bidi mode (bidi-disabled lines) |
+| `^[[?2501h`   | enable bidi autodetection (default) |
+| `^[[?2501l`   | disable bidi autodetection |
+| `^[[1 k`      | SCP (ECMA-48): set lines to LTR paragraph embedding level |
+| `^[[2 k`      | SCP (ECMA-48): set lines to RTL paragraph embedding level |
+| `^[[0 k`      | SCP (ECMA-48): default direction handling: autodetection with LTR fallback |
+| `^[[?2500h`   | enable box mirroring (*) |
+| `^[[?2500l`   | disable box mirroring (*) |
+
+Note: ECMA-48 bidi modes and private bidi modes are experimental.
+They follow the current status of the bidi mode model of the 
+[«BiDi in Terminal Emulators» recommendation](https://terminal-wg.pages.freedesktop.org/bidi/).
+
+Note: Box mirroring means a number of graphic characters are added to the 
+set of bidi-mirrored characters as specified by Unicode.
+These are the unsymmetric characters from ranges Box Drawing (U+2500-U+257F) 
+and Block Elements (U+2580-U+259F). Others may be added in future versions.
 
 
 ## Mousewheel reporting ##
@@ -296,6 +318,25 @@ The _file-URL_ liberally follows a `file:` URL scheme; examples are
   * `//localhost/home/tmp`
   * `/home/tmp`
   * _(empty)_ to restore the default behaviour
+
+
+## Hyperlinks ##
+
+The following _OSC_ ("operating system command") sequence can be used to 
+set a hyperlink attribute which is opened on Ctrl-click.
+
+| `^[]8;;`_URL_`^G` | underlay text with the hyperlink |
+| `^[]8;;^G` | clear hyperlink attribute (terminate hyperlink) |
+| `^[]8;id=`ID`;`_URL_`^G` | associate instances of hyperlink |
+
+A typical hyperlinked text would be written like
+> `^[]8;;`_URL_`^G`text`^[]8;;^G`
+
+Using the `id=` option, multiple parts of hyperlinked text can be 
+associated to a single hyperlink, so a partially visible or wrapped 
+hyperlinked text can be produced on the screen.
+See [Hyperlinks (a.k.a. HTML-like anchors) in terminal emulators](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda#viewers-editors)
+for an example and a discussion.
 
 
 ## Scroll markers ##

@@ -36,7 +36,7 @@ clip_addchar(clip_workbuf * b, wchar chr, cattr * ca)
   }
 
   b->text[b->len] = chr;
-  b->cattrs[b->len] = ca ? *ca : (cattr){0, 0, 0, 0};
+  b->cattrs[b->len] = ca ? *ca : CATTR_DEFAULT;
   b->len++;
 }
 
@@ -201,6 +201,8 @@ contains(string s, wchar c)
     when '\t': tag = "HT";
     when '\n': tag = "NL";
     when '\r': tag = "CR";
+    when '\f': tag = "FF";
+    when '\e': tag = "ESC";
     when '\177': tag = "DEL";
     otherwise:
       if (c < ' ')

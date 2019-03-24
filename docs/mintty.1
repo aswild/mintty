@@ -366,6 +366,18 @@ see the \fBCONFIGURATION\fP section on how it can be customised.
 Mintty uses Windows Uniscribe font rendering to display a wider range 
 of characters; the TextOut API is automatically used instead if suitable.
 
+.SS Bidirectional rendering
+
+In addition to its default implicit bidirectional rendering with automatic 
+direction detection (according to the Unicode Bidi algorithm), 
+mintty supports ECMA-48 bidi modes and private bidi modes to control 
+switchable bidi behaviour per line and partially per paragraph (i.e. within 
+an auto-wrapped line), as listed in 
+\fIhttps://github.com/mintty/mintty/wiki/CtrlSeqs#bidirectional-rendering\fP.
+They follow the current status of the bidi mode model of the 
+«BiDi in Terminal Emulators» recommendation 
+(\fIhttps://terminal-wg.pages.freedesktop.org/bidi/\fP).
+
 .SS Menus
 
 The context menu can be opened by right-clicking the mouse (with Shift 
@@ -418,6 +430,9 @@ with option \fBClearSelectionOnInput=false\fP.
 The current selection size can optionally been indicated with a popup, 
 enabled with option \fBSelectionShowSize\fP.
 
+Selection can also be managed using the keyboard. Shift+middle-keypad-key 
+(Shift+"5") enters keyboard selecting mode (modifier configurable).
+
 .TP
 \fBElastic text selection\fP
 The traditional selection behaviour of cell-based terminals is that a 
@@ -445,6 +460,10 @@ directory of the terminal foreground process if that can be determined,
 overridden by the working directory interactively communicated by the 
 respective control sequence (OSC 7).
 
+Mintty also supports the OSC 8 control to embed explicit hyperlinks 
+(similar to links on web pages), 
+see \fIhttps://github.com/mintty/mintty/wiki/CtrlSeqs#hyperlinks\fP.
+
 \fINote:\fP While application mouse modes are enabled (as used by many 
 screen oriented applications), \fBCtrl+Shift+click\fP can be used to 
 override it.
@@ -454,7 +473,8 @@ override it.
 The file names and links subject to opening are indicated by underlining 
 when mouse-hovering over them (i.e. when moving the mouse) while the 
 Control key is pressed. The colour used for hovering underlines 
-can be configured with \fBHoverColour\fP.
+can be configured with \fBHoverColour\fP. Explicit hyperlinks are displayed 
+in the window title when hovering them; this can be disabled with \fBHoverTitle\fP.
 
 .SS Font zoom
 
@@ -586,7 +606,7 @@ shortcut or menu item.
 
 A traditional BRK event on a serial terminal connection can be simulated.
 The Break is available in the extended context menu and it can be mapped 
-to the Break key by configuration.
+to the Break key (or other user-defined key) by configuration.
 Note, however, that a BRK can be ignored by configuration of the terminal 
 device (pty) or can be ignored by an application by catching the SIGINT signal.
 For more forceful interruption of the terminal client application, see the 
@@ -616,7 +636,7 @@ whereby the Alt key has to be held while entering the character code.
 Only the first key has to be on the numpad; subsequent digits can be entered
 both on the numpad or the main part of the keyboard.
 
-If the first key is the \fB'+'\fP on the numpad, the code is interpreted as
+If the first key is the \(aq\fB+\fP\(aq on the numpad, the code is interpreted as
 hexadecimal, whereby digits A through F can be entered using the letter keys.
 If the first key is a zero, the code is interpreted as octal.
 If the first key is any other digit from 1 to 9, the code is interpreted as
@@ -630,10 +650,11 @@ the most significant non-zero byte first.
 
 .SS Keyboard shortcuts
 
-An overview of all the keyboard shortcuts.
+This section gives an overview of all the keyboard shortcuts.
+See also the final subsection on user-defined shortcuts.
 
 .TP
-\fBScrollback\fP
+\fBScrollback and Selection via keyboard\fP
 .br
 \(en \fBShift+Up\fP: Line up
 .br
@@ -652,6 +673,23 @@ An overview of all the keyboard shortcuts.
 \(en \fBShift+cursor-left\fP: Go to previous scroll marker (e.g. in prompt)
 .br
 \(en \fBShift+cursor-right\fP: Go to next scroll marker (e.g. in prompt)
+.br
+\(en \fBShift+middle-keypad-key\fP: Enter keyboard selecting mode
+
+Note: The modifier can be configured with setting \fBScrollMod\fP.
+
+Keyboard selecting mode: \fBAlt\fP sets rectangular selection.
+Once keyboard selecting mode is entered, the following keys are applied:
+.br
+\(en \fBUp\fP, \fBDown\fP, \fBUp\fP, \fBUp\fP: Modify selection
+.br
+\(en \fBPgUp\fP, \fBPgDn\fP, \fBHome\fP, \fBEnd\fP: Scroll/Modify selection
+.br
+\(en \fB[Alt+]middle-keypad-key\fP: Restart [rectangular] selection
+.br
+\(en \fBInsert\fP or \fBEnter\fP: Copy selection and exit selection mode
+.br
+\(en \fBDelete\fP or \fBESC\fP: Exit selection mode
 
 .TP
 \fBCopy and paste\fP
@@ -779,7 +817,7 @@ provide visible feedback for the changes.
 
 .TP
 \fBUser-defined shortcuts\fP
-Function keys, modified function keys, and Ctrl+Shift+key combinations 
+Function keys, special keys, and Ctrl+Shift+key combinations 
 can be redefined to generate user-defined input or invoke functions.
 See option \fBKeyFunctions\fP for details.
 
@@ -1419,6 +1457,8 @@ The \fBOff\fP setting disables overriding.
 .br
 \(en \fBAlt\fP
 .br
+\(en \fBWin\fP
+.br
 \(en \fBOff\fP
 
 .TP
@@ -1511,6 +1551,8 @@ The \fBOff\fP setting disables scrolling with keyboard shortcuts.
 \(en \fBCtrl\fP
 .br
 \(en \fBAlt\fP
+.br
+\(en \fBWin\fP
 .br
 \(en \fBOff\fP
 
@@ -1882,6 +1924,11 @@ The current selection size can optionally been indicated with a popup,
 with a value between 1 and 12, setting the popup position by clock hour.
 
 .TP
+\fBShow hyperlink in window title when hovering\fP (HoverTitle=true)
+With this setting, display of an explicit hyperlink (OSC 8 attribute) 
+in the window title when hovering can be disabled.
+
+.TP
 \fBSingle-dash long options\fP (ShortLongOpts=false)
 This settings enables names options ("long options") on the command line 
 to be given with only one dash rather than a double dash.
@@ -2028,7 +2075,7 @@ command-line option --store-taskbar-properties to make it persistent.
 It should also be combined with an explicit and unique AppID.
 
 \fINote:\fP The command must be given in Windows pathname syntax (e.g. 
-AppLaunchCmd='C:\\cygwin\\bin\\mintty -T mytitle -').
+AppLaunchCmd=\(aqC:\\cygwin\\bin\\mintty -T mytitle -\(aq).
 
 \fINote:\fP An explicit icon supplied with the -i option can also be stored 
 with the persistent properties; note, however, that for this purpose, 
@@ -2077,9 +2124,13 @@ of character tags:
 .br
 \(en \fBCR\fP Carriage return (enter)
 .br
+\(en \fBFF\fP Form feed
+.br
+\(en \fBESC\fP Escape
+.br
 \(en \fBDEL\fP DEL
 .br
-\(en \fBC0\fP other control characters < ' '
+\(en \fBC0\fP other control characters < \(aq \(aq
 .br
 \(en \fBC1\fP control characters 0x80...0x9F
 .br
@@ -2136,9 +2187,9 @@ Supported keys are described as follows:
 .br
 \(en function keys F1...F24
 .br
-\(en modified function keys, preceded with a combination of C, A, S, in this order,
-indicating Ctrl, Alt, Shift as combined with the function key, 
-attached with a "+" separator, e.g. \fBCS+F9\fP
+\(en modified function keys, preceded with a combination of C, A, S, W, 
+in this order, indicating Ctrl, Alt, Shift, Win as combined with the 
+function key, attached with a "+" separator, e.g. \fBCS+F9\fP
 .br
 \(en special keys (some of which do not occur on typical keyboards) 
 and keypad keys; 
@@ -2167,7 +2218,9 @@ Space, Enter, Esc and Tab are only considered with at least one modifier
   Play, Zoom
 .br
 \(en any character reachable on the keyboard without Shift, considered if 
-pressed while Ctrl and Shift are also held; AltGr-generated characters are supported
+pressed while Ctrl and Shift are also held; AltGr-generated characters 
+are supported; Alt and Win modifiers are supported, 
+e.g. \fBx\fP for Ctrl+Shift+x, \fBW+x\fP for Ctrl+Win+x, \fBAW+x\fP for Alt+Win+x
 
 \fINote:\fP A key that needs a modifier already to be sent (e.g. Break 
 which is often Ctrl+Pause) also needs that modifier in the key definition 
@@ -2187,9 +2240,9 @@ in order to prevent that input of Ctrl+_ would be inhibited.
 
 Supported actions are described as follows:
 .br
-\(en \fB"string"\fP or \fB'string'\fP: enters the literal string
+\(en \fB"string"\fP or \fB\(aqstring\(aq\fP: enters the literal string
 .br
-\(en \fB`command` (**)\fP: enters the output of the command
+\(en \fB\`command\` (**)\fP: enters the output of the command
 .br
 \(en \fBfullscreen (*)\fP: switches to fullscreen mode
 .br
@@ -2269,6 +2322,8 @@ Supported actions are described as follows:
 .br
 \(en \fBprint-screen\fP: print screen contents
 .br
+\(en \fBtoggle-bidi\fP: toggles (global) bidi disabling
+.br
 \(en \fBvoid\fP: do nothing
 
 \fINote (*):\fP The exact behaviour of some actions depends on the 
@@ -2291,7 +2346,7 @@ use the "\fBvoid\fP" dummy action.
 
 Examples:
 .br
-\(en \fBKeyFunctions=d:`echo -n `date``;A+F4:;CA+F12:break;-:"minus"\fP
+\(en \fBKeyFunctions=d:\`echo -n \`date\`\`;A+F4:;CA+F12:break;-:"minus"\fP
 will input the current date on Ctrl+Shift+d, disable window closing with Alt+F4,
 send a BRK on Ctrl+Alt+F12, but likely not input "minus" on Ctrl+Shift+minus 
 because Shift+minus is an underline on many keyboard layouts which has a 
@@ -2460,13 +2515,12 @@ window zooming by the Shift key is disabled,
 except for the keyboard zoom functions Shift+Alt+Enter/F11 and the Shift+menu function.
 
 .TP
-\fBHandling of DPI changes\fP (HandleDPI=1)
-By default, in Windows 10, when the window is moved to another monitor 
-that has a different DPI value ("scaling factor") configured, this is 
-considered to compensate by appropriate scaling.
-This option can be set to 0/false to suppress DPI adjustments,
-or to 2 to require DPI handling mode 2 and only enable DPI handling if
-this recently fixed Windows DPI handling mode is available.
+\fBHandling of DPI changes\fP (HandleDPI=2)
+When the window is moved to another monitor that has a different DPI 
+value ("scaling factor") configured, newer Windows 10 versions support 
+semi-automatic compensation by appropriate scaling.
+This option can be set to support either DPI handling modes 1 or 2 
+(if supported, respectively), or set to 0/false to suppress DPI adjustments.
 
 .TP
 \fBCheck availability of mintty version update\fP (CheckVersionUpdate=900)
@@ -2503,9 +2557,9 @@ to reduce the risk of injecting commands via tricky filenames.
 
 Examples:
 .br
-\(en \fBDropCommands=bash:cd '%s'^M;mined:^[fo^M%s^M;vim:^[:e %s^M\fP
+\(en \fBDropCommands=bash:cd \(aq%s\(aq^M;mined:^[fo^M%s^M;vim:^[:e %s^M\fP
 .br
-\(en \fBDropCommands=^_bash:cd '%s';echo $PWD^M^_vim:^[:e %s^M^_\fP
+\(en \fBDropCommands=^_bash:cd \(aq%s\(aq;echo $PWD^M^_vim:^[:e %s^M^_\fP
 
 \fINote:\fP An "Enter" key has to be specified with the CR character code, 
 control characters need to be embedded verbatim 
@@ -2572,7 +2626,7 @@ in order to avoid the risk of injecting commands via tricky selected text.
 
 Examples:
 .br
-\(en \fBUserCommands=Paste capital:echo -n "$MINTTY_SELECT" | tr 'a-z' 'A-Z';Paste small:echo -n "$MINTTY_SELECT" | tr 'A-Z' 'a-z'\fP
+\(en \fBUserCommands=Paste capital:echo -n "$MINTTY_SELECT" | tr \(aqa-z\(aq \(aqA-Z\(aq;Paste small:echo -n "$MINTTY_SELECT" | tr \(aqA-Z\(aq \(aqa-z\(aq\fP
 .br
 \(en \fBUserCommands=google:cygstart https://www.google.de/search?q="$MINTTY_SELECT"\fP
 
@@ -2582,7 +2636,7 @@ Examples:
 \fBUser commands PATH expansion\fP (UserCommandsPath=/bin:%s)
 This setting defines the PATH environment for user-defined external commands,
 applicable to extended context menu commands (UserCommands=...:...)
-and key-attached external commands (KeyFunctions=...:`...`).
+and key-attached external commands (KeyFunctions=...:\`...\`).
 If the value contains a single \fB%s\fP placeholder, the current 
 environment PATH is substituted for it.
 

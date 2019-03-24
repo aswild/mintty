@@ -169,17 +169,26 @@ enum {
   LATTR_TOP       = 0x0002u, /* DEC double-height line (DECDHL), top half */
   LATTR_BOT       = 0x0003u, /* DEC double-height line (DECDHL), bottom half */
   LATTR_MODE      = 0x0003u, /* mask for double-width/height attributes */
-  LATTR_WRAPPED   = 0x0010u, /* this line wraps to next */
-  LATTR_WRAPPED2  = 0x0020u, /* with WRAPPED: CJK wide character
+  LATTR_WRAPPED   = 0x4000u, /* this line wraps to next */
+  LATTR_WRAPPED2  = 0x8000u, /* with WRAPPED: CJK wide character
                                   * wrapped to next line, so last
                                   * single-width cell is empty */
-  LATTR_CLEARPAD  = 0x0040u, /* flag to clear padding from overhang */
-  LATTR_MARKED    = 0x0100u, /* scroll marker */
-  LATTR_UNMARKED  = 0x0200u, /* secondary scroll marker */
-  LATTR_NOBIDI    = 0x4000u, /* disable bidi on this line */
+  LATTR_CLEARPAD  = 0x2000u, /* flag to clear padding from overhang */
+  LATTR_MARKED    = 0x0004u, /* scroll marker */
+  LATTR_UNMARKED  = 0x0008u, /* secondary scroll marker */
   // overlay line display (italic right-to-left overhang handling):
-  LATTR_DISP1     = 0x1000u,
-  LATTR_DISP2     = 0x2000u,
+  LATTR_DISP1     = 0x0010u,
+  LATTR_DISP2     = 0x0020u,
+  // bidi control
+  LATTR_WRAPCONTD = 0x1000u, /* continued from wrapped line */
+  LATTR_BIDIMASK  = 0x0FC0u, /* all bidi attributes */
+  LATTR_NOBIDI    = 0x0040u, /* disable bidi on this line / in paragraph */
+  LATTR_BOXMIRROR = 0x0080u, /* bidi box graphics mirroring */
+  LATTR_BIDISEL   = 0x0100u, /* direction pre-selected */
+  LATTR_BIDIRTL   = 0x0200u, /* direction (preset or fallback or explicit) */
+  // temporary bidi flags
+  LATTR_AUTOSEL   = 0x0400u, /* autodetection accomplished */
+  LATTR_AUTORTL   = 0x0800u, /* direction after autodetection */
 };
 
 enum {
@@ -192,6 +201,7 @@ typedef unsigned long long cattrflags;
 
 typedef struct {
   cattrflags attr;
+  int link;
   uint truefg;
   uint truebg;
   colour ulcolr;
@@ -248,6 +258,7 @@ extern void release_line(termline *);
 
 typedef struct {
   int width;
+  ushort lattr;
   termchar *chars;
   int *forward, *backward;      /* the permutations of line positions */
 } bidi_cache_entry;
@@ -282,6 +293,7 @@ typedef enum {
   CSET_DEC_Greek_Supp		= '?' + 0x80,
   CSET_DEC_Hebrew_Supp		= '4' + 0x80,
   CSET_DEC_Turkish_Supp		= '0' + 0x80,
+  CSET_NRCS_Cyrillic		= '&' + 0x80,
   CSET_NRCS_Greek		= '>' + 0x80,
   CSET_NRCS_Hebrew		= '=' + 0x80,
   CSET_NRCS_Turkish		= '2' + 0x80,
@@ -356,6 +368,7 @@ typedef struct {
   bool autowrap;  // switchable (xterm Wraparound Mode (DECAWM Auto Wrap))
   bool wrapnext;
   bool rev_wrap;  // switchable (xterm Reverse-wraparound Mode)
+  ushort bidimode;
   short gl, gr;
   term_cset csets[4];
   term_cset cset_single;
@@ -509,6 +522,7 @@ struct term {
   bool selected, sel_rect;
   pos sel_start, sel_end, sel_anchor;
   bool hovering;
+  int hoverlink;
   pos hover_start, hover_end;
 
  /* Scroll steps during selection when cursor out of window. */

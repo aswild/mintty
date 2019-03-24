@@ -137,7 +137,7 @@ win_linedraw_char(int i)
 char *
 fontpropinfo()
 {
-  //__ Options - Text: font properties information ("leading" ("ledding"): add. row spacing)
+  //__ Options - Text: font properties information: "Leading": total line padding (see option RowSpacing), Bold/Underline modes (font or manual, see options BoldAsFont/UnderlineManual/UnderlineColour)
   char * fontinfopat = _("Leading: %d, Bold: %s, Underline: %s");
   //__ Options - Text: font properties: value taken from font
   char * fontinfo_font = _("font");
@@ -1102,9 +1102,13 @@ show_curchar_info(char tag)
 }
 
 
+#define update_timer 16
+
 void
 do_update(void)
 {
+  //if (kb_trace) printf("[%ld] do_update\n", mtime());
+
 #if defined(debug_cursor) && debug_cursor > 1
   printf("do_update cursor_on %d @%d,%d\n", term.cursor_on, term.curs.y, term.curs.x);
 #endif
@@ -1114,13 +1118,13 @@ do_update(void)
   }
 
   update_skipped++;
-  int output_speed = lines_scrolled / term.rows;
+  int output_speed = lines_scrolled / (term.rows ?: cfg.rows);
   lines_scrolled = 0;
   if (update_skipped < cfg.display_speedup && cfg.display_speedup < 10
       && output_speed > update_skipped
      )
   {
-    win_set_timer(do_update, 16);
+    win_set_timer(do_update, update_timer);
     return;
   }
   update_skipped = 0;
@@ -1168,7 +1172,7 @@ do_update(void)
   }
 
   // Schedule next update.
-  win_set_timer(do_update, 16);
+  win_set_timer(do_update, update_timer);
 }
 
 #include <math.h>
@@ -1227,23 +1231,58 @@ sel_update(bool update_sel_tip)
   }
 }
 
+static void
+show_link(void)
+{
+  static int lasthoverlink = -1;
+
+  int hoverlink = term.hovering ? term.hoverlink : -1;
+  if (hoverlink != lasthoverlink) {
+    lasthoverlink = hoverlink;
+
+    char * url = geturl(hoverlink) ?: "";
+
+    if (nonascii(url)) {
+      wchar * wcs = cs__utftowcs(url);
+      SetWindowTextW(wnd, wcs);
+      free(wcs);
+    }
+    else
+      SetWindowTextA(wnd, url);
+  }
+}
+
+void
+win_update_now(void)
+{
+  if (update_state == UPDATE_PENDING)
+    update_state = UPDATE_IDLE;
+  win_update(false);
+}
+
 void
 win_update(bool update_sel_tip)
 {
+  //if (kb_trace) printf("[%ld] win_update state %d (idl/blk/pnd)\n", mtime(), update_state);
   trace_resize(("----- win_update\n"));
+
   if (update_state == UPDATE_IDLE)
     do_update();
   else
     update_state = UPDATE_PENDING;
 
   sel_update(update_sel_tip);
+  if (cfg.hover_title)
+    show_link();
 }
 
 void
 win_schedule_update(void)
 {
+  //if (kb_trace) printf("[%ld] win_schedule_update state %d (idl/blk/pnd)\n", mtime(), update_state);
+
   if (update_state == UPDATE_IDLE)
-    win_set_timer(do_update, 16);
+    win_set_timer(do_update, update_timer);
   update_state = UPDATE_PENDING;
 }
 
@@ -1794,7 +1833,8 @@ get_bg_filename(void)
       DWORD type;
       int err = RegQueryValueExW(key, attribute, 0, &type, (void *)val, &len);
       if (err ||
-          !(type == REG_SZ || type == REG_EXPAND_SZ || type == REG_MULTI_SZ))
+          !(type == REG_SZ || type == REG_EXPAND_SZ || type == REG_MULTI_SZ)
+         )
         *val = 0;
     }
 
@@ -2042,7 +2082,8 @@ _trace_line(char * tag, cattr attr, ushort lattr, wchar * text, int len)
 {
   bool show = false;
   for (int i = 0; i < len; i++)
-    if (text[i] != ' ') show = true;
+    if (text[i] != ' ')
+      show = true;
   if (show) {
     if (*tag != ' ') {
       wchar t[len + 1]; wcsncpy(t, text, len); t[len] = 0;
@@ -2351,9 +2392,9 @@ apply_bold_colour(colour_i *pfgi)
   }
   // switchable bold_colour
   if (term.enable_bold_colour && CCL_DEFAULT(*pfgi)
-      && colours[BOLD_COLOUR_I] != (colour)-1) {
+      && colours[BOLD_COLOUR_I] != (colour)-1
+     )
     *pfgi = BOLD_COLOUR_I;
-  }
   else
   // normal independent as_font/as_colour controls
   if (cfg.bold_as_colour) {
@@ -2487,6 +2528,8 @@ apply_attr_colour(cattr a, attr_colour_mode mode)
 void
 win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, bool has_rtl)
 {
+  //if (kb_trace) {printf("[%ld] <win_text\n", mtime()); kb_trace = 0;}
+
   int graph = (attr.attr >> ATTR_GRAPH_SHIFT) & 0xFF;
   int findex = (attr.attr & FONTFAM_MASK) >> ATTR_FONTFAM_SHIFT;
   struct fontfam * ff = &fontfamilies[findex];
@@ -2557,7 +2600,8 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
       colour ccfg = brighten(cursor_colour, fg, false);
       colour ccbg = brighten(cursor_colour, bg, false);
       if (colour_dist(ccfg, bg) < mindist
-          && colour_dist(ccfg, bg) < colour_dist(ccbg, bg))
+          && colour_dist(ccfg, bg) < colour_dist(ccbg, bg)
+         )
         cursor_colour = ccbg;
       else
         cursor_colour = ccfg;
@@ -2596,13 +2640,15 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
   if (ff->bold_mode == BOLD_FONT && (attr.attr & ATTR_BOLD))
     nfont |= FONT_BOLD;
   if (ff->und_mode == UND_FONT && (attr.attr & UNDER_MASK) == ATTR_UNDER
-      && !(attr.attr & ATTR_ULCOLOUR))
+      && !(attr.attr & ATTR_ULCOLOUR)
+     )
     nfont |= FONT_UNDERLINE;
   if (attr.attr & ATTR_ITALIC)
     nfont |= FONT_ITALIC;
   if (attr.attr & ATTR_STRIKEOUT
       && !cfg.underl_manual && cfg.underl_colour == (colour)-1
-      && !(attr.attr & ATTR_ULCOLOUR))
+      && !(attr.attr & ATTR_ULCOLOUR)
+     )
     nfont |= FONT_STRIKEOUT;
   if (attr.attr & TATTR_ZOOMFULL)
     nfont |= FONT_ZOOMFULL;
@@ -2729,7 +2775,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     box.right += cell_width;
     box.left -= cell_width;
   }
-  if (clearpad)
+  if (clearpad && tx > 0)
     box.right += PADDING;
   RECT box2 = box;
   if (combining_double)
@@ -2886,21 +2932,41 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     underlaid = true;
   }
 
- /* Special underline */
+ /* Wavy underline */
   if (!ldisp2 && lattr != LATTR_TOP &&
-      (attr.attr & UNDER_MASK) == ATTR_CURLYUND) {
+      (attr.attr & UNDER_MASK) == ATTR_CURLYUND
+     )
+  {
     clear_run();
+    //printf("curly %d:%d %d:%d (w %d ulen %d cw %d)\n", ty, tx, y, x, width, ulen, char_width);
 
     int step = 4;  // horizontal step width
     int delta = 3; // vertical phase height
     int offset = 1; // offset up from uloff
-    int rep = (ulen * char_width - 1) / step + 1;
+    //int x0 = x - PADDING - (x - PADDING) % step + PADDING;
+    //int rep = (ulen * char_width - 1) / step / 3 + 2;
+    // when starting the undercurl at the current text start position,
+    // the transitions between adjacent Bezier waves looks disrupted;
+    // trying to align them by snapping to a previous point (- x... % step)
+    // does not help, maybe Bezier curves should be studied first;
+    // so in order to achieve uniform undercurls, we always start at 
+    // the line beginning position (getting clipped anyway)
+    int x0 = PADDING;
+    int rep = (x - x0 + width + char_width) / step / 3;
+
     POINT bezier[1 + rep * 3];
+    //printf("                      ");
     for (int i = 0; i <= rep * 3; i++) {
-      bezier[i].x = x + i * step;
+      bezier[i].x = x0 + i * step;
       int wave = (i % 3 == 2) ? delta : (i % 3 == 1) ? -delta : 0;
       bezier[i].y = y + uloff - offset + wave;
+      //printf("  %04d:%04d%s", uloff - offset + wave, i * step, i % 3 ? "" : "\n");
     }
+
+    HRGN ur = 0;
+    GetClipRgn(dc, ur);
+    IntersectClipRect(dc, box.left, box.top, box.right, box.bottom);
+
     HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, 0, ul));
     for (int l = 0; l < line_width; l++) {
       if (l)
@@ -2910,6 +2976,8 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     }
     oldpen = SelectObject(dc, oldpen);
     DeleteObject(oldpen);
+
+    SelectClipRgn(dc, ur);
   }
   else
 
@@ -2920,7 +2988,8 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
        ((attr.attr & UNDER_MASK) == ATTR_UNDER &&
         (ff->und_mode == UND_LINE || (attr.attr & ATTR_ULCOLOUR)))
       )
-     ) {
+     )
+  {
     clear_run();
 
     int penstyle = (attr.attr & ATTR_BROKENUND)
@@ -3358,7 +3427,9 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
   if ((attr.attr & ATTR_STRIKEOUT)
       && (cfg.underl_manual || cfg.underl_colour != (colour)-1
           || (attr.attr & ATTR_ULCOLOUR)
-         )) {
+         )
+     )
+  {
     int soff = (ff->descent + (ff->row_spacing / 2)) * 2 / 3;
     HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, 0, ul));
     for (int l = 0; l < line_width; l++) {
@@ -3634,7 +3705,9 @@ win_char_width(xchar c)
        //|| wcschr (W("‐‑‘’‚‛“”„‟‹›"), c) // #712 workaround; now caching
        )
 #endif
-     )) {
+      )
+     )
+  {
     // look up c in charpropcache
     struct charpropcache * cpfound = 0;
     for (uint i = 0; i < ff->cpcachelen[font4index]; i++)
@@ -3872,6 +3945,7 @@ win_paint(void)
     (p.rcPaint.bottom - PADDING - 1) / cell_height
   );
 
+  //if (kb_trace) printf("[%ld] win_paint state %d (idl/blk/pnd)\n", mtime(), update_state);
   if (update_state != UPDATE_PENDING) {
     term_paint();
     winimg_paint();
@@ -3890,7 +3964,8 @@ win_paint(void)
        || p.rcPaint.right >= PADDING + cell_width * term.cols
        || p.rcPaint.bottom >= PADDING + cell_height * term.rows
       )
-     ) {
+     )
+  {
     /* Notes:
        * Do we actually need this stuff? We paint the background with
          each win_text chunk anyway, except for the padding border,
