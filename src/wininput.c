@@ -1175,6 +1175,12 @@ toggle_vt220()
 }
 
 void
+toggle_auto_repeat()
+{
+  term.auto_repeat = !term.auto_repeat;
+}
+
+void
 toggle_bidi()
 {
   term.disable_bidi = !term.disable_bidi;
@@ -1285,6 +1291,12 @@ mflags_vt220()
 }
 
 static uint
+mflags_auto_repeat()
+{
+  return term.auto_repeat ? MF_CHECKED : MF_UNCHECKED;
+}
+
+static uint
 mflags_bidi()
 {
   return (cfg.bidi == 0
@@ -1358,6 +1370,7 @@ static struct function_def cmd_defs[] = {
   {"export-html", {IDM_HTML}, 0},
   {"print-screen", {.fct = print_screen}, 0},
   {"toggle-vt220", {.fct = toggle_vt220}, mflags_vt220},
+  {"toggle-auto-repeat", {.fct = toggle_auto_repeat}, mflags_auto_repeat},
   {"toggle-bidi", {.fct = toggle_bidi}, mflags_bidi},
 
   {"void", {.fct = nop}, 0}
@@ -1621,6 +1634,15 @@ win_key_down(WPARAM wp, LPARAM lp)
 #ifdef debug_virtual_key_codes
   printf("win_key_down %04X %s scan %d ext %d rpt %d/%d other %02X\n", key, vk_name(key), scancode, extended, repeat, count, HIWORD(lp) >> 8);
 #endif
+
+  if (repeat && !term.auto_repeat) {
+#ifdef auto_repeat_cursor_keys_option
+    switch (key) {
+      when VK_PRIOR ... VK_DOWN: do not return...;
+    }
+#endif
+    return true;
+  }
 
   if (key == VK_PROCESSKEY) {
     TranslateMessage(

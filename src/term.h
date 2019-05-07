@@ -361,6 +361,15 @@ typedef struct {
 } termimgs;
 
 
+enum {
+  MODO_1 = 1,
+  MODO_2 = 2,
+  MODO_ESC = 0x10,  /* Report ESC as CSI u */
+  MODO_MOD = 0x20,  /* Report plain modifiers */
+  MODO_REL = 0x40,  /* Report release */
+  MODO_REP = 0x80,  /* Report repeat */
+};
+
 typedef struct {
   short x, y;
   cattr attr;
@@ -434,6 +443,7 @@ struct term {
   bool app_cursor_keys;
   bool app_keypad;
   bool app_wheel;
+  bool auto_repeat;
   bool bell_taskbar; // xterm: bellIsUrgent; switchable with CSI ? 1042 h/l
   bool bell_popup;   // xterm: popOnBell;    switchable with CSI ? 1043 h/l
   bool wheel_reporting;
@@ -457,6 +467,7 @@ struct term {
   bool private_color_registers;
   int  cursor_type;
   int  cursor_blinks;
+  int  cursor_blink_interval;
   bool cursor_invalid;
   bool hide_mouse;
 

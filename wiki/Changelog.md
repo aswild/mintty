@@ -1,7 +1,27 @@
+### 3.0.0 (28 March 2019) ###
+
+Character processing
+  * Fixed wide character width and cursor position handling.
+
+Keyboard handling
+  * Switchable auto-repeat; DECSET 8 (DECARM), option AutoRepeat, toggle function.
+
+Bidirectional rendering (Unicode Bidi Algorithm)
+  * Bidi bracket pairs: implemented UBA rule N0.
+  * Minor fixes to UBA rules X9, W7, L1.
+  * Fixed shortcut optimization wrongly not triggering UBA on Arabic numbers.
+
+Terminal features
+  * Cursor style control (DECSCUSR) can set the blinking interval with an optional second parameter.
+
+Configuration
+  * Option AutoRepeat.
+  * New user-definable function toggle-auto-repeat.
+
 ### 2.9.9 (16 March 2019) ###
 
 Keyboard handling
-  * Fixed modifyOtherKeys mode 1 to use verbatim control keys.
+  * Fixed modifyOtherKeys mode 1 to use verbatim control keys again (#860).
 
 ### 2.9.8 (15 March 2019) ###
 

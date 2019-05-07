@@ -852,6 +852,10 @@ term_bidi_cache_store(int line,
                       termchar *lbefore, termchar *lafter, bidi_char *wcTo, 
                       ushort lattr, int width, int size, int bidisize)
 {
+#ifdef debug_bidi_cache
+  printf("cache_store w %d s %d bs %d\n", width, size, bidisize);
+#endif
+
   int i;
 
   if (!term.pre_bidi_cache || term.bidi_cache_size <= line) {
@@ -898,6 +902,14 @@ term_bidi_cache_store(int line,
 
     term.post_bidi_cache[line].backward[i] = p;
     term.post_bidi_cache[line].forward[p] = i;
+
+    if (wcTo[ib].wide && i + 1 < width) {
+      // compensate for skipped wide character right half
+      i++;
+      p++;
+      term.post_bidi_cache[line].backward[i] = p;
+      term.post_bidi_cache[line].forward[p] = i;
+    }
 
     ib++;
   }
@@ -1158,6 +1170,7 @@ term_bidi_line(termline *line, int scr_y)
         ib++;
       }
       else if (ib) {
+        // skip wide character virtual right half, flag it
         term.wcFrom[ib - 1].wide = true;
       }
 
@@ -1277,13 +1290,28 @@ term_bidi_line(termline *line, int scr_y)
         term.ltemp[it].chr = term.wcTo[ib].wc;
 
       // expand wide characters to their double-half representation
-      if (term.wcTo[ib].wide && it + 1 < term.cols && term.wcTo[ib].index + 1 < term.cols)
+      if (term.wcTo[ib].wide && it + 1 < term.cols && term.wcTo[ib].index + 1 < term.cols) {
         term.ltemp[++it] = line->chars[term.wcTo[ib].index + 1];
+      }
 
       ib++;
     }
     term_bidi_cache_store(scr_y, line->chars, term.ltemp, term.wcTo,
                           line->lattr, term.cols, line->size, ib);
+#ifdef debug_bidi_cache
+    for (int i = 0; i < term.cols; i++)
+      printf(" %04X", term.ltemp[i].chr);
+    printf("\n");
+    for (int i = 0; i < ib; i++)
+      printf(" %04X[%d]", term.wcTo[i].wc, term.wcTo[i].index);
+    printf("\n");
+    for (int i = 0; i < term.cols; i++)
+      printf(" %d", term.post_bidi_cache[scr_y].forward[i]);
+    printf("\n");
+    for (int i = 0; i < term.cols; i++)
+      printf(" %d", term.post_bidi_cache[scr_y].backward[i]);
+    printf("\n");
+#endif
 
     lchars = term.ltemp;
   }

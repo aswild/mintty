@@ -41,8 +41,9 @@ Invocation by a name of \fBwsl*\fP\fI[-distro]\fP
 implies a \fB--WSL\fP\fI[=distro]\fP parameter.
 
 Mintty supports being started from a Windows desktop shortcut; it honours
-window and icon settings of the shortcut, disables daemonizing, and 
-sets environment variable MINTTY_SHORTCUT to its pathname.
+window and icon settings of the shortcut, aligns taskbar grouping with the 
+shortcut, disables daemonizing, and sets environment variable 
+MINTTY_SHORTCUT to its pathname.
 
 .SH OPTIONS
 
@@ -1253,6 +1254,11 @@ to the terminal to restore to "default".
 Settings controlling keyboard behaviour.
 
 .TP
+\fBAuto-repeat keys\fP (AutoRepeat=on)
+When setting this off, keyboard auto-repeat is ignored. Auto-repeat can also 
+be switched dynamically with DECSET 8.
+
+.TP
 \fBBackarrow sends ^H\fP (BackspaceSendsBS=no)
 By default, mintty sends \fB^?\fP (ASCII DEL) as the keycode for the backspace key.
 If this option is enabled, \fB^H\fP is sent instead.
@@ -2301,6 +2307,8 @@ Supported actions are described as follows:
 \(en \fBclear-scrollback\fP: clears the scrollback
 .br
 \(en \fBtoggle-vt220\fP: toggles VT220 keyboard mode
+.br
+\(en \fBtoggle-auto-repeat\fP: toggles auto-repeat keys mode
 .br
 \(en \fBcopy-title\fP: copies the window title to the clipboard
 .br
