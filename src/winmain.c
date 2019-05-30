@@ -155,6 +155,15 @@ mtime(void)
 }
 
 
+#define dont_debug_dir
+
+#ifdef debug_dir
+#define trace_dir(d)	show_info(d)
+#else
+#define trace_dir(d)	
+#endif
+
+
 #ifdef debug_resize
 #define SetWindowPos(wnd, after, x, y, cx, cy, flags)	{printf("SWP[%s] %ld %ld\n", __FUNCTION__, (long int)cx, (long int)cy); Set##WindowPos(wnd, after, x, y, cx, cy, flags);}
 static void
@@ -1546,9 +1555,16 @@ flash_border()
 void
 win_bell(config * conf)
 {
-  if (conf->bell_sound || conf->bell_type) {
+  do_update();
+
+  static unsigned long last_bell = 0;
+         unsigned long now = mtime();
+
+  if ( (conf->bell_sound || conf->bell_type) &&
+      ((unsigned long)conf->bell_interval <= now - last_bell) ) {
     wchar * bell_name = (wchar *)conf->bell_file;
     bool free_bell_name = false;
+    last_bell = now;
     if (*bell_name) {
       if (wcschr(bell_name, L'/') || wcschr(bell_name, L'\\')) {
         if (bell_name[1] != ':') {
@@ -2404,6 +2420,7 @@ static struct {
         when IDM_SELALL: term_select_all(); win_update(false);
         when IDM_RESET: winimgs_clear(); term_reset(true); win_update(false);
         when IDM_DEFSIZE:
+          default_size_token = true;
           default_size();
         when IDM_DEFSIZE_ZOOM:
           if (GetKeyState(VK_SHIFT) & 0x80) {
@@ -2419,18 +2436,25 @@ static struct {
           else {
             default_size();
           }
-        when IDM_SCROLLBAR:
-          term.show_scrollbar = !term.show_scrollbar;
-          win_update_scrollbar(false);
-        when IDM_FULLSCREEN or IDM_FULLSCREEN_ZOOM:
-          if ((wp & ~0xF) == IDM_FULLSCREEN_ZOOM)
-            zoom_token = 4;  // override cfg.zoom_font_with_window == 0
-          else
+        when IDM_FULLSCREEN or IDM_FULLSCREEN_ZOOM: {
+          bool ctrl = GetKeyState(VK_CONTROL) & 0x80;
+          bool shift = GetKeyState(VK_SHIFT) & 0x80;
+          if (((wp & ~0xF) == IDM_FULLSCREEN_ZOOM && shift)
+           || (cfg.zoom_font_with_window && shift && !ctrl)
+             )
+            zoom_token = 4;
+          else {
             zoom_token = -4;
+            default_size_token = true;
+          }
           win_maximise(win_is_fullscreen ? 0 : 2);
 
           term_schedule_search_update();
           win_update_search();
+        }
+        when IDM_SCROLLBAR:
+          term.show_scrollbar = !term.show_scrollbar;
+          win_update_scrollbar(false);
         when IDM_SEARCH: win_open_search();
         when IDM_FLIPSCREEN: term_flip_screen();
         when IDM_OPTIONS: win_open_config();
@@ -2452,15 +2476,12 @@ static struct {
       update_available_version(wp);
 
     when WM_VSCROLL:
+      //printf("WM_VSCROLL %d\n", LOWORD(wp));
       switch (LOWORD(wp)) {
-        when SB_BOTTOM:   term_scroll(-1, 0);
-        when SB_TOP:      term_scroll(+1, 0);
-        when SB_LINEDOWN: term_scroll(0, +1);
         when SB_LINEUP:   term_scroll(0, -1);
-        when SB_PAGEDOWN: term_scroll(0, +max(1, term.rows - 1));
+        when SB_LINEDOWN: term_scroll(0, +1);
         when SB_PAGEUP:   term_scroll(0, -max(1, term.rows - 1));
-        when SB_PRIOR:    term_scroll(SB_PRIOR, 0);
-        when SB_NEXT:     term_scroll(SB_NEXT, 0);
+        when SB_PAGEDOWN: term_scroll(0, +max(1, term.rows - 1));
         when SB_THUMBPOSITION or SB_THUMBTRACK: {
           SCROLLINFO info;
           info.cbSize = sizeof(SCROLLINFO);
@@ -2468,6 +2489,12 @@ static struct {
           GetScrollInfo(wnd, SB_VERT, &info);
           term_scroll(1, info.nTrackPos);
         }
+        when SB_TOP:      term_scroll(+1, 0);
+        when SB_BOTTOM:   term_scroll(-1, 0);
+        //when SB_ENDSCROLL: ;
+        // these two may be used by mintty keyboard shortcuts (not by Windows)
+        when SB_PRIOR:    term_scroll(SB_PRIOR, 0);
+        when SB_NEXT:     term_scroll(SB_NEXT, 0);
       }
 
     when WM_MOUSEMOVE: win_mouse_move(false, lp);
@@ -2708,6 +2735,7 @@ static struct {
         bool scale_font = (cfg.zoom_font_with_window || zoom_token > 2)
                        && (zoom_token > 0) && (GetKeyState(VK_SHIFT) & 0x80)
                        && !default_size_token;
+        //printf("WM_SIZE scale_font %d zoom_token %d\n", scale_font, zoom_token);
         win_adapt_term_size(false, scale_font);
         if (zoom_token > 0)
           zoom_token = zoom_token >> 1;
@@ -2892,6 +2920,55 @@ static struct {
   */
   return DefWindowProcW(wnd, message, wp, lp);
 }
+
+#ifdef hook_keyboard
+
+static LRESULT CALLBACK
+hookprockbll(int nCode, WPARAM wParam, LPARAM lParam)
+{
+  LPKBDLLHOOKSTRUCT kbdll = (LPKBDLLHOOKSTRUCT)lParam;
+  uint key = kbdll->vkCode;
+#ifdef debug_hook
+  printf("hooked ll %d wm %03lX vk %02X sc %d fl %04X ex %04lX\n", 
+         nCode, (long)wParam, 
+         key, (uint)kbdll->scanCode, (uint)kbdll->flags, (ulong)kbdll->dwExtraInfo);
+#endif
+  bool hook = false;
+#ifdef check_swallow
+  // this should be factored out to wininput.c, if ever to be used
+  bool is_hooked_key(WPARAM wParam, uint key)
+  {
+    return wParam == WM_KEYDOWN &&
+      (key == VK_LWIN || key == VK_RWIN
+       || key == VK_CAPITAL || key == VK_SCROLL || key == VK_NUMLOCK
+      )
+    ;
+  }
+  hook = GetFocus() == wnd && is_hooked_key(wParam, key);
+#endif
+  if (hook) {
+    LPARAM lp = 1;
+    lp |= (LPARAM)kbdll->flags << 24 | (LPARAM)kbdll->scanCode << 16;
+    bool swallow_key = false;
+    // here we have another opportunity to set a flag to swallow the key,
+    // based on dynamic processing (win_key_down, win_key_up)
+    win_proc(wnd, wParam, key, lp);
+    // if we have processed the key (e.g. as modifier or user-defined key)
+    if (swallow_key) {
+      // return non-zero to swallow
+      return 1;
+    }
+  }
+  return CallNextHookEx(0, nCode, wParam, lParam);
+}
+
+void
+hook_windows(int id, HOOKPROC hookproc, bool global)
+{
+  SetWindowsHookExW(id, hookproc, 0, global ? 0 : GetCurrentThreadId());
+}
+
+#endif
 
 
 void
@@ -3306,6 +3383,9 @@ select_WSL(char * wsl)
   // set --rootfs implicitly
   int err = getlxssinfo(false, wslname, &wsl_guid, &wsl_basepath, &wsl_icon);
   if (!err) {
+    // set --title
+    if (title_settable)
+      set_arg_option("Title", strdup(wsl && *wsl ? wsl : "WSL"));
     // set --icon if WSL specific icon exists
     if (wsl_icon) {
       if (!icon_is_from_shortcut && waccess(wsl_icon, R_OK))
@@ -3826,6 +3906,7 @@ main(int argc, char *argv[])
     // (by sanitizing taskbar icon grouping, #784, mintty/wsltty#96) 
     // set proper directory
     chdir(getenv("MINTTY_PWD"));
+    trace_dir(asform("MINTTY_PWD: %s", getenv("MINTTY_PWD")));
     unsetenv("MINTTY_PWD");
   }
 
@@ -3879,8 +3960,10 @@ main(int argc, char *argv[])
       when '~':
         start_home = true;
         chdir(home);
+        trace_dir(asform("~: %s", home));
       when '': {
         int res = chdir(optarg);
+        trace_dir(asform("^D: %s", optarg));
         if (res == 0)
           setenv("PWD", optarg, true);  // avoid softlink resolution
         else {
@@ -3891,6 +3974,7 @@ main(int argc, char *argv[])
               char * dir = strdup(&optarg[1]);
               dir[strlen(dir) - 1] = '\0';
               res = chdir(dir);
+              trace_dir(asform("^D 2: %s", dir));
               if (res == 0)
                 setenv("PWD", optarg, true);  // avoid softlink resolution
               free(dir);
@@ -4729,6 +4813,11 @@ main(int argc, char *argv[])
 
   win_synctabs(4);
   update_tab_titles();
+
+#ifdef hook_keyboard
+  // Install keyboard hook.
+  hook_windows(WH_KEYBOARD_LL, hookprockbll, true);
+#endif
 
   // Message loop.
   for (;;) {

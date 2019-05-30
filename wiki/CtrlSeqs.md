@@ -119,6 +119,8 @@ and some control sequences to adjust the behaviour.
 | `^[[0 k`      | SCP (ECMA-48): default direction handling: autodetection with LTR fallback |
 | `^[[?2500h`   | enable box mirroring (*) |
 | `^[[?2500l`   | disable box mirroring (*) |
+| `^[[0 S`      | SPD (ECMA-48): LTR presentation direction |
+| `^[[3 S`      | SPD (ECMA-48): RTL presentation direction |
 
 Note: ECMA-48 bidi modes and private bidi modes are experimental.
 They follow the current status of the bidi mode model of the 
@@ -129,6 +131,8 @@ set of bidi-mirrored characters as specified by Unicode.
 These are the unsymmetric characters from ranges Box Drawing (U+2500-U+257F) 
 and Block Elements (U+2580-U+259F). Others may be added in future versions.
 
+Note: SPD is a deprecated fun feature.
+
 
 ## Mousewheel reporting ##
 
@@ -138,8 +142,15 @@ Mousewheel reporting only happens on the alternate screen, whereas on the primar
 
 | **sequence**  | **reporting** |
 |:--------------|:--------------|
+| `^[[?1007l`   | disabled      |
+| `^[[?1007h`   | enabled       |
 | `^[[?7786l`   | disabled      |
 | `^[[?7786h`   | enabled       |
+
+The xterm-style sequence mode (1007) is disabled by default but the mintty 
+feature (7786) is enabled by default. The mintty mode can be formatted 
+to private sequences (see below). To support these subtle differences, 
+both can be switched independently.
 
 By default, mousewheel events are reported as cursor key presses, which enables
 mousewheel scrolling in applications such as **[less](http://www.greenwoodsoftware.com/less)** without requiring any configuration. Alternatively, mousewheel reporting can be switched to _application mousewheel mode_, where the mousewheel sends its own separate keycodes that allow an application to treat the mousewheel differently from cursor keys:

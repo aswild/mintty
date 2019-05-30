@@ -25,8 +25,9 @@ enum {
   FONT_STRIKEOUT = 0x08,
   FONT_HIGH      = 0x10,
   FONT_ZOOMFULL  = 0x20,
-  FONT_WIDE      = 0x40,
-  FONT_NARROW    = 0x80,
+  FONT_ZOOMSMALL = 0x40,
+  FONT_WIDE      = 0x80,
+  FONT_NARROW    = 0x100,
   FONT_MAXNO     = FONT_WIDE + FONT_NARROW
 };
 
@@ -129,6 +130,8 @@ wchar
 win_linedraw_char(int i)
 {
   int findex = (term.curs.attr.attr & FONTFAM_MASK) >> ATTR_FONTFAM_SHIFT;
+  if (findex > 10)
+    findex = 0;
   struct fontfam * ff = &fontfamilies[findex];
   return ff->win_linedraw_chars[i];
 }
@@ -404,7 +407,12 @@ adjust_font_weights(struct fontfam * ff)
     return;
   }
   if (!data.ansi_found && !data.cs_found) {
-    show_font_warning(ff, _("Font has limited support for character ranges"));
+    string l;
+    if (!strcmp(cfg.charset, "CP437") || ((l = getlocenvcat("LC_CTYPE")) && strstr(l, "CP437"))) {
+      // accept limited range
+    }
+    else
+      show_font_warning(ff, _("Font has limited support for character ranges"));
   }
 
   // find available widths closest to selected widths
@@ -1120,8 +1128,9 @@ do_update(void)
   update_skipped++;
   int output_speed = lines_scrolled / (term.rows ?: cfg.rows);
   lines_scrolled = 0;
-  if (update_skipped < cfg.display_speedup && cfg.display_speedup < 10
-      && output_speed > update_skipped
+  if ((update_skipped < cfg.display_speedup && cfg.display_speedup < 10
+       && output_speed > update_skipped
+      ) || win_is_iconic()
      )
   {
     win_set_timer(do_update, update_timer);
@@ -1322,6 +1331,10 @@ another_font(struct fontfam * ff, int fontno)
   if (fontno & FONT_ZOOMFULL) {
     y = cell_height * (1 + !!(fontno & FONT_HIGH));
     x = cell_width * (1 + !!(fontno & FONT_WIDE));
+  }
+  if (fontno & FONT_ZOOMSMALL) {
+    y = y * 12 / 20;
+    x = x * 12 / 20;
   }
 
 #ifdef debug_create_font
@@ -2524,21 +2537,56 @@ apply_attr_colour(cattr a, attr_colour_mode mode)
  * coordinates, in given attributes.
  *
  * We are allowed to fiddle with the contents of `text'.
+   clearpad: flag to clear padding from overhang
+   phase: overlay line display (italic right-to-left overhang handling)
  */
 void
-win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, bool has_rtl)
+win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, bool has_rtl, bool clearpad, uchar phase)
 {
   //if (kb_trace) {printf("[%ld] <win_text\n", mtime()); kb_trace = 0;}
 
-  int graph = (attr.attr >> ATTR_GRAPH_SHIFT) & 0xFF;
+  int graph = (attr.attr & GRAPH_MASK) >> ATTR_GRAPH_SHIFT;
+  bool graph_vt52 = false;
   int findex = (attr.attr & FONTFAM_MASK) >> ATTR_FONTFAM_SHIFT;
+  // in order to save attributes bits, special graphic handling is encoded 
+  // in a compact form, combined with unused values of the font number;
+  // here we do some decoding and also recoding back to the previous format, 
+  // in order to avoid micro-refactoring in the code below, 
+  // where graphic encoding is interpreted bitwise in some cases;
+  // the font ranges used are:
+  //  <none> (graph part only): special for DEC Technical, VT52 fraction
+  //  11     VT100 Line Drawing, bit-wise encoded segments
+  //  12     VT100 scanlines 1...5
+  //  13     VT52 scanlines 1...8
+  //  14     Unicode Block Elements, part 1
+  //  15     Unicode Block Elements, part 2
+  if (findex > 10) {
+    if (findex == 12) // VT100 scanlines
+      graph <<= 4;
+    else if (findex == 13) { // VT52 scanlines
+      graph <<= 4;
+      graph_vt52 = true;
+    }
+    else if (findex >= 14)
+      graph |= 0x80 | ((findex & 1) << 4);
+
+    findex = 0;
+  }
+  else if (graph) {
+    if (graph == 0xF)
+      graph = 0xF7;
+    else if (graph == 0xE)
+      graph = 0xE0;
+    else
+      graph |= 0xE0;
+  }
   struct fontfam * ff = &fontfamilies[findex];
 
-  bool clearpad = lattr & LATTR_CLEARPAD;
   trace_line("win_text:");
 
-  bool ldisp1 = !!(lattr & LATTR_DISP1);
-  bool ldisp2 = !!(lattr & LATTR_DISP2);
+  bool ldisp1 = phase == 1;
+  bool ldisp2 = phase == 2;
+  bool lpresrtl = lattr & LATTR_PRESRTL;
   lattr &= LATTR_MODE;
 
   int char_width = cell_width * (1 + (lattr != LATTR_NORM));
@@ -2652,6 +2700,8 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     nfont |= FONT_STRIKEOUT;
   if (attr.attr & TATTR_ZOOMFULL)
     nfont |= FONT_ZOOMFULL;
+  if (attr.attr & (ATTR_SUBSCR | ATTR_SUPERSCR))
+    nfont |= FONT_ZOOMSMALL;
   another_font(ff, nfont);
 
   bool force_manual_underline = false;
@@ -2740,6 +2790,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
   }
 
   if (graph && graph < 0xE0) {
+    // clear codes for Block Elements, VT100 Line Drawing and "scanlines"
     for (int i = 0; i < len; i++)
       text[i] = ' ';
   }
@@ -2890,6 +2941,17 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
       underlaid = true;
   }
 
+ /* Coordinate transformation */
+  int coord_transformed = 0;
+  XFORM old_xform;
+  if (lpresrtl) {
+    coord_transformed = SetGraphicsMode(dc, GM_ADVANCED);
+    if (coord_transformed && GetWorldTransform(dc, &old_xform)) {
+      XFORM xform = (XFORM){-1.0, 0.0, 0.0, 1.0, term.cols * cell_width + 2 * PADDING, 0.0};
+      coord_transformed = SetWorldTransform(dc, &xform);
+    }
+  }
+
  /* Special underlay */
   if (do_special_underlay && !ldisp2) {
     xchar uc = 0x2312;
@@ -2931,6 +2993,26 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
 
     underlaid = true;
   }
+
+  if (attr.attr & (ATTR_SUBSCR | ATTR_SUPERSCR)) {
+    xt += cell_width * 3 / 10;
+    if (attr.attr & ATTR_SUBSCR)
+      yt += cell_height * 3 / 8;
+    else
+      yt += cell_height * 1 / 8;
+  }
+
+  int layer = 0;
+  colour fg0 = fg;
+  if (attr.attr & ATTR_SHADOW) {
+    layer = 1;
+    xt += line_width;
+    yt -= layer * line_width;
+    fg = ((fg & 0xFEFEFEFE) >> 1) + ((win_get_colour(BG_COLOUR_I) & 0xFEFEFEFE) >> 1);
+    SetTextColor(dc, fg);
+  }
+
+draw:
 
  /* Wavy underline */
   if (!ldisp2 && lattr != LATTR_TOP &&
@@ -3033,11 +3115,11 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
   if (ldisp1) {
     if (!underlaid)
       clear_run();
-    return;
+    goto _return;
   }
 
  /* DEC Tech adjustments */
-  if (graph >= 0xE0) {  // DEC Technical rendering to be fixed
+  if (graph >= 0xE0) {  // adjust rendering of DEC Technical and VT52 fraction
     if ((graph & ~1) == 0xE8)  // left square bracket corners
       xt += line_width + 1;
     else if ((graph & ~1) == 0xEA)  // right square bracket corners
@@ -3048,6 +3130,8 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     else if (graph == 0xE0)  // square root base: rather draw (partially)
       for (int i = 0; i < len; i++)
         text[i] = 0x2502;
+    else if (graph == 0xF7)  // VT52 fraction numerator
+      yt -= line_width;
   }
 
  /* Finally, draw the text */
@@ -3144,7 +3228,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
 #define DRAW_DOWN  0x4
 #endif
 
-  if (graph >= 0xE0) {  // DEC Technical characters to be fixed
+  if (graph >= 0xE0) {  // fix DEC Technical characters, draw VT52 fraction
     if (graph & 0x08) {
       // square bracket corners already repositioned above
     }
@@ -3183,6 +3267,12 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
           xl = xr;
           xr = xb;
         }
+      }
+      if (graph == 0xF7) {  // VT52 fraction numerator
+        yt = y + (cell_height - line_width) * 10 / 16;
+        yb = y + (cell_height - line_width) * 8 / 16;
+        xl = x + line_width - 1;
+        xr = xl + char_width - 1;
       }
       // adjustments with scaling pen:
       xl ++; xr ++;
@@ -3229,7 +3319,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
       DeleteObject(oldpen);
     }
   }
-  else if (graph >= 0x80) {  // Unicode Block Elements
+  else if (graph >= 0x80 && !graph_vt52) {  // Unicode Block Elements
     // Block Elements (U+2580-U+259F)
     // ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔▕▖▗▘▙▚▛▜▝▞▟
     int char_height = cell_height;
@@ -3365,9 +3455,10 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
       xi += char_width;
     }
   }
-  else if (graph >> 4) {  // VT100 horizontal lines ⎺⎻(─)⎼⎽
+  else if (graph >> 4) {  // VT100/VT52 horizontal "scanlines"
+    int parts = graph_vt52 ? 8 : 5;
     HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, 0, fg));
-    int yoff = (cell_height - line_width) * (graph >> 4) / 5;
+    int yoff = (cell_height - line_width) * (graph >> 4) / parts;
     if (lattr >= LATTR_TOP)
       yoff *= 2;
     if (lattr == LATTR_BOT)
@@ -3490,6 +3581,23 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     }
     DeleteObject(SelectObject(dc, oldpen));
   }
+
+  _return:
+
+  if (layer) {
+    layer--;
+    if (!layer) {
+      xt -= line_width;
+      fg = fg0;
+      SetTextColor(dc, fg);
+    }
+    yt += line_width;
+    underlaid = true;
+    goto draw;
+  }
+
+  if (coord_transformed)
+    SetWorldTransform(dc, &old_xform);
 }
 
 
@@ -3500,6 +3608,8 @@ void
 win_check_glyphs(wchar *wcs, uint num)
 {
   int findex = (term.curs.attr.attr & FONTFAM_MASK) >> ATTR_FONTFAM_SHIFT;
+  if (findex > 10)
+    findex = 0;
   struct fontfam * ff = &fontfamilies[findex];
 
   bool bold = (ff->bold_mode == BOLD_FONT) && (term.curs.attr.attr & ATTR_BOLD);
@@ -3545,6 +3655,8 @@ int
 win_char_width(xchar c)
 {
   int findex = (term.curs.attr.attr & FONTFAM_MASK) >> ATTR_FONTFAM_SHIFT;
+  if (findex > 10)
+    findex = 0;
   struct fontfam * ff = &fontfamilies[findex];
 
 #define measure_width

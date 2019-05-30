@@ -24,7 +24,7 @@ extern void win_update(bool update_sel_tip);
 extern void win_schedule_update(void);
 extern void do_update(void);
 
-extern void win_text(int x, int y, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, bool has_rtl);
+extern void win_text(int x, int y, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, bool has_rtl, bool clearpad, uchar phase);
 
 extern void win_update_mouse(void);
 extern void win_capture_mouse(void);
@@ -71,6 +71,7 @@ extern void win_open(wstring path, bool adjust_dir);
 extern void win_copy(const wchar *data, cattr *cattrs, int len);
 extern void win_copy_as(const wchar *data, cattr *cattrs, int len, char what);
 extern void win_paste(void);
+extern void win_paste_path(void);
 
 extern void win_set_timer(void_fn cb, uint ticks);
 

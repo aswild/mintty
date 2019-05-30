@@ -364,6 +364,14 @@ get_selpoint(const pos p)
 {
   pos sp = { .y = p.y + term.disptop, .x = p.x, .r = p.r };
   termline *line = fetch_line(sp.y);
+
+  // Adjust to presentational direction.
+  if (line->lattr & LATTR_PRESRTL) {
+    sp.x = term.cols - 1 - sp.x;
+    sp.r = !sp.r;
+  }
+
+  // Adjust to double-width line display.
   if ((line->lattr & LATTR_MODE) != LATTR_NORM)
     sp.x /= 2;
 
@@ -709,17 +717,20 @@ term_mouse_wheel(int delta, int lines_per_notch, mod_keys mods, pos p)
           return;
         term_scroll(0, -lines);
       }
-      else if (term.wheel_reporting) {
-        if (strstr(cfg.suppress_wheel, "scrollapp"))
+      else if (term.wheel_reporting || term.wheel_reporting_xterm) {
+        if (strstr(cfg.suppress_wheel, "scrollapp") && !term.wheel_reporting_xterm)
           return;
         // Send scroll distance as CSI a/b events
         bool up = lines > 0;
         lines = abs(lines);
         int pages = lines / lines_per_page;
         lines -= pages * lines_per_page;
-        if (term.app_wheel) {
+        if (term.app_wheel && !term.wheel_reporting_xterm) {
           send_keys(up ? "\e[1;2a" : "\e[1;2b", 6, pages);
           send_keys(up ? "\eOa" : "\eOb", 3, lines);
+        }
+        else if (term.vt52_mode) {
+          send_keys(up ? "\eA" : "\eB", 3, lines);
         }
         else {
           send_keys(up ? "\e[5~" : "\e[6~", 4, pages);

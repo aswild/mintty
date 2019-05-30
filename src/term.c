@@ -167,6 +167,28 @@ term_schedule_tblink2(void)
 /*
  * Likewise with cursor blinks.
  */
+int
+term_cursor_type(void)
+{
+  return term.cursor_type == -1 ? cfg.cursor_type : term.cursor_type;
+}
+
+static bool
+term_cursor_blinks(void)
+{
+  return term.cursor_blinkmode
+      || (term.cursor_blinks == -1 ? cfg.cursor_blinks : term.cursor_blinks);
+}
+
+void
+term_hide_cursor(void)
+{
+  if (term.cursor_on) {
+    term.cursor_on = false;
+    win_update(false);
+  }
+}
+
 static void
 cblink_cb(void)
 {
@@ -247,6 +269,7 @@ term_reset(bool full)
   }
 
   term.state = NORMAL;
+  term.vt52_mode = 0;
 
   // DECSTR attributes and cursor states to be reset
   term_cursor_reset(&term.curs);
@@ -261,15 +284,19 @@ term_reset(bool full)
   term.insert = false;
   term.marg_top = 0;
   term.marg_bot = term.rows - 1;
+  term.marg_left = 0;
+  term.marg_right = term.cols - 1;
+  term.lrmargmode = false;
   term.app_cursor_keys = false;
 
   if (full) {
     term.deccolm_allowed = cfg.enable_deccolm_init;  // not reset by xterm
     term.vt220_keys = vt220(cfg.term);  // not reset by xterm
     term.app_keypad = false;  // xterm only with RIS
-    term.app_wheel = false;
     term.app_control = 0;
     term.auto_repeat = cfg.auto_repeat;  // not supported by xterm
+    term.attr_rect = false;
+    term.deccolm_noclear = false;
   }
   term.modify_other_keys = 0;  // xterm resets this
 
@@ -280,6 +307,7 @@ term_reset(bool full)
       term.tabs[i] = (i % 8 == 0);
   }
   if (full) {
+    term.newtab = 1;  // set default tabs on resize
     term.rvideo = 0;  // not reset by xterm
     term.bell_taskbar = cfg.bell_taskbar;  // not reset by xterm
     term.bell_popup = cfg.bell_popup;  // not reset by xterm
@@ -294,7 +322,9 @@ term_reset(bool full)
     term.report_font_changed = 0;
     term.report_ambig_width = 0;
     term.shortcut_override = term.escape_sends_fs = term.app_escape_key = false;
+    term.wheel_reporting_xterm = false;
     term.wheel_reporting = true;
+    term.app_wheel = false;
     term.echoing = false;
     term.bracketed_paste = false;
     term.wide_indic = false;
@@ -831,6 +861,8 @@ term_resize(int newrows, int newcols)
 
   term.marg_top = 0;
   term.marg_bot = newrows - 1;
+  term.marg_left = 0;
+  term.marg_right = newcols - 1;
 
  /*
   * Resize the screen and scrollback. We only need to shift
@@ -949,7 +981,7 @@ term_resize(int newrows, int newcols)
   // Reset tab stops
   term.tabs = renewn(term.tabs, newcols);
   for (int i = (term.cols > 0 ? term.cols : 0); i < newcols; i++)
-    term.tabs[i] = (i % 8 == 0);
+    term.tabs[i] = term.newtab && (i % 8 == 0);
 
   // Check that the cursor positions are still valid.
   assert(0 <= curs->y && curs->y < newrows);
@@ -1034,6 +1066,8 @@ term_check_boundary(int x, int y)
   if (x == term.cols)
     line->lattr &= ~LATTR_WRAPPED2;
   else if (line->chars[x].chr == UCSWIDE) {
+    if (x == term.marg_right + 1)
+      line->lattr &= ~LATTR_WRAPPED2;
     clear_cc(line, x - 1);
     clear_cc(line, x);
     line->chars[x - 1].chr = ' ';
@@ -1121,6 +1155,11 @@ term_do_scroll(int topline, int botline, int lines, bool sb)
   if (term.hovering) {
     term.hovering = false;
     win_update(true);
+  }
+
+  if (term.lrmargmode) {
+    scroll_rect(topline, botline, lines);
+    return;
   }
 
 #ifdef use_display_scrolling
@@ -1276,7 +1315,7 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
   bool erasing_lines_from_top =
     start.y == 0 && start.x == 0 && end.x == 0 && !line_only && !selective;
 
-  if (erasing_lines_from_top) {
+  if (erasing_lines_from_top && !term.lrmargmode) {
    /* If it's a whole number of lines, starting at the top, and
     * we're fully erasing them, erase by scrolling and keep the
     * lines in the scrollback. */
@@ -1759,9 +1798,83 @@ term_paint(void)
   for (int i = 0; i < term.rows; i++) {
     pos scrpos;
     scrpos.y = i + term.disptop;
+    termline *line = fetch_line(scrpos.y);
+
+   /*
+    * Pre-loop: identify emojis and emoji sequences.
+    */
+    // Prevent nested emoji sequence matching from matching partial subseqs
+    int emoji_col = 0;  // column from which to match for emoji sequences
+    for (int j = 0; j < term.cols; j++) {
+      termchar *d = line->chars + j;
+      cattr tattr = d->attr;
+
+      if (j < term.cols - 1 && d[1].chr == UCSWIDE)
+        tattr.attr |= ATTR_WIDE;
+
+     /* Match emoji sequences
+      * and replace by emoji indicators
+      */
+      if (cfg.emojis && j >= emoji_col) {
+        struct emoji e;
+        if ((tattr.attr & TATTR_EMOJI) && !(tattr.attr & ATTR_FGMASK)) {
+          // previously marked subsequent emoji sequence component
+          e.len = 0;
+        }
+        else
+          e = match_emoji(d, term.cols - j);
+        if (e.len) {  // we have matched an emoji (sequence)
+          // avoid subsequent matching of a partial emoji subsequence
+          emoji_col = j + e.len;
+
+          // check whether emoji graphics exist for the emoji
+          bool ok = check_emoji(e);
+
+          // check whether all emoji components have the same attributes
+          bool equalattrs = true;
+          for (int i = 1; i < e.len && equalattrs; i++) {
+# define IGNATTR (ATTR_WIDE | ATTR_FGMASK | TATTR_COMBINING)
+            if ((d[i].attr.attr & ~IGNATTR) != (d->attr.attr & ~IGNATTR)
+               || d[i].attr.truebg != d->attr.truebg
+               )
+              equalattrs = false;
+          }
+#ifdef debug_emojis
+          printf("matched len %d seq %d idx %d ok %d atr %d\n", e.len, e.seq, e.idx, ok, equalattrs);
+#endif
+
+          // modify character data to trigger later emoji display
+          if (ok && equalattrs) {
+            d->attr.attr &= ~ATTR_FGMASK;
+            d->attr.attr |= TATTR_EMOJI | e.len;
+
+            //d->attr.truefg = (uint)e;
+            struct emoji * ee = &e;
+            uint em = *(uint *)ee;
+            d->attr.truefg = em;
+
+            // refresh cached copy to avoid display delay
+            if (tattr.attr & TATTR_SELECTED) {
+              tattr = d->attr;
+              // need to propagate this to enable emoji highlighting
+              tattr.attr |= TATTR_SELECTED;
+            }
+            else
+              tattr = d->attr;
+            // inhibit rendering of subsequent emoji sequence components
+            for (int i = 1; i < e.len; i++) {
+              d[i].attr.attr &= ~ATTR_FGMASK;
+              d[i].attr.attr |= TATTR_EMOJI;
+              d[i].attr.truefg = em;
+            }
+          }
+        }
+      }
+
+      d->attr = tattr;
+    }
 
    /* Do Arabic shaping and bidi. */
-    termline *line = fetch_line(scrpos.y);
     termchar *chars = term_bidi_line(line, i);
     int *backward = chars ? term.post_bidi_cache[i].backward : 0;
     int *forward = chars ? term.post_bidi_cache[i].forward : 0;
@@ -1770,9 +1883,6 @@ term_paint(void)
     termline *displine = term.displines[i];
     termchar *dispchars = displine->chars;
     termchar newchars[term.cols];
-
-    // Prevent nested emoji sequence matching from matching partial subseqs
-    int emoji_col = 0;  // column from which to match for emoji sequences
 
    /*
     * First loop: work along the line deciding what we want
@@ -1884,65 +1994,6 @@ term_paint(void)
         if (term.has_focus && term.tblinker2)
           tchar = ' ';
         tattr.attr &= ~ATTR_BLINK2;
-      }
-
-     /* Match emoji sequences
-      * and replace by emoji indicators
-      */
-      if (cfg.emojis && j >= emoji_col) {
-        struct emoji e;
-        if ((tattr.attr & TATTR_EMOJI) && !(tattr.attr & ATTR_FGMASK)) {
-          // previously marked subsequent emoji sequence component
-          e.len = 0;
-        }
-        else
-          e = match_emoji(d, term.cols - j);
-        if (e.len) {  // we have matched an emoji (sequence)
-          // avoid subsequent matching of a partial emoji subsequence
-          emoji_col = j + e.len;
-
-          // check whether emoji graphics exist for the emoji
-          bool ok = check_emoji(e);
-
-          // check whether all emoji components have the same attributes
-          bool equalattrs = true;
-          for (int i = 1; i < e.len && equalattrs; i++) {
-# define IGNATTR (ATTR_WIDE | ATTR_FGMASK | TATTR_COMBINING)
-            if ((d[i].attr.attr & ~IGNATTR) != (d->attr.attr & ~IGNATTR)
-               || d[i].attr.truebg != d->attr.truebg
-               )
-              equalattrs = false;
-          }
-#ifdef debug_emojis
-          printf("matched len %d seq %d idx %d ok %d atr %d\n", e.len, e.seq, e.idx, ok, equalattrs);
-#endif
-
-          // modify character data to trigger later emoji display
-          if (ok && equalattrs) {
-            d->attr.attr &= ~ATTR_FGMASK;
-            d->attr.attr |= TATTR_EMOJI | e.len;
-
-            //d->attr.truefg = (uint)e;
-            struct emoji * ee = &e;
-            uint em = *(uint *)ee;
-            d->attr.truefg = em;
-
-            // refresh cached copy to avoid display delay
-            if (tattr.attr & TATTR_SELECTED) {
-              tattr = d->attr;
-              // need to propagate this to enable emoji highlighting
-              tattr.attr |= TATTR_SELECTED;
-            }
-            else
-              tattr = d->attr;
-            // inhibit rendering of subsequent emoji sequence components
-            for (int i = 1; i < e.len; i++) {
-              d[i].attr.attr &= ~ATTR_FGMASK;
-              d[i].attr.attr |= TATTR_EMOJI;
-              d[i].attr.truefg = em;
-            }
-          }
-        }
       }
 
      /* Mark box drawing, block and some other characters 
@@ -2100,11 +2151,11 @@ term_paint(void)
     }
     if (prevdirtyitalic) {
       // clear overhang into right padding border
-      win_text(term.cols, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr | LATTR_CLEARPAD, false);
+      win_text(term.cols, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr, false, true, 0);
     }
     if (firstdirtyitalic) {
       // clear overhang into left padding border
-      win_text(-1, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr | LATTR_CLEARPAD, false);
+      win_text(-1, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr, false, true, 0);
     }
 
 #define dont_debug_bidi_paragraphs
@@ -2123,14 +2174,14 @@ term_paint(void)
       diag += 'A' - '0' - 10;
     if (line->lattr & (LATTR_WRAPPED | LATTR_WRAPCONTD)) {
       if ((line->lattr & (LATTR_WRAPPED | LATTR_WRAPCONTD)) == (LATTR_WRAPPED | LATTR_WRAPCONTD))
-        win_text(-1, i, &diag, 1, CATTR_CONTWRAPD, (cattr*)&CATTR_CONTWRAPD, line->lattr | LATTR_CLEARPAD, false);
+        win_text(-1, i, &diag, 1, CATTR_CONTWRAPD, (cattr*)&CATTR_CONTWRAPD, line->lattr, false, true, 0);
       else if (line->lattr & LATTR_WRAPPED)
-        win_text(-1, i, &diag, 1, CATTR_WRAPPED, (cattr*)&CATTR_WRAPPED, line->lattr | LATTR_CLEARPAD, false);
+        win_text(-1, i, &diag, 1, CATTR_WRAPPED, (cattr*)&CATTR_WRAPPED, line->lattr, false, true, 0);
       else
-        win_text(-1, i, &diag, 1, CATTR_CONTD, (cattr*)&CATTR_CONTD, line->lattr | LATTR_CLEARPAD, false);
+        win_text(-1, i, &diag, 1, CATTR_CONTD, (cattr*)&CATTR_CONTD, line->lattr, false, true, 0);
     }
     else if (displine->lattr & (LATTR_WRAPPED | LATTR_WRAPCONTD))
-      win_text(-1, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr | LATTR_CLEARPAD, false);
+      win_text(-1, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr, false, true, 0);
 #endif
 
    /*
@@ -2172,7 +2223,7 @@ term_paint(void)
     void flush_text()
     {
       if (ovl_len) {
-        win_text(ovl_x, ovl_y, ovl_text, ovl_len, ovl_attr, ovl_textattr, ovl_lattr | LATTR_DISP2, ovl_has_rtl);
+        win_text(ovl_x, ovl_y, ovl_text, ovl_len, ovl_attr, ovl_textattr, ovl_lattr, ovl_has_rtl, false, 2);
         ovl_len = 0;
       }
     }
@@ -2227,14 +2278,14 @@ term_paint(void)
               eattr.attr &= ~ATTR_REVERSE;
             }
 
-            win_text(x, y, esp, elen, eattr, textattr, lattr | LATTR_DISP1, has_rtl);
+            win_text(x, y, esp, elen, eattr, textattr, lattr, has_rtl, false, 1);
             flush_text();
           }
 #ifdef debug_emojis
           eattr.attr &= ~(ATTR_BGMASK | ATTR_FGMASK);
           eattr.attr |= 6 << ATTR_BGSHIFT | 4;
           esp[0] = '0' + elen;
-          win_text(x, y, esp, elen, eattr, textattr, lattr | LATTR_DISP2, has_rtl);
+          win_text(x, y, esp, elen, eattr, textattr, lattr, has_rtl, false, 2);
 #endif
           if (cfg.emoji_placement == EMPL_FULL && !overlaying)
             do_overlay = true;  // display in overlaying loop
@@ -2249,7 +2300,7 @@ term_paint(void)
           eattr.attr &= ~(ATTR_BGMASK | ATTR_FGMASK);
           eattr.attr |= 4 << ATTR_BGSHIFT | 6;
           esp[0] = '0';
-          win_text(x, y, esp, 1, eattr, textattr, lattr | LATTR_DISP2, has_rtl);
+          win_text(x, y, esp, 1, eattr, textattr, lattr, has_rtl, false, 2);
         }
 #endif
       }
@@ -2257,7 +2308,7 @@ term_paint(void)
         return;
       }
       else if (attr.attr & (ATTR_ITALIC | TATTR_COMBDOUBL)) {
-        win_text(x, y, text, len, attr, textattr, lattr | LATTR_DISP1, has_rtl);
+        win_text(x, y, text, len, attr, textattr, lattr, has_rtl, false, 1);
         flush_text();
         ovl_x = x;
         ovl_y = y;
@@ -2269,7 +2320,7 @@ term_paint(void)
         ovl_has_rtl = has_rtl;
       }
       else {
-        win_text(x, y, text, len, attr, textattr, lattr, has_rtl);
+        win_text(x, y, text, len, attr, textattr, lattr, has_rtl, false, 0);
         flush_text();
       }
     }
@@ -2592,23 +2643,3 @@ term_update_cs(void)
   );
 }
 
-int
-term_cursor_type(void)
-{
-  return term.cursor_type == -1 ? cfg.cursor_type : term.cursor_type;
-}
-
-bool
-term_cursor_blinks(void)
-{
-  return term.cursor_blinks == -1 ? cfg.cursor_blinks : term.cursor_blinks;
-}
-
-void
-term_hide_cursor(void)
-{
-  if (term.cursor_on) {
-    term.cursor_on = false;
-    win_update(false);
-  }
-}
