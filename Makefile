@@ -21,20 +21,18 @@
 NAME := mintty
 
 exe:
-	#cd src; $(MAKE) exe
-	#cd src; $(MAKE) bin
-	cd src; $(MAKE)
+	$(MAKE) -C src
 
 zip:
-	cd src; $(MAKE) zip
+	$(MAKE) -C src zip
 
 html: docs/$(NAME).1.html
 
 pdf:
-	cd src; $(MAKE) pdf
+	$(MAKE) -C src pdf
 
 clean:
-	cd src; $(MAKE) clean
+	$(MAKE) -C src clean
 
 version := \
   $(shell echo $(shell echo VERSION | cpp -P $(CPPFLAGS) --include src/appinfo.h))
@@ -64,7 +62,7 @@ arch_files += wiki/*
 generated := docs/$(NAME).1.html
 
 docs/$(NAME).1.html: docs/$(NAME).1
-	cd src; $(MAKE) html
+	$(MAKE) -C src html
 	cp docs/$(NAME).1.html mintty.github.io/
 
 src := $(DIST)/$(name_ver).tar.gz
@@ -88,10 +86,10 @@ $(DIST):
 	mkdir $(DIST)
 
 check:
-	cd src; $(MAKE) check
+	$(MAKE) -C src check
 
 _:
-	cd src; $(MAKE) _
+	$(MAKE) -C src _
 
 binpkg:
 	cp cygwin/mintty.cygport $(DIST)/$(cygport)
