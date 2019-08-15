@@ -31,6 +31,7 @@ char * mintty_debug;
 
 #include <mmsystem.h>  // PlaySound for MSys
 #include <shellapi.h>
+#include <windowsx.h>  // GET_X_LPARAM, GET_Y_LPARAM
 
 #ifdef __CYGWIN__
 #include <sys/cygwin.h>  // cygwin_internal
@@ -569,6 +570,46 @@ win_sys_style(bool focus)
 #else
 (void)focus;
 #endif
+}
+
+
+/*
+   Application scrollbar.
+ */
+static int scroll_len = 0;
+static int scroll_dif = 0;
+
+void
+win_set_scrollview(int pos, int len, int height)
+{
+  bool prev = term.app_scrollbar;
+  term.app_scrollbar = pos;
+
+  if (term.app_scrollbar != prev)
+    win_update_scrollbar(false);
+
+  if (pos) {
+    if (len)
+      scroll_len = len;
+    else
+      len = scroll_len;
+    if (height >= 0)
+      scroll_dif = term.rows - height;
+    else if (!prev)
+      scroll_dif = 0;
+    SetScrollInfo(
+      wnd, SB_VERT,
+      &(SCROLLINFO){
+        .cbSize = sizeof(SCROLLINFO),
+        .fMask = SIF_ALL | SIF_DISABLENOSCROLL,
+        .nMin = 1,
+        .nMax = len,
+        .nPage = term.rows - scroll_dif,
+        .nPos = pos,
+      },
+      true  // redraw
+    );
+  }
 }
 
 
@@ -1244,20 +1285,37 @@ win_get_scrpos(int *xp, int *yp, bool with_borders)
   }
 }
 
+static int
+win_has_scrollbar(void)
+{
+  LONG style = GetWindowLong(wnd, GWL_STYLE);
+  if (style & WS_VSCROLL) {
+    LONG exstyle = GetWindowLong(wnd, GWL_EXSTYLE);
+    if (exstyle & WS_EX_LEFTSCROLLBAR)
+      return -1;
+    else
+      return 1;
+  }
+  else
+    return 0;
+}
+
 void
 win_get_pixels(int *height_p, int *width_p, bool with_borders)
 {
   RECT r;
   GetWindowRect(wnd, &r);
+  //printf("win_get_pixels: width %d win_has_scrollbar %d\n", r.right - r.left, win_has_scrollbar());
   if (with_borders) {
     *height_p = r.bottom - r.top;
-    *width_p = r.right - r.left
-             + (cfg.scrollbar ? GetSystemMetrics(SM_CXVSCROLL) : 0);
+    *width_p = r.right - r.left;
   }
   else {
     int sy = win_search_visible() ? SEARCHBAR_HEIGHT : 0;
     *height_p = r.bottom - r.top - extra_height - 2 * PADDING - sy;
-    *width_p = r.right - r.left - extra_width - 2 * PADDING;
+    *width_p = r.right - r.left - extra_width - 2 * PADDING
+             //- (cfg.scrollbar ? GetSystemMetrics(SM_CXVSCROLL) : 0);
+             - (win_has_scrollbar() ? GetSystemMetrics(SM_CXVSCROLL) : 0);
   }
 }
 
@@ -1619,7 +1677,7 @@ win_bell(config * conf)
 
   if (cfg.bell_flash_style & FLASH_FRAME)
     flash_border();
-  if (term.bell_taskbar && !term.has_focus)
+  if (term.bell_taskbar && (!term.has_focus || win_is_iconic()))
     flash_taskbar(true);
   if (term.bell_popup)
     win_set_zorder(true);
@@ -1699,7 +1757,7 @@ win_adjust_borders(int t_width, int t_height)
   printf("win_adjust_borders w/h %d %d\n", width, height);
 #endif
 
-  if (cfg.scrollbar)
+  if (term.app_scrollbar || cfg.scrollbar)
     width += GetSystemMetrics(SM_CXVSCROLL);
 
   extra_width = width - (cr.right - cr.left);
@@ -1906,10 +1964,14 @@ void
 win_update_scrollbar(bool inner)
 {
   // enforce outer scrollbar if switched on
-  int scrollbar = term.show_scrollbar ? (cfg.scrollbar || !inner) : 0;
+  int scrollbar = term.show_scrollbar ? (cfg.scrollbar ?: !inner) : 0;
   // keep config consistent with enforced scrollbar
   if (scrollbar && !cfg.scrollbar)
     cfg.scrollbar = 1;
+  if (term.app_scrollbar && !scrollbar) {
+    //printf("enforce application scrollbar %d->%d->%d\n", scrollbar, cfg.scrollbar, cfg.scrollbar ?: 1);
+    scrollbar = cfg.scrollbar ?: 1;
+  }
 
   LONG style = GetWindowLong(wnd, GWL_STYLE);
   SetWindowLong(wnd, GWL_STYLE,
@@ -2477,29 +2539,88 @@ static struct {
 
     when WM_VSCROLL:
       //printf("WM_VSCROLL %d\n", LOWORD(wp));
-      switch (LOWORD(wp)) {
-        when SB_LINEUP:   term_scroll(0, -1);
-        when SB_LINEDOWN: term_scroll(0, +1);
-        when SB_PAGEUP:   term_scroll(0, -max(1, term.rows - 1));
-        when SB_PAGEDOWN: term_scroll(0, +max(1, term.rows - 1));
-        when SB_THUMBPOSITION or SB_THUMBTRACK: {
-          SCROLLINFO info;
-          info.cbSize = sizeof(SCROLLINFO);
-          info.fMask = SIF_TRACKPOS;
-          GetScrollInfo(wnd, SB_VERT, &info);
-          term_scroll(1, info.nTrackPos);
+      if (!term.app_scrollbar)
+        switch (LOWORD(wp)) {
+          when SB_LINEUP:   term_scroll(0, -1);
+          when SB_LINEDOWN: term_scroll(0, +1);
+          when SB_PAGEUP:   term_scroll(0, -max(1, term.rows - 1));
+          when SB_PAGEDOWN: term_scroll(0, +max(1, term.rows - 1));
+          when SB_THUMBPOSITION or SB_THUMBTRACK: {
+            SCROLLINFO info;
+            info.cbSize = sizeof(SCROLLINFO);
+            info.fMask = SIF_TRACKPOS;
+            GetScrollInfo(wnd, SB_VERT, &info);
+            term_scroll(1, info.nTrackPos);
+          }
+          when SB_TOP:      term_scroll(+1, 0);
+          when SB_BOTTOM:   term_scroll(-1, 0);
+          //when SB_ENDSCROLL: ;
+          // these two may be used by mintty keyboard shortcuts (not by Windows)
+          when SB_PRIOR:    term_scroll(SB_PRIOR, 0);
+          when SB_NEXT:     term_scroll(SB_NEXT, 0);
         }
-        when SB_TOP:      term_scroll(+1, 0);
-        when SB_BOTTOM:   term_scroll(-1, 0);
-        //when SB_ENDSCROLL: ;
-        // these two may be used by mintty keyboard shortcuts (not by Windows)
-        when SB_PRIOR:    term_scroll(SB_PRIOR, 0);
-        when SB_NEXT:     term_scroll(SB_NEXT, 0);
+      else
+        switch (LOWORD(wp)) {
+          when SB_LINEUP:
+            //win_key_down(VK_UP, 1);
+            win_csi_seq("65", "#e");
+          when SB_LINEDOWN:
+            //win_key_down(VK_DOWN, 1);
+            win_csi_seq("66", "#e");
+          when SB_PAGEUP:
+            //win_key_down(VK_PRIOR, 1);
+            win_csi_seq("5", "#e");
+          when SB_PAGEDOWN:
+            //win_key_down(VK_NEXT, 1);
+            win_csi_seq("6", "#e");
+          when SB_TOP:
+            child_printf("\e[0#d");
+          when SB_BOTTOM:
+            child_printf("\e[%u#d", scroll_len);
+          when SB_THUMBPOSITION or SB_THUMBTRACK: {
+            SCROLLINFO info;
+            info.cbSize = sizeof(SCROLLINFO);
+            info.fMask = SIF_TRACKPOS;
+            GetScrollInfo(wnd, SB_VERT, &info);
+            child_printf("\e[%u#d", info.nTrackPos);
+          }
+        }
+
+    when WM_MOUSEWHEEL: {
+      // check whether in client area (terminal pane) or over scrollbar...
+      POINT wpos = {.x = GET_X_LPARAM(lp), .y = GET_Y_LPARAM(lp)};
+      ScreenToClient(wnd, &wpos);
+      int height, width;
+      win_get_pixels(&height, &width, false);
+      height += 2 * PADDING;
+      width += 2 * PADDING;
+      int delta = GET_WHEEL_DELTA_WPARAM(wp);  // positive means up
+      //printf("%d %d %d %d %d\n", wpos.y, wpos.x, height, width, delta);
+      if (wpos.y >= 0 && wpos.y < height) {
+        if (wpos.x >= 0 && wpos.x < width)
+          win_mouse_wheel(wp, lp);
+        else {
+          int hsb = win_has_scrollbar();
+          if (hsb && term.app_scrollbar) {
+            int wsb = GetSystemMetrics(SM_CXVSCROLL);
+            if ((hsb > 0 && wpos.x >= width && wpos.x < width + wsb)
+             || (hsb < 0 && wpos.x < 0 && wpos.x >= - wsb)
+               )
+            {
+              if (delta > 0) // mouse wheel up
+                //win_key_down(VK_UP, 1);
+                win_csi_seq("65", "#e");
+              else // mouse wheel down
+                //win_key_down(VK_DOWN, 1);
+                win_csi_seq("66", "#e");
+            }
+          }
+        }
       }
+    }
 
     when WM_MOUSEMOVE: win_mouse_move(false, lp);
     when WM_NCMOUSEMOVE: win_mouse_move(true, lp);
-    when WM_MOUSEWHEEL: win_mouse_wheel(wp, lp);
     when WM_LBUTTONDOWN: win_mouse_click(MBT_LEFT, lp);
     when WM_RBUTTONDOWN: win_mouse_click(MBT_RIGHT, lp);
     when WM_MBUTTONDOWN: win_mouse_click(MBT_MIDDLE, lp);
@@ -2969,6 +3090,19 @@ hook_windows(int id, HOOKPROC hookproc, bool global)
 }
 
 #endif
+
+bool
+win_get_ime(void)
+{
+  return ImmGetOpenStatus(imc);
+}
+
+void
+win_set_ime(bool open)
+{
+  ImmSetOpenStatus(imc, open);
+  win_set_ime_open(open);
+}
 
 
 void

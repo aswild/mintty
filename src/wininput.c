@@ -9,7 +9,7 @@
 #include "child.h"
 
 #include <math.h>
-#include <windowsx.h>
+#include <windowsx.h>  // GET_X_LPARAM, GET_Y_LPARAM
 #include <winnls.h>
 #include <termios.h>
 
@@ -1976,7 +1976,8 @@ win_key_down(WPARAM wp, LPARAM lp)
         win_bell(&cfg);
     }
     //if (scroll) {
-    //  SendMessage(wnd, WM_VSCROLL, scroll, 0);
+    //  if (!term.app_scrollbar)
+    //    SendMessage(wnd, WM_VSCROLL, scroll, 0);
     //  sel_adjust = true;
     //}
     if (sel_adjust) {
@@ -2231,7 +2232,8 @@ win_key_down(WPARAM wp, LPARAM lp)
             return true;
           otherwise: goto not_scroll;
         }
-        SendMessage(wnd, WM_VSCROLL, scroll, 0);
+        if (!term.app_scrollbar) // prevent recursion
+          SendMessage(wnd, WM_VSCROLL, scroll, 0);
         return true;
         not_scroll:;
       }
@@ -2867,6 +2869,21 @@ static struct {
     comp_state = COMP_ACTIVE;
 
   return true;
+}
+
+void
+win_csi_seq(char * pre, char * suf)
+{
+  mod_keys mods = get_mods();
+  inline bool is_key_down(uchar vk) { return GetKeyState(vk) & 0x80; }
+  bool super = super_key && is_key_down(super_key);
+  bool hyper = hyper_key && is_key_down(hyper_key);
+  mods |= super * MDK_SUPER | hyper * MDK_HYPER;
+
+  if (mods)
+    child_printf("\e[%s;%u%s", pre, mods + 1, suf);
+  else
+    child_printf("\e[%s%s", pre, suf);
 }
 
 bool

@@ -1,3 +1,59 @@
+### 3.0.2 (13 July 2019) ###
+
+Terminal features
+  * Application scrollbar (experimental).
+  * Control sequence to switch IME status (#888, Tera Term).
+  * ECMA-48 SL/SR shift columns left/right (xterm).
+  * Fixed overstrike in leftmost column.
+  * Inhibiting double width/height lines in left/right margin mode.
+  * Primary DA indicate Horizontal Scrolling and Rectangular Editing.
+  * Secondary Device Attributes report Unicode version with option Charwidth.
+  * Report DECRQSS DECSCL conformance level as VT500 (7-bit controls).
+
+Terminal controls verified and tweaked as suggested by esctest suite
+  * Rectangular checksum DECRQCRA, supporting esctest suite.
+  * Fixed BS and CR "border" cases.
+  * Fixed DCH/ICH/IRM outside left/right margins.
+  * Fixed DL/IL to move cursor to left margin.
+  * Reverse wrap from home position moves to lower right margin (xterm).
+  * Auto-wrap modes are no more affected by cursor save/restore.
+  * NRC enabled mode is no more affected by cursor save/restore.
+  * Fixed left/right margin mode to inhibit double width lines.
+  * Fixed TAB to stop at right margin.
+  * Ensure restored cursor to be within margins in origin mode.
+  * Set/Reset origin mode moves cursor home.
+  * Confining DL, IL, DECDC, DECIC within margins.
+  * Confining LF, IND, VT, NEL, FF within margins.
+  * Fixed DECSED 3 not to clear current position; guard CSI [?] n J/K.
+  * Proper default values for rectangular operations.
+  * Full reset (RIS) moves cursor home.
+  * Soft reset (DECSTR) does not disable left/right margin mode.
+  * Cursor backward (CUB) applies reverse-wraparound.
+
+Font rendering
+  * Script-specific secondary font choice (#580, #821, #883).
+  * Reenabled DPI scaling in Windows 7 (#890).
+  * Check functions (width, glyph) consult proper attributes and font.
+  * Tweaked check for automatic narrowing to fit in cell width.
+  * Fixed shadow attribute artefacts.
+  * Fixed DEC Tech up/down arrows by manual drawing.
+
+Sixel graphics
+  * Tweaked sixel handling to avoid crash condition.
+  * Reintroduced fixed Sixel colour registers handling (#593).
+
+Window handling
+  * Reenable left scrollbar.
+  * Application scrollbar (experimental).
+  * Always flash taskbar on bell if iconic, if configured (#887, #607).
+
+Other
+  * Reduced global HTML formatting on Copy as HTML text (#889).
+
+Configuration
+  * Option Baud to simulate serial connection speed for a legacy feeling.
+  * Option FontChoice for script-specific secondary fonts (#580, #821, #883).
+
 ### 3.0.1 (28 May 2019) ###
 
 Highlights

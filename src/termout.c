@@ -4,7 +4,7 @@
 // Licensed under the terms of the GNU General Public License v3 or later.
 
 #include "termpriv.h"
-#include "winpriv.h"  // win_get_font, win_change_font, win_led
+#include "winpriv.h"  // win_get_font, win_change_font, win_led, win_set_scrollview
 
 #include "win.h"
 #include "appinfo.h"
@@ -14,6 +14,7 @@
 #include "sixel.h"
 #include "winimg.h"
 #include "base64.h"
+#include "unicodever.t"
 
 #include <termios.h>
 
@@ -30,8 +31,21 @@
 static string primary_da1 = "\e[?1;2c";
 static string primary_da2 = "\e[?62;1;2;4;6;9;15;22;29c";
 static string primary_da3 = "\e[?63;1;2;4;6;9;15;22;29c";
-static string primary_da4 = "\e[?64;1;2;4;6;9;15;22;29c";
-static string primary_da5 = "\e[?65;1;2;4;6;9;15;22;29c";
+static string primary_da4 = "\e[?64;1;2;4;6;9;15;21;22;28;29c";
+static string primary_da5 = "\e[?65;1;2;4;6;9;15;21;22;28;29c";
+/* Registered Extensions to the Character Cell Display Service Class
+	1	132 Column Display
+	2	Printer Port
+	3	ReGIS Display
+	4	Sixels Display
+	6	Selectively Erasable Characters
+	9	National Replacement Character Sets
+	15	Technical Character Set
+	21	Horizontal Scrolling
+	22	Color Text
+	28	Rectangular Editing
+	29	Text Locator
+*/
 
 
 static bool
@@ -125,11 +139,23 @@ restore_cursor(void)
   if (curs->y >= term.rows)
     curs->y = term.rows - 1;
 
+ /* In origin mode, make sure the cursor position is within margins */
+  if (curs->origin) {
+    if (curs->x < term.marg_left)
+      curs->x = term.marg_left;
+    else if (curs->x > term.marg_right)
+      curs->x = term.marg_right;
+    if (curs->y < term.marg_top)
+      curs->y = term.marg_top;
+    else if (curs->y > term.marg_bot)
+      curs->y = term.marg_bot;
+  }
+
  /*
   * wrapnext might reset to False 
   * if the x position is no longer at the rightmost edge.
   */
-  if (curs->wrapnext && curs->x < term.cols - 1)
+  if (curs->wrapnext && curs->x < term.cols - 1 && curs->x != term.marg_right)
     curs->wrapnext = false;
 
   term_update_cs();
@@ -142,6 +168,9 @@ restore_cursor(void)
 static void
 insert_char(int n)
 {
+  if (term.curs.x < term.marg_left || term.curs.x > term.marg_right)
+    return;
+
   bool del = n < 0;
   int m;
   term_cursor *curs = &term.curs;
@@ -366,6 +395,8 @@ scroll_rect(int topline, int botline, int lines)
 //	scroll		copy		clear
 //	4	-2	4	6	4
 //	20		18		5
+    if (topline - lines > term.marg_bot + 1)
+      lines = topline - term.marg_bot - 1;
     y0 = topline;
     y1 = botline + lines;
     y2 = topline - lines;
@@ -376,6 +407,8 @@ scroll_rect(int topline, int botline, int lines)
 //	scroll		copy		clear
 //	4	+2	6	4	19
 //	20		20		20
+    if (topline + lines > term.marg_bot + 1)
+      lines = term.marg_bot + 1 - topline;
     y0 = topline + lines;
     y1 = botline;
     y2 = topline;
@@ -386,6 +419,7 @@ scroll_rect(int topline, int botline, int lines)
   int xl = term.marg_left + 1;
   int xr = term.marg_right + 1;
   if (term.curs.origin) {
+    // compensate for the originmode applied in the functions called below
     xl = 1;
     xr = term.marg_right - term.marg_left + 1;
     y0 -= term.marg_top;
@@ -401,6 +435,7 @@ scroll_rect(int topline, int botline, int lines)
 static void
 insdel_column(int col, bool del, int n)
 {
+  //printf("insdel_column @%d %d marg %d..%d\n", col, n, term.marg_left, term.marg_right);
   int x0, x1, x2, e0, e1;
   if (del) {
     x0 = col + n;
@@ -408,8 +443,14 @@ insdel_column(int col, bool del, int n)
     x2 = col;
     e0 = term.marg_right - n + 1;
     e1 = term.marg_right;
+    if (x0 > term.marg_right) {
+      x0 = term.marg_right;
+      e0 = col;
+    }
   }
   else {
+    if (col + n > term.marg_right + 1)
+      n = term.marg_right + 1 - col;
     x0 = col;
     x1 = term.marg_right - n;
     x2 = col + n;
@@ -420,6 +461,7 @@ insdel_column(int col, bool del, int n)
   int yt = term.marg_top + 1;
   int yb = term.marg_bot + 1;
   if (term.curs.origin) {
+    // compensate for the originmode applied in the functions called below
     yt = 1;
     yb = term.marg_bot - term.marg_top + 1;
     x0 -= term.marg_left;
@@ -430,6 +472,58 @@ insdel_column(int col, bool del, int n)
   }
   copy_rect(yt, x0, yb, x1, yt, x2);
   fill_rect(' ', term.curs.attr, false, yt, e0, yb, e1);
+}
+
+static uint
+sum_rect(short y0, short x0, short y1, short x1)
+{
+  //printf("sum_rect %d,%d..%d,%d\n", y0, x0, y1, x1);
+
+  y0--; x0--; y1--; x1--;
+
+  if (term.curs.origin) {
+    y0 += term.marg_top;
+    x0 += term.marg_left;
+    y1 += term.marg_top;
+    x1 += term.marg_left;
+  }
+  if (y0 < 0)
+    y0 = 0;
+  if (x0 < 0)
+    x0 = 0;
+  if (y1 >= term.rows)
+    y1 = term.rows - 1;
+  if (x1 >= term.cols)
+    x1 = term.cols - 1;
+  //printf("%d,%d..%d,%d\n", y0, x0, y1, x1);
+
+  uint sum = 0;
+  for (int y = y0; y <= y1; y++) {
+    termline * line = term.lines[y];
+    for (int x = x0; x <= x1; x++) {
+      //printf("add %d:%d\n", y, x);
+      if (line->chars[x].chr == UCSWIDE) {
+      }
+      else {
+        sum += line->chars[x].chr;  // xterm default would mask & 0xFF
+        cattrflags attr = line->chars[x].attr.attr;
+        if (attr & ATTR_UNDER)
+          sum += 0x10;
+        else if (attr & ATTR_REVERSE)
+          sum += 0x20;
+        else if (attr & ATTR_BLINK)
+          sum += 0x40;
+        else if (attr & ATTR_BOLD)
+          sum += 0x80;
+        int xc = x;
+        while (line->chars[xc].cc_next) {
+          xc += line->chars[xc].cc_next;
+          sum += line->chars[xc].chr & 0xFF;
+        }
+      }
+    }
+  }
+  return sum;
 }
 
 
@@ -445,20 +539,26 @@ static void
 write_backspace(void)
 {
   term_cursor *curs = &term.curs;
-  int term_top = curs-> origin ? term.marg_top : 0;
-  if (curs->x == 0 && (curs->y == term_top || !curs->autowrap
-                       || (!cfg.old_wrapmodes && !curs->rev_wrap)))
+  if (curs->x == term.marg_left && curs->y == term.marg_top
+      && term.rev_wrap && !cfg.old_wrapmodes
+     )
+  {
+    curs->y = term.marg_bot;
+    curs->x = term.marg_right;
+  }
+  else if (curs->x == 0 && (curs->y == term.marg_top || !term.autowrap
+                       || (!cfg.old_wrapmodes && !term.rev_wrap)))
     /* skip */;
-  else if (curs->x == term.marg_left && curs->y > term_top) {
+  else if (curs->x == term.marg_left && curs->y > term.marg_top) {
     curs->y--;
     curs->x = term.marg_right;
   }
   else if (curs->wrapnext) {
     curs->wrapnext = false;
-    if (!curs->rev_wrap && !cfg.old_wrapmodes)
+    if (!term.rev_wrap && !cfg.old_wrapmodes)
       curs->x--;
   }
-  else
+  else if (curs->x > 0 && curs->x != term.marg_left)
     curs->x--;
 }
 
@@ -467,9 +567,11 @@ write_tab(void)
 {
   term_cursor *curs = &term.curs;
 
-  do
+  do {
+    if (curs->x == term.marg_right)
+      break;
     curs->x++;
-  while (curs->x < term.cols - 1 && !term.tabs[curs->x]);
+  } while (curs->x < term.cols - 1 && !term.tabs[curs->x]);
 
   if ((term.lines[curs->y]->lattr & LATTR_MODE) != LATTR_NORM) {
     if (curs->x >= term.cols / 2)
@@ -484,14 +586,20 @@ write_tab(void)
 static void
 write_return(void)
 {
-  term.curs.x = term.marg_left;
   term.curs.wrapnext = false;
+  if (term.curs.x < term.marg_left)
+    term.curs.x = 0;
+  else
+    term.curs.x = term.marg_left;
 }
 
 static void
 write_linefeed(void)
 {
   term_cursor *curs = &term.curs;
+  if (curs->x < term.marg_left || curs->x > term.marg_right)
+    return;
+
   clear_wrapcontd(term.lines[curs->y], curs->y);
   if (curs->y == term.marg_bot)
     term_do_scroll(term.marg_top, term.marg_bot, 1, true);
@@ -589,6 +697,11 @@ write_char(wchar c, int width)
     clear_cc(line, curs->x);
     line->chars[curs->x].chr = c;
     line->chars[curs->x].attr = curs->attr;
+#ifdef insufficient_approach
+#warning this does not help when scrolling via rectangular copy
+    if (term.lrmargmode)
+      line->lattr &= ~LATTR_MODE;
+#endif
     if (!(line->lattr & LATTR_WRAPCONTD))
       line->lattr = (line->lattr & ~LATTR_BIDIMASK) | curs->bidimode;
     //TODO: if changed, propagate mode onto paragraph
@@ -596,7 +709,7 @@ write_char(wchar c, int width)
       term_invalidate(0, curs->y, curs->x, curs->y);
   }
 
-  if (curs->wrapnext && curs->autowrap && width > 0) {
+  if (curs->wrapnext && term.autowrap && width > 0) {
     line->lattr |= LATTR_WRAPPED;
     line->wrappos = curs->x;
     ushort parabidi = getparabidi(line);
@@ -614,6 +727,7 @@ write_char(wchar c, int width)
   if (curs->attr.attr & ATTR_OVERSTRIKE) {
     width = 0;
     overstrike = true;
+    curs->wrapnext = false;
   }
 
   if (term.insert && width > 0)
@@ -667,7 +781,7 @@ write_char(wchar c, int width)
 #ifdef debug_surrogates
       printf("write_char %04X %2d %08llX\n", c, width, curs->attr.attr);
 #endif
-      if (curs->x > 0) {
+      if (curs->x > 0 || overstrike) {
        /* If we're in wrapnext state, the character
         * to combine with is _here_, not to our left. */
         int x = curs->x - !curs->wrapnext;
@@ -684,7 +798,7 @@ write_char(wchar c, int width)
        /* Try to precompose with the cell's base codepoint */
         wchar pc;
         if (termattrs_equal_fg(&line->chars[x].attr, &curs->attr))
-          pc = win_combine_chars(line->chars[x].chr, c);
+          pc = win_combine_chars(line->chars[x].chr, c, curs->attr.attr);
         else
           pc = 0;
         if (pc)
@@ -708,9 +822,116 @@ write_char(wchar c, int width)
   curs->x++;
   if (curs->x == term.marg_right + 1 || curs->x == term.cols) {
     curs->x--;
-    if (curs->autowrap || cfg.old_wrapmodes)
+    if (term.autowrap || cfg.old_wrapmodes)
       curs->wrapnext = true;
   }
+}
+
+static struct {
+  ucschar first, last;
+  uchar font;
+  char * scriptname;
+} scriptfonts[] = {
+#include "scripts.t"
+};
+static bool scriptfonts_init = false;
+
+static void
+mapfont(char * script, uchar f)
+{
+  for (uint i = 0; i < lengthof(scriptfonts); i++)
+    if (0 == strcmp(scriptfonts[i].scriptname, script))
+      scriptfonts[i].font = f;
+}
+
+static char *
+cfg_apply(char * conf, char * item)
+{
+  char * cmdp = conf;
+  char sepch = ';';
+  if ((uchar)*cmdp <= (uchar)' ')
+    sepch = *cmdp++;
+
+  char * paramp;
+  while ((paramp = strchr(cmdp, ':'))) {
+    *paramp = '\0';
+    paramp++;
+    char * sepp = strchr(paramp, sepch);
+    if (sepp)
+      *sepp = '\0';
+
+    if (!item || !strcmp(cmdp, item)) {
+      mapfont(cmdp, atoi(paramp));
+    }
+
+    if (sepp) {
+      cmdp = sepp + 1;
+      // check for multi-line separation
+      if (*cmdp == '\\' && cmdp[1] == '\n') {
+        cmdp += 2;
+        while (isspace(*cmdp))
+          cmdp++;
+      }
+    }
+    else
+      break;
+  }
+  return 0;
+}
+
+static void
+init_scriptfonts(void)
+{
+  if (*cfg.font_choice) {
+    char * cfg_scriptfonts = cs__wcstombs(cfg.font_choice);
+    cfg_apply(cfg_scriptfonts, 0);
+    free(cfg_scriptfonts);
+  }
+  scriptfonts_init = true;
+}
+
+static uchar
+scriptfont(ucschar ch)
+{
+  if (!*cfg.font_choice)
+    return 0;
+  if (!scriptfonts_init)
+    init_scriptfonts();
+
+  int i, j, k;
+
+  i = -1;
+  j = lengthof(scriptfonts);
+
+  while (j - i > 1) {
+    k = (i + j) / 2;
+    if (ch < scriptfonts[k].first)
+      j = k;
+    else if (ch > scriptfonts[k].last)
+      i = k;
+    else
+      return scriptfonts[k].font;
+  }
+  return 0;
+}
+
+static void
+write_ucschar(wchar hwc, wchar wc, int width)
+{
+  cattrflags attr = term.curs.attr.attr;
+  ucschar c = hwc ? combine_surrogates(hwc, wc) : wc;
+  uchar cf = scriptfont(c);
+  if (cf && cf <= 10 && !(attr & FONTFAM_MASK))
+    term.curs.attr.attr = attr | ((cattrflags)cf << ATTR_FONTFAM_SHIFT);
+
+  if (hwc) {
+    write_char(hwc, width);
+    write_char(wc, -1);  // -1 indicates low surrogate
+  }
+  else
+    write_char(wc, width);
+
+  term.curs.attr.attr = attr;
 }
 
 static void
@@ -719,7 +940,7 @@ write_error(void)
   // Write one of REPLACEMENT CHARACTER or, if that does not exist,
   // MEDIUM SHADE which looks appropriately erroneous.
   wchar errch = 0xFFFD;
-  win_check_glyphs(&errch, 1);
+  win_check_glyphs(&errch, 1, term.curs.attr.attr);
   if (!errch)
     errch = 0x2592;
   write_char(errch, 1);
@@ -799,8 +1020,8 @@ do_vt52(uchar c)
 {
   term_cursor *curs = &term.curs;
   term.state = NORMAL;
-  term.curs.autowrap = false;
-  term.curs.rev_wrap = false;
+  term.autowrap = false;
+  term.rev_wrap = false;
   term.esc_mod = 0;
   switch (c) {
     when '\e':
@@ -867,10 +1088,10 @@ do_vt52(uchar c)
     when 'q':  /* Normal video */
       term.curs.attr.attr &= ~ATTR_REVERSE;
     when 'v':  /* Wrap on */
-      term.curs.autowrap = true;
+      term.autowrap = true;
       term.curs.wrapnext = false;
     when 'w':  /* Wrap off */
-      term.curs.autowrap = false;
+      term.autowrap = false;
       term.curs.wrapnext = false;
   }
 }
@@ -980,7 +1201,7 @@ do_esc(uchar c)
     for (uint i = 0; i < lengthof(csdesignations); i++)
       if (csdesignations[i].design == nrc_code
           && (csdesignations[i].cstype & csmask)
-          && (csdesignations[i].free || term.curs.decnrc_enabled)
+          && (csdesignations[i].free || term.decnrc_enabled)
          )
       {
         curs->csets[gi] = csdesignations[i].cs;
@@ -1013,8 +1234,10 @@ do_esc(uchar c)
     when 'D':  /* IND: exactly equivalent to LF */
       write_linefeed();
     when 'E':  /* NEL: exactly equivalent to CR-LF */
-      write_return();
-      write_linefeed();
+      if (curs->x >= term.marg_left && curs->x <= term.marg_right) {
+        write_return();
+        write_linefeed();
+      }
     when 'M':  /* RI: reverse index - backwards LF */
       if (curs->y == term.marg_top)
         term_do_scroll(term.marg_top, term.marg_bot, -1, true);
@@ -1038,6 +1261,14 @@ do_esc(uchar c)
     when 'm':  /* HP Memory Unlock */
       term.marg_top = 0;
     when CPAIR('#', '8'):    /* DECALN: fills screen with Es :-) */
+      term.curs.origin = false;
+      term.curs.wrapnext = false;
+      term.curs.attr = CATTR_DEFAULT;
+      term.marg_top = 0;
+      term.marg_bot = term.rows - 1;
+      term.marg_left = 0;
+      term.marg_right = term.cols - 1;
+      move(0, 0, 0);
       for (int i = 0; i < term.rows; i++) {
         termline *line = term.lines[i];
         for (int j = 0; j < term.cols; j++) {
@@ -1048,17 +1279,23 @@ do_esc(uchar c)
       }
       term.disptop = 0;
     when CPAIR('#', '3'):  /* DECDHL: 2*height, top */
-      term.lines[curs->y]->lattr &= LATTR_BIDIMASK;
-      term.lines[curs->y]->lattr |= LATTR_TOP;
+      if (!term.lrmargmode) {
+        term.lines[curs->y]->lattr &= LATTR_BIDIMASK;
+        term.lines[curs->y]->lattr |= LATTR_TOP;
+      }
     when CPAIR('#', '4'):  /* DECDHL: 2*height, bottom */
-      term.lines[curs->y]->lattr &= LATTR_BIDIMASK;
-      term.lines[curs->y]->lattr |= LATTR_BOT;
+      if (!term.lrmargmode) {
+        term.lines[curs->y]->lattr &= LATTR_BIDIMASK;
+        term.lines[curs->y]->lattr |= LATTR_BOT;
+      }
     when CPAIR('#', '5'):  /* DECSWL: normal */
       term.lines[curs->y]->lattr &= LATTR_BIDIMASK;
       term.lines[curs->y]->lattr |= LATTR_NORM;
     when CPAIR('#', '6'):  /* DECDWL: 2*width */
-      term.lines[curs->y]->lattr &= LATTR_BIDIMASK;
-      term.lines[curs->y]->lattr |= LATTR_WIDE;
+      if (!term.lrmargmode) {
+        term.lines[curs->y]->lattr &= LATTR_BIDIMASK;
+        term.lines[curs->y]->lattr |= LATTR_WIDE;
+      }
     when CPAIR('%', '8') or CPAIR('%', 'G'):
       curs->utf = true;
       term_update_cs();
@@ -1433,11 +1670,15 @@ set_modes(bool state)
           }
         when 6:  /* DECOM: DEC origin mode */
           term.curs.origin = state;
+          if (state)
+            move(term.marg_left, term.marg_top, 0);
+          else
+            move(0, 0, 0);
         when 7:  /* DECAWM: auto wrap */
-          term.curs.autowrap = state;
+          term.autowrap = state;
           term.curs.wrapnext = false;
         when 45:  /* xterm: reverse (auto) wraparound */
-          term.curs.rev_wrap = state;
+          term.rev_wrap = state;
           term.curs.wrapnext = false;
         when 8:  /* DECARM: auto key repeat */
           term.auto_repeat = state;
@@ -1461,12 +1702,18 @@ set_modes(bool state)
         when 95: /* VT510 DECNCSM: DECCOLM does not clear the screen */
           term.deccolm_noclear = state;
         when 42: /* DECNRCM: national replacement character sets */
-          term.curs.decnrc_enabled = state;
+          term.decnrc_enabled = state;
         when 67: /* DECBKM: backarrow key mode */
           term.backspace_sends_bs = state;
         when 69: /* DECLRMM/VT420 DECVSSM: enable left/right margins DECSLRM */
           term.lrmargmode = state;
-          if (!state) {
+          if (state) {
+            for (int i = 0; i < term.rows; i++) {
+              termline *line = term.lines[i];
+              line->lattr = LATTR_NORM;
+            }
+          }
+          else {
             term.marg_left = 0;
             term.marg_right = term.cols - 1;
           }
@@ -1650,9 +1897,9 @@ get_mode(bool privatemode, int arg)
       when 6:  /* DECOM: DEC origin mode */
         return 2 - term.curs.origin;
       when 7:  /* DECAWM: auto wrap */
-        return 2 - term.curs.autowrap;
+        return 2 - term.autowrap;
       when 45:  /* xterm: reverse (auto) wraparound */
-        return 2 - term.curs.rev_wrap;
+        return 2 - term.rev_wrap;
       when 8:  /* DECARM: auto key repeat */
         return 2 - term.auto_repeat;
         //return 3; // ignored
@@ -1667,7 +1914,7 @@ get_mode(bool privatemode, int arg)
       when 40: /* Allow/disallow DECCOLM (xterm c132 resource) */
         return 2 - term.deccolm_allowed;
       when 42: /* DECNRCM: national replacement character sets */
-        return 2 - term.curs.decnrc_enabled;
+        return 2 - term.decnrc_enabled;
       when 67: /* DECBKM: backarrow key mode */
         return 2 - term.backspace_sends_bs;
       when 69: /* DECLRMM: enable left and right margin mode DECSLRM */
@@ -1969,14 +2216,8 @@ do_csi(uchar c)
       cattr cur_attr = term.curs.attr;
       term.curs.attr = last_attr;
       wchar h = last_high, c = last_char;
-      for (int i = 0; i < arg0_def1; i++) {
-        if (h) {  // non-BMP
-          write_char(h, last_width);
-          write_char(c, -1);
-        }
-        else
-          write_char(c, last_width);
-      }
+      for (int i = 0; i < arg0_def1; i++)
+        write_ucschar(h, c, last_width);
       term.curs.attr = cur_attr;
     }
     when 'A':        /* CUU: move up N lines */
@@ -1989,14 +2230,25 @@ do_csi(uchar c)
       if (!arg0)
         write_primary_da();
     when CPAIR('>', 'c'):     /* Secondary DA: report device version */
-      if (!arg0)
-        child_printf("\e[>77;%u;0c", DECIMAL_VERSION);
+      if (!arg0) {
+        if (cfg.charwidth)
+          child_printf("\e[>77;%u;%uc", DECIMAL_VERSION, UNICODE_VERSION);
+        else
+          child_printf("\e[>77;%u;0c", DECIMAL_VERSION);
+      }
     when 'a':        /* HPR: move right N cols */
       move(curs->x + arg0_def1, curs->y, 1);
     when 'C':        /* CUF: Cursor right */
       move(curs->x + arg0_def1, curs->y, 1);
     when 'D':        /* CUB: move left N cols */
-      move(curs->x - arg0_def1, curs->y, 1);
+      if (arg0_def1 > curs->x) {
+        arg0_def1 -= curs->x + 1;
+        move(0, curs->y, 1);
+        write_backspace();
+        move(curs->x - arg0_def1, curs->y, 1);
+      }
+      else
+        move(curs->x - arg0_def1, curs->y, 1);
     when 'E':        /* CNL: move down N lines and CR */
       move(0, curs->y + arg0_def1, 1);
     when 'F':        /* CPL: move up N lines and CR */
@@ -2016,28 +2268,39 @@ do_csi(uchar c)
     when 'I':  /* CHT: move right N TABs */
       for (int i = 0; i < arg0_def1; i++)
         write_tab();
-    when 'J' or CPAIR('?', 'J'): { /* ED/DECSED: (selective) erase in display */
-      if (arg0 == 3 && !term.esc_mod) { /* Erase Saved Lines (xterm) */
+    when 'J' or CPAIR('?', 'J'):  /* ED/DECSED: (selective) erase in display */
+      if (arg0 == 3) { /* Erase Saved Lines (xterm) */
+        // don't care if (term.esc_mod) // ignore selective
         term_clear_scrollback();
         term.disptop = 0;
       }
-      else {
+      else if (arg0 <= 2) {
         bool above = arg0 == 1 || arg0 == 2;
         bool below = arg0 == 0 || arg0 == 2;
         term_erase(term.esc_mod, false, above, below);
       }
-    }
-    when 'K' or CPAIR('?', 'K'): { /* EL/DECSEL: (selective) erase in line */
-      bool right = arg0 == 0 || arg0 == 2;
-      bool left  = arg0 == 1 || arg0 == 2;
-      term_erase(term.esc_mod, true, left, right);
-    }
+    when 'K' or CPAIR('?', 'K'):  /* EL/DECSEL: (selective) erase in line */
+      if (arg0 <= 2) {
+        bool right = arg0 == 0 || arg0 == 2;
+        bool left  = arg0 == 1 || arg0 == 2;
+        term_erase(term.esc_mod, true, left, right);
+      }
     when 'L':        /* IL: insert lines */
-      if (curs->y >= term.marg_top && curs->y <= term.marg_bot)
+      if (curs->y >= term.marg_top && curs->y <= term.marg_bot
+       && curs->x >= term.marg_left && curs->x <= term.marg_right
+         )
+      {
         term_do_scroll(curs->y, term.marg_bot, -arg0_def1, false);
+        curs->x = term.marg_left;
+      }
     when 'M':        /* DL: delete lines */
-      if (curs->y >= term.marg_top && curs->y <= term.marg_bot)
+      if (curs->y >= term.marg_top && curs->y <= term.marg_bot
+       && curs->x >= term.marg_left && curs->x <= term.marg_right
+         )
+      {
         term_do_scroll(curs->y, term.marg_bot, arg0_def1, true);
+        curs->x = term.marg_left;
+      }
     when '@':        /* ICH: insert chars */
       insert_char(arg0_def1);
     when 'P':        /* DCH: delete chars */
@@ -2389,19 +2652,27 @@ do_csi(uchar c)
           curs->bidimode &= ~LATTR_PRESRTL;
       else if (arg0 == 3)
           curs->bidimode |= LATTR_PRESRTL;
+#define urows (uint) term.rows
+#define ucols (uint) term.cols
     when CPAIR('$', 'v'):  /* DECCRA: VT420 Copy Rectangular Area */
-      copy_rect(arg0, arg1, term.csi_argv[2], term.csi_argv[3],
+      copy_rect(arg0_def1, arg1 ?: 1, 
+                term.csi_argv[2] ?: urows, term.csi_argv[3] ?: ucols,
                 // skip term.csi_argv[4] (source page)
-                term.csi_argv[5], term.csi_argv[6]);
+                term.csi_argv[5] ?: urows, term.csi_argv[6] ?: ucols
+                // skip term.csi_argv[7] (destination page)
+                );
     when CPAIR('$', 'x'):  /* DECFRA: VT420 Fill Rectangular Area */
-      fill_rect(arg0, curs->attr, false,
-                arg1, term.csi_argv[2], term.csi_argv[3], term.csi_argv[4]);
+      fill_rect(arg0 ?: ' ', curs->attr, false,
+                arg1 ?: 1, term.csi_argv[2] ?: 1,
+                term.csi_argv[3] ?: urows, term.csi_argv[4] ?: ucols);
     when CPAIR('$', 'z'):  /* DECERA: VT420 Erase Rectangular Area */
       fill_rect(' ', term.erase_char.attr, false,
-                arg0, arg1, term.csi_argv[2], term.csi_argv[3]);
+                arg0_def1, arg1 ?: 1,
+                term.csi_argv[2] ?: urows, term.csi_argv[3] ?: ucols);
     when CPAIR('$', '{'):  /* DECSERA: VT420 Selective Erase Rectangular Area */
       fill_rect(' ', term.erase_char.attr, true,
-                arg0, arg1, term.csi_argv[2], term.csi_argv[3]);
+                arg0_def1, arg1 ?: 1,
+                term.csi_argv[2] ?: urows, term.csi_argv[3] ?: ucols);
     when CPAIR('*', 'x'):  /* DECSACE: VT420 Select Attribute Change Extent */
       switch (arg0) {
         when 2: term.attr_rect = true;
@@ -2429,16 +2700,45 @@ do_csi(uchar c)
         }
       a1 &= ~a2;
       if (c == 'r')
-        attr_rect(a1, a2, 0, arg0, arg1, term.csi_argv[2], term.csi_argv[3]);
+        attr_rect(a1, a2, 0, arg0_def1, arg1 ?: 1,
+                  term.csi_argv[2] ?: urows, term.csi_argv[3] ?: ucols);
       else
-        attr_rect(0, 0, a1, arg0, arg1, term.csi_argv[2], term.csi_argv[3]);
+        attr_rect(0, 0, a1, arg0_def1, arg1 ?: 1,
+                  term.csi_argv[2] ?: urows, term.csi_argv[3] ?: ucols);
+    }
+    when CPAIR('*', 'y'): { /* DECRQCRA: VT420 Request Rectangular Checksum */
+      uint s = sum_rect(term.csi_argv[2] ?: 1, term.csi_argv[3] ?: 1,
+                        term.csi_argv[4] ?: urows, term.csi_argv[5] ?: ucols);
+      child_printf("\eP%u!~%04X\e\\", arg0, -s & 0xFFFF);
     }
     when CPAIR('\'', '}'):  /* DECIC: VT420 Insert Columns */
-      if (curs->x >= term.marg_left && curs->x <= term.marg_right)
+      if (curs->x >= term.marg_left && curs->x <= term.marg_right
+       && curs->y >= term.marg_top && curs->y <= term.marg_bot
+         )
         insdel_column(curs->x, false, arg0_def1);
     when CPAIR('\'', '~'):  /* DECDC: VT420 Delete Columns */
-      if (curs->x >= term.marg_left && curs->x <= term.marg_right)
+      if (curs->x >= term.marg_left && curs->x <= term.marg_right
+       && curs->y >= term.marg_top && curs->y <= term.marg_bot
+         )
         insdel_column(curs->x, true, arg0_def1);
+    when CPAIR(' ', 'A'):     /* SR: ECMA-48 shift columns right */
+      if (curs->x >= term.marg_left && curs->x <= term.marg_right
+       && curs->y >= term.marg_top && curs->y <= term.marg_bot
+         )
+        insdel_column(term.marg_left, false, arg0_def1);
+    when CPAIR(' ', '@'):     /* SR: ECMA-48 shift columns left */
+      if (curs->x >= term.marg_left && curs->x <= term.marg_right
+       && curs->y >= term.marg_top && curs->y <= term.marg_bot
+         )
+        insdel_column(term.marg_left, true, arg0_def1);
+    when CPAIR('#', 't'):  /* application scrollbar */
+      win_set_scrollview(arg0, arg1, term.csi_argc > 2 ? (int)term.csi_argv[2] : -1);
+    when CPAIR('<', 't'):  /* TTIMEST: change IME state (Tera Term) */
+      win_set_ime(arg0);
+    when CPAIR('<', 's'):  /* TTIMESV: save IME state (Tera Term) */
+      push_mode(-1, win_get_ime());
+    when CPAIR('<', 'r'):  /* TTIMERS: restore IME state (Tera Term) */
+      win_set_ime(pop_mode(-1));
   }
 }
 
@@ -2451,7 +2751,6 @@ do_dcs(void)
   char *s = term.cmd_buf;
   unsigned char *pixels;
   int i;
-  imglist *cur, *img;
   colour bg, fg;
   cattr attr = term.curs.attr;
   int status = (-1);
@@ -2463,30 +2762,16 @@ do_dcs(void)
 
   switch (term.dcs_cmd) {
   when 'q':
-
     st = (sixel_state_t *)term.imgs.parser_state;
-
-// Revert https://github.com/mintty/mintty/commit/fe48cdc
-// "fixed SIXEL colour registers handling"
-// which led to Sixel display silently failing 
-// or even stalling mintty window (#740)
-#define fixsix
-
-#ifndef fixsix
-#warning Sixel display bug #740 reenabled
-#endif
 
     switch (term.state) {
     when DCS_PASSTHROUGH:
       if (!st)
         return;
-#ifdef fixsix
-      if (!st->image.data)
-        return;
-#endif
       status = sixel_parser_parse(st, (unsigned char *)s, term.cmd_len);
       if (status < 0) {
         sixel_parser_deinit(st);
+        //printf("free state 1 %p\n", term.imgs.parser_state);
         free(term.imgs.parser_state);
         term.imgs.parser_state = NULL;
         term.state = DCS_IGNORE;
@@ -2496,38 +2781,31 @@ do_dcs(void)
     when DCS_ESCAPE:
       if (!st)
         return;
-#ifdef fixsix
-      if (!st->image.data)
-        return;
-#endif
       status = sixel_parser_parse(st, (unsigned char *)s, term.cmd_len);
       if (status < 0) {
         sixel_parser_deinit(st);
+        //printf("free state 2 %p\n", term.imgs.parser_state);
         free(term.imgs.parser_state);
         term.imgs.parser_state = NULL;
         return;
       }
 
-#ifndef fixsix
-      pixels = (unsigned char *)malloc(st->image.width * st->image.height * 4);
+      int size_pixels = st->image.width * st->image.height * 4;
+      pixels = (unsigned char *)malloc(size_pixels);
+      //printf("alloc pixels 1 w %d h %d (%d) -> %p\n", st->image.width, st->image.height, size_pixels, pixels);
       if (!pixels)
         return;
-#endif
 
-      status = sixel_parser_finalize(st);
+      status = sixel_parser_finalize(st, pixels);
+      sixel_parser_deinit(st);
       if (status < 0) {
-        sixel_parser_deinit(st);
+        //printf("free state 3 %p\n", term.imgs.parser_state);
         free(term.imgs.parser_state);
+        //printf("free pixels\n");
+        free(pixels);
         term.imgs.parser_state = NULL;
         return;
       }
-
-#ifdef fixsix
-      pixels = (unsigned char *)st->image.data;
-      st->image.data = NULL;
-#else
-      sixel_parser_deinit(st);
-#endif
 
       left = term.curs.x;
       top = term.virtuallines + (term.sixel_display ? 0: term.curs.y);
@@ -2536,8 +2814,10 @@ do_dcs(void)
       pixelwidth = st->image.width;
       pixelheight = st->image.height;
 
+      imglist * img;
       if (!winimg_new(&img, pixels, left, top, width, height, pixelwidth, pixelheight) != 0) {
         sixel_parser_deinit(st);
+        //printf("free state 4 %p\n", term.imgs.parser_state);
         free(term.imgs.parser_state);
         term.imgs.parser_state = NULL;
         return;
@@ -2579,10 +2859,12 @@ do_dcs(void)
       if (term.imgs.first == NULL) {
         term.imgs.first = term.imgs.last = img;
       } else {
-        for (cur = term.imgs.first; cur; cur = cur->next) {
+        // try some optimization: replace existing images if overwritten
+        for (imglist * cur = term.imgs.first; cur; cur = cur->next) {
           if (cur->pixelwidth == cur->width * st->grid_width &&
               cur->pixelheight == cur->height * st->grid_height)
           {
+            // if same size, replace
             if (img->top == cur->top && img->left == cur->left &&
                 img->width == cur->width &&
                 img->height == cur->height)
@@ -2591,12 +2873,14 @@ do_dcs(void)
               winimg_destroy(img);
               return;
             }
+            // if new image within area of previous image, ...
+#ifdef handle_overlay_images
+#warning this creates some crash conditions...
             if (img->top >= cur->top && img->left >= cur->left &&
                 img->left + img->width <= cur->left + cur->width &&
                 img->top + img->height <= cur->top + cur->height)
             {
-              // copy new img into old structure; resize memory first
-              cur->pixels = realloc(cur->pixels, img->width * img->height * sizeof(unsigned char));
+              // inject new img into old structure;
               // copy img data in stripes, for unknown reason
               for (y = 0; y < img->pixelheight; ++y) {
                 memcpy(cur->pixels +
@@ -2608,8 +2892,10 @@ do_dcs(void)
               winimg_destroy(img);
               return;
             }
+#endif
           }
         }
+        // append image to list
         term.imgs.last->next = img;
         term.imgs.last = img;
       }
@@ -2620,16 +2906,10 @@ do_dcs(void)
       bg = win_get_colour(BG_COLOUR_I);
       if (!st) {
         st = term.imgs.parser_state = calloc(1, sizeof(sixel_state_t));
+        //printf("alloc state %d -> %p\n", (int)sizeof(sixel_state_t), st);
         sixel_parser_set_default_color(st);
       }
-#ifdef fixsix
-      status = sixel_parser_init(st,
-                                 (fg & 0xff) << 16 | (fg & 0xff00) | (fg & 0xff0000) >> 16,
-                                 (bg & 0xff) << 16 | (bg & 0xff00) | (bg & 0xff0000) >> 16,
-                                 term.private_color_registers);
-#else
       status = sixel_parser_init(st, fg, bg, term.private_color_registers);
-#endif
       if (status < 0)
         return;
     }
@@ -2732,7 +3012,7 @@ do_dcs(void)
       } else if (!strcmp(s, "s")) {  // DECSLRM (left and right margins)
         child_printf("\eP1$r%u;%us\e\\", term.marg_left + 1, term.marg_right + 1);
       } else if (!strcmp(s, "\"p")) {  // DECSCL (conformance level)
-        child_printf("\eP1$r%u;%u\"p\e\\", 63, 1);  // report as VT300
+        child_printf("\eP1$r%u;%u\"p\e\\", 65, 1);  // report as VT500 S7C1T
       } else if (!strcmp(s, "\"q")) {  // DECSCA (protection attribute)
         child_printf("\eP1$r%u\"q\e\\", (attr.attr & ATTR_PROTECTED) != 0);
       } else if (!strcmp(s, " q")) {  // DECSCUSR (cursor style)
@@ -2954,7 +3234,7 @@ do_cmd(void)
           return;
         wcs[n++] = strtoul(s, &s, 10);
       }
-      win_check_glyphs(wcs, n);
+      win_check_glyphs(wcs, n, term.curs.attr.attr);
       s = term.cmd_buf;
       for (size_t i = 0; i < n; i++) {
         *s++ = ';';
@@ -3075,7 +3355,7 @@ term_do_write(const char *buf, uint len)
           cset = term.curs.cset_single;
           term.curs.cset_single = CSET_ASCII;
         }
-        else if (term.curs.decnrc_enabled
+        else if (term.decnrc_enabled
          && term.curs.gr && term.curs.csets[term.curs.gr] != CSET_ASCII
          && !term.curs.oem_acs && !term.curs.utf
          && c >= 0x80 && c < 0xFF) {
@@ -3130,8 +3410,7 @@ term_do_write(const char *buf, uint len)
 #else
             int width = xcwidth(combine_surrogates(hwc, wc));
 #endif
-            write_char(hwc, width);
-            write_char(wc, -1);  // -1 indicates low surrogate
+            write_ucschar(hwc, wc, width);
           }
           else
             write_error();
@@ -3143,7 +3422,7 @@ term_do_write(const char *buf, uint len)
 
         // ASCII shortcut for some speedup (~5%), earliest applied here
         if (wc >= ' ' && wc <= 0x7E && cset == CSET_ASCII) {
-          write_char(wc, 1);
+          write_ucschar(0, wc, 1);
           continue;
         }
 
@@ -3176,7 +3455,7 @@ term_do_write(const char *buf, uint len)
           width = 2;
         else if (term.wide_extra && wc >= 0x2000 && extrawide(wc)) {
           width = 2;
-          if (win_char_width(wc) < 2)
+          if (win_char_width(wc, term.curs.attr.attr) < 2)
             term.curs.attr.attr |= ATTR_EXPAND;
         }
         else
@@ -3198,9 +3477,9 @@ term_do_write(const char *buf, uint len)
         if (width == 2
             // && wcschr(W("〈〉《》「」『』【】〒〓〔〕〖〗〘〙〚〛"), wc)
             && wc >= 0x3008 && wc <= 0x301B && (wc | 1) != 0x3013
-            && win_char_width(wc) < 2
+            && win_char_width(wc, term.curs.attr.attr) < 2
             // ensure symmetric handling of matching brackets
-            && win_char_width(wc ^ 1) < 2)
+            && win_char_width(wc ^ 1, term.curs.attr.attr) < 2)
         {
           term.curs.attr.attr |= ATTR_EXPAND;
         }
@@ -3274,8 +3553,10 @@ term_do_write(const char *buf, uint len)
             if (c > ' ' && c < 0x7F) {
               // = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎛⎝⎞⎠⎨⎬￿￿╲╱￿￿￿￿￿￿￿≤≠≥∫∴∝∞÷Δ∇ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
               // = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎛⎝⎞⎠⎨⎬╶╶╲╱╴╴╳￿￿￿￿≤≠≥∫∴∝∞÷Δ∇ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
-              wc = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎧⎩⎫⎭⎨⎬╶╶╲╱╴╴╳￿￿￿￿≤≠≥∫∴∝∞÷Δ∇ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
+              // = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎧⎩⎫⎭⎨⎬╶╶╲╱╴╴╳￿￿￿￿≤≠≥∫∴∝∞÷Δ∇ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
+              wc = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎧⎩⎫⎭⎨⎬╶╶╲╱╴╴╳￿￿￿￿≤≠≥∫∴∝∞÷  ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
                    [c - ' ' - 1];
+              uchar dispcode = 0;
               if (c <= 0x37) {
                 static uchar techdraw_code[23] = {
                   0xE,                          // square root base
@@ -3285,9 +3566,13 @@ term_do_write(const char *buf, uint len)
                   0, 0,                         // curly bracket middle pieces
                   0x1, 0x2, 0, 0, 0x5, 0x6, 0x7 // sum segments
                 };
-                uchar dispcode = techdraw_code[c - 0x21];
-                term.curs.attr.attr |= ((cattrflags)dispcode) << ATTR_GRAPH_SHIFT;
+                dispcode = techdraw_code[c - 0x21];
               }
+              else if (c == 0x44)
+                dispcode = 0xC;
+              else if (c == 0x45)
+                dispcode = 0xD;
+              term.curs.attr.attr |= ((cattrflags)dispcode) << ATTR_GRAPH_SHIFT;
             }
           when CSET_NL:
             wc = NRC(W("£¾ĳ½|^_`¨ƒ¼´"));  // Dutch
@@ -3391,7 +3676,7 @@ term_do_write(const char *buf, uint len)
           term.curs.attr.attr |= (cattrflags)gcode << ATTR_FONTFAM_SHIFT;
         }
 
-        write_char(wc, width);
+        write_ucschar(0, wc, width);
         term.curs.attr.attr = asav;
       } // end term_write switch (term.state) when NORMAL
 

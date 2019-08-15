@@ -65,6 +65,7 @@ typedef struct {
   // Text
   font_spec font;
   font_spec fontfams[11];
+  wstring font_choice;
   wstring font_sample;
   bool show_hidden_fonts;
   char font_smoothing;
@@ -202,6 +203,7 @@ typedef struct {
   bool bold_as_special;
   int selection_show_size;
   bool hover_title;
+  int baud;
   // Legacy
   bool use_system_colours;
   bool old_bold;

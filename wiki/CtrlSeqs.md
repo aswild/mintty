@@ -67,19 +67,16 @@ The respective setting is cleared with a corresponding sequence ending with `l`.
 | `^[[?77031h`  | Ctrl+_    | `^[[95;5u`   |
 
 
-## Scrollbar hiding ##
+## Input method ##
 
-These sequences can be used to hide or show the scrollbar, whereby the window size remains the same but the number of character columns is changed to account for the width of the scrollbar. If the scrollbar is disabled in the options, it will always remain hidden.
+Mintty allows to set, save or restore the IME status explicitly, to support 
+applications like text editors to adapt it to the current input target.
 
-| **sequence**  | **scrollbar** |
-|:--------------|:--------------|
-| `^[[?7766l`   | hide          |
-| `^[[?7766h`   | show          |
-
-Note: Mintty also supports the xterm-compatible sequences to hide or show 
-the scrollbar, which handle the scrollbar as "outer" to the terminal, 
-adding to the window width but keeping the terminal width unchanged 
-(except in full-screen mode).
+| **sequence**  | **IME status**                            |
+|:--------------|:------------------------------------------|
+| `^[[<`_on_`t` | Open (1) or Close (0, default) IME status |
+| `^[[<s`       | Save (push) IME status                    |
+| `^[[<r`       | Restore (pop) IME status                  |
 
 
 ## Shortcut override mode ##
@@ -132,6 +129,53 @@ These are the unsymmetric characters from ranges Box Drawing (U+2500-U+257F)
 and Block Elements (U+2580-U+259F). Others may be added in future versions.
 
 Note: SPD is a deprecated fun feature.
+
+
+## Scrollbar hiding ##
+
+These sequences can be used to hide or show the scrollbar, whereby the window size remains the same but the number of character columns is changed to account for the width of the scrollbar. If the scrollbar is disabled in the options, it will always remain hidden.
+
+| **sequence**  | **scrollbar** |
+|:--------------|:--------------|
+| `^[[?7766l`   | hide          |
+| `^[[?7766h`   | show          |
+
+Note: Mintty also supports the xterm-compatible sequences to hide or show 
+the scrollbar, which handle the scrollbar as "outer" to the terminal, 
+adding to the window width but keeping the terminal width unchanged 
+(except in full-screen mode).
+
+
+## Application scrollbar ##
+
+— EXPERIMENTAL —
+
+In application scrollbar mode, an application can make use of the window scrollbar;
+it can set up the scrollbar to reflect the application idea of a scroll 
+position, and receive scrollbar events as control sequences.
+
+This mode is up to future revision. It is currently enabled or disabled 
+implicitly, there is no explicit mode setting sequence.
+
+The application scrollbar indicates a scrollbar view ("scroll offset") 
+within an assumed span of a virtual document ("document height", as 
+maintained by the application). The height of the view ("viewport height") 
+defaults to the actual terminal size (rows); its difference to the 
+terminal size is kept when resizing the terminal. Control sequences 
+can set up the current view position ("scroll offset" from 1 to total size) 
+as well as the total virtual document size ("document height" in assumed lines) 
+and optionally the "viewport height".
+
+| **sequence**                      | **scrollbar**                                        |
+|:----------------------------------|:-----------------------------------------------------|
+| `^[[`_pos_`;`_size_`;`_height`#t` | set scrollbar view position, virtual size and height |
+| `^[[`_pos_`;`_size_`#t`           | set scrollbar view position and virtual size         |
+| `^[[`_pos_`#t`                    | set scrollbar view position                          |
+| `^[[0#t`                          | disable application scrollbar                        |
+
+Relative scrollbar movement and absolute positioning are reported with 
+special sequences; for details see 
+[Keycodes – Application scrollbar events](https://github.com/mintty/mintty/wiki/Keycodes#application-scrollbar-events).
 
 
 ## Mousewheel reporting ##

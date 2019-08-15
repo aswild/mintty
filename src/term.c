@@ -251,10 +251,7 @@ term_cursor_reset(term_cursor *curs)
   for (uint i = 0; i < lengthof(curs->csets); i++)
     curs->csets[i] = CSET_ASCII;
   curs->cset_single = CSET_ASCII;
-  curs->decnrc_enabled = false;
 
-  curs->autowrap = true;
-  curs->rev_wrap = cfg.old_wrapmodes;
   curs->bidimode = 0;
 
   curs->origin = false;
@@ -277,6 +274,10 @@ term_reset(bool full)
   term_cursor_reset(&term.saved_cursors[1]);
   term_update_cs();
   term.erase_char = basic_erase_char;
+  // these used to be in term_cursor, thus affected by cursor restore
+  term.decnrc_enabled = false;
+  term.autowrap = true;
+  term.rev_wrap = cfg.old_wrapmodes;
 
   // DECSTR states to be reset (in addition to cursor states)
   // https://www.vt100.net/docs/vt220-rm/table4-10.html
@@ -286,10 +287,11 @@ term_reset(bool full)
   term.marg_bot = term.rows - 1;
   term.marg_left = 0;
   term.marg_right = term.cols - 1;
-  term.lrmargmode = false;
   term.app_cursor_keys = false;
+  term.app_scrollbar = false;
 
   if (full) {
+    term.lrmargmode = false;
     term.deccolm_allowed = cfg.enable_deccolm_init;  // not reset by xterm
     term.vt220_keys = vt220(cfg.term);  // not reset by xterm
     term.app_keypad = false;  // xterm only with RIS
@@ -369,6 +371,8 @@ term_reset(bool full)
         term_do_scroll(0, term.rows - 1, 1, true);
       }
     }
+    term.curs.x = 0;
+    term.curs.y = 0;
   }
 
   term.in_vbell = false;
@@ -1778,6 +1782,26 @@ emoji_show(int x, int y, struct emoji e, int elen, cattr eattr, ushort lattr)
     win_emoji_show(x, y, efn, elen, lattr);
 }
 
+#define dont_debug_win_text_invocation
+
+#ifdef debug_win_text_invocation
+
+void
+_win_text(int line, int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, bool has_rtl, bool clearpad, uchar phase)
+{
+  if (*text != ' ') {
+    printf("[%d] %d:%d(len %d) attr %08llX", line, ty, tx, len, attr.attr);
+    for (int i = 0; i < len && i < 8; i++)
+      printf(" %04X", text[i]);
+    printf("\n");
+  }
+  win_text(tx, ty, text, len, attr, textattr, lattr, has_rtl, clearpad, phase);
+}
+
+#define win_text(tx, ty, text, len, attr, textattr, lattr, has_rtl, clearpad, phase) _win_text(__LINE__, tx, ty, text, len, attr, textattr, lattr, has_rtl, clearpad, phase)
+
+#endif
+
 void
 term_paint(void)
 {
@@ -2024,12 +2048,10 @@ term_paint(void)
           tattr.attr != (dispchars[j].attr.attr & ~(ATTR_NARROW | DATTR_MASK))
               )
       {
-        if ((tattr.attr & ATTR_WIDE) == 0 && win_char_width(tchar) == 2
-            // do not tamper with graphics
-            && !line->lattr
-            // and restrict narrowing to ambiguous width chars
-            //&& ambigwide(tchar)
-            // but then they will be clipped...
+        if ((tattr.attr & ATTR_WIDE) == 0
+            && win_char_width(tchar, tattr.attr) == 2
+            // && !(line->lattr & LATTR_MODE) ? "do not tamper with graphics"
+            // && ambigwide(tchar) ? but then they will be clipped...
            ) {
           tattr.attr |= ATTR_NARROW;
         }
@@ -2040,7 +2062,8 @@ term_paint(void)
                  // for double-width characters 
                  // (if double-width by font substitution)
                  && cs_ambig_wide && !font_ambig_wide
-                 && win_char_width(tchar) == 1 // && !widerange(tchar)
+                 && win_char_width(tchar, tattr.attr) == 1
+                    //? && !widerange(tchar)
                  // and reassure to apply this only to ambiguous width chars
                  && ambigwide(tchar)
                 ) {
@@ -2053,7 +2076,7 @@ term_paint(void)
 #define dont_debug_width_scaling
 #ifdef debug_width_scaling
       if (tattr.attr & (ATTR_EXPAND | ATTR_NARROW | ATTR_WIDE))
-        printf("%04X w %d enw %02X\n", tchar, win_char_width(tchar), (uint)(((tattr.attr & (ATTR_EXPAND | ATTR_NARROW | ATTR_WIDE)) >> 24)));
+        printf("%04X w %d enw %02X\n", tchar, win_char_width(tchar, tattr.attr), (uint)(((tattr.attr & (ATTR_EXPAND | ATTR_NARROW | ATTR_WIDE)) >> 24)));
 #endif
 
      /* FULL-TERMCHAR */

@@ -675,6 +675,23 @@ default preference; mintty will try to find a Fraktur or Blackletter font
 for it on your system.
 <img align=top src=https://github.com/mintty/mintty/wiki/mintty-alternative-fonts.png>
 
+### Secondary fonts ###
+
+Mintty can select alternative fonts for specific Unicode script ranges.
+With this feature, you can e.g. use a different font for CJK characters.
+
+Script names are as specified in the Unicode file Scripts.txt, listed in 
+[wiki: Unicode scripts](https://en.wikipedia.org/wiki/Script_(Unicode)) column "Alias".
+
+Configuration example:
+```
+FontChoice=Hebrew:6;Arabic:7;Han:8;Hangul:9
+Font6=David
+Font7=Simplified Arabic Fixed
+Font8=FangSong
+Font9=MingLiU
+```
+
 
 ## Character width ##
 
@@ -879,10 +896,6 @@ Emoji data can be found at the following sources:
   * Use the [extraction script `getemojis`](getemojis) to extract emoji data (call it without parameters for instructions)
   * Deploy the desired subdirectories (e.g. `apple`)
   * Includes apple, emojione, facebook, google, twitter, samsung, windows emojis (and some limited low-resolution sets that we shall ignore)
-* [Emoji data and images](https://github.com/iamcal/emoji-data)
-  * “Clone or download” the repository or download a release archive
-  * Deploy subdirectories `img-*` as appropriate (e.g. img-apple-64 as `apple`)
-  * Includes apple, emojione-2D, facebook, facebook messenger (discontinued), google, twitter emojis
 
 To “Clone” with limited download volume, use the command `git clone --depth 1`.
 To download only the desired subdirectory from `github.com`, use `subversion`, 
