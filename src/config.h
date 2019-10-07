@@ -171,6 +171,7 @@ typedef struct {
   int suspbuf_max;
   bool trim_selection;
   char charwidth;
+  int char_narrowing;
   char emojis;
   char emoji_placement;
   wstring app_id;
@@ -204,6 +205,9 @@ typedef struct {
   int selection_show_size;
   bool hover_title;
   int baud;
+  int bloom;
+  string old_options;
+  bool old_xbuttons;
   // Legacy
   bool use_system_colours;
   bool old_bold;
@@ -225,5 +229,6 @@ extern void finish_config(void);
 extern void copy_config(char * tag, config * dst, const config * src);
 extern void apply_config(bool save);
 extern wchar * getregstr(HKEY key, wstring subkey, wstring attribute);
+extern uint getregval(HKEY key, wstring subkey, wstring attribute);
 
 #endif

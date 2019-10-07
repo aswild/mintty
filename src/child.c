@@ -330,6 +330,11 @@ child_create(char *argv[], struct winsize *winp)
     exit(mexit);
   }
   else { // Parent process.
+    if (report_child_pid) {
+      printf("%d\n", pid);
+      fflush(stdout);
+    }
+
 #ifdef __midipix__
     // This corrupts CR in cygwin
     struct termios attr;
@@ -655,20 +660,22 @@ grandchild_process_list(void)
     int thispid = atoi(pn);
     if (thispid && thispid != pid) {
       char * ctty = procres(thispid, "ctty");
-      if (0 == strcmp(ctty, tty)) {
-        int ppid = procresi(thispid, "ppid");
-        int winpid = procresi(thispid, "winpid");
-        // not including the direct child (pid)
-        ttyprocs = renewn(ttyprocs, nttyprocs + 1);
-        ttyprocs[nttyprocs].pid = thispid;
-        ttyprocs[nttyprocs].ppid = ppid;
-        ttyprocs[nttyprocs].winpid = winpid;
-        char * cmd = procres(thispid, "cmdline");
-        ttyprocs[nttyprocs].cmdline = cmd;
+      if (ctty) {
+        if (0 == strcmp(ctty, tty)) {
+          int ppid = procresi(thispid, "ppid");
+          int winpid = procresi(thispid, "winpid");
+          // not including the direct child (pid)
+          ttyprocs = renewn(ttyprocs, nttyprocs + 1);
+          ttyprocs[nttyprocs].pid = thispid;
+          ttyprocs[nttyprocs].ppid = ppid;
+          ttyprocs[nttyprocs].winpid = winpid;
+          char * cmd = procres(thispid, "cmdline");
+          ttyprocs[nttyprocs].cmdline = cmd;
 
-        nttyprocs++;
+          nttyprocs++;
+        }
+        free(ctty);
       }
-      free(ctty);
     }
   }
   closedir(d);
@@ -890,7 +897,7 @@ user_command(wstring commands, int n)
         // check for multi-line separation
         if (*cmdp == '\\' && cmdp[1] == '\n') {
           cmdp += 2;
-          while (isspace(*cmdp))
+          while (iswspace(*cmdp))
             cmdp++;
         }
       }
@@ -1227,7 +1234,7 @@ child_launch(int n, int argc, char * argv[], int moni)
         // check for multi-line separation
         if (*cmdp == '\\' && cmdp[1] == '\n') {
           cmdp += 2;
-          while (isspace(*cmdp))
+          while (iswspace(*cmdp))
             cmdp++;
         }
       }

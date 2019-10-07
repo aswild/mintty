@@ -18,7 +18,8 @@
 # - DMALLOC: define to enable the dmalloc heap debugging library
 #
 # The values of DEBUG and DMALLOC variables do not matter, it's just about
-# whether they're defined, so e.g. 'make DEBUG=1' will trigger a debug build.
+# whether they're defined; a debug build can be built with
+#	make DEBUG=1
 
 #############################################################################
 NAME := mintty
@@ -116,6 +117,7 @@ LDLIBS := -mwindows $(extralibs) -lcomctl32 -limm32 -lwinmm -lwinspool -lole32 -
 #override LDLIBS += -mwindows $(extralibs) -lcomctl32 -limm32 -lwinmm -lwinspool -lole32 -luuid
 
 ifdef DEBUG
+  CPPFLAGS += -Wno-trampolines
   CFLAGS += -g
 else
   CPPFLAGS += -DNDEBUG
@@ -142,10 +144,10 @@ CCOPT=
 CCFLAGS:=$(CFLAGS) $(CCOPT)
 
 $(BINDIR)/term%.o: term%.c
-	$(CC) -c $(DEPOPT) $(CPPFLAGS) $(CCFLAGS) $< -o $(BINDIR)/term$*.o
+	$(CC) -c $(DEPOPT) $(CCFLAGS) $(CPPFLAGS) $< -o $(BINDIR)/term$*.o
 
 $(BINDIR)/%.o: %.c
-	$(CC) -c $(DEPOPT) $(CPPFLAGS) $(CCFLAGS) -fstack-check $< -o $(BINDIR)/$*.o
+	$(CC) -c $(DEPOPT) $(CCFLAGS) $(CPPFLAGS) -fstack-check $< -o $(BINDIR)/$*.o
 
 $(BINDIR)/%.o: %.rc %.h %.mft
 	$(RC) -c 65001 --preprocessor '$(CC) -E -xc -DRC_INVOKED $(DEPOPT) $(CPPFLAGS)' $< $(BINDIR)/$*.o
@@ -320,7 +322,7 @@ $(pdf): ../docs/$(NAME).1
 html := ../docs/$(NAME).1.html
 html: $(html)
 $(html): ../docs/$(NAME).1
-	groff -t -man -Thtml $< > $@
+	sed -f html.sed $< | groff -t -man -mwww -Thtml > $@
 
 clean:
 	#rm -rf *.d *.o $(NAME)*

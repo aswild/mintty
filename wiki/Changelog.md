@@ -1,3 +1,84 @@
+### 3.0.6 (6 October 2019) ###
+
+Terminal features
+  * Support for horizontal mouse scrolling (#925).
+  * Fixed sixel display which was broken in 3.0.3.
+
+Font rendering
+  * Changed default value CharNarrowing from 70 to 80 (#922).
+  * Excluding arrows, technical symbols, and other ranges from auto-narrowing (#922).
+
+Virtual Tabs
+  * User-definable key bindings for quick tab switching (#923, #699).
+
+Other
+  * Safe handling of missing shortcut title/appid (#920).
+
+Configuration
+  * New user-definable functions switch[-visible]-(prev|next) (#923).
+
+### 3.0.5 (2 October 2019) ###
+
+Configuration
+  * Fix handling of --WSL default distribution.
+
+### 3.0.4 (1 October 2019) ###
+
+Font rendering
+  * Exclude full-cell characters from auto-narrowing (#918).
+  * Fix adjustment of auto-narrowed characters (#918).
+
+Configuration
+  * Emojis - Placement values translatable (#919).
+
+### 3.0.3 (28 September 2019) ###
+
+Terminal features
+  * Maintain scrollback buffer in left/right margin mode with default margins (#916).
+  * Do not put cleared lines into scrollback buffer.
+  * Fixed display of subsequent identical emojis (since 3.0.1).
+  * Mouse buttons 4 and 5 send the same escape sequences as xterm.
+  * Disabled unreliable CSI DECLL to switch keyboard LEDs (#915).
+  * DECAUPSS to assign user-preferred supplemental sets to DECSUPP.
+  * Ignore SOS string (ESC X ...), in addition to PM and APC (xterm).
+  * Fixed iconified window report which was reverted (#893).
+  * Prevent negative CSI 13 t response parameters (#899).
+  * Fixed interaction of OSC 12/112 "Set/Reset cursor colour" with IME (#903).
+  * Fixed text area size reported in response to CSI 14 t (#899).
+
+Font rendering
+  * Reimplement auto-narrowing (too wide glyphs) by coordinate scaling (#892).
+  * Support alternative font choice for symbols and pictographs (#892).
+  * Option to adjust automatic character narrowing (#892).
+  * Bloom effect around characters of old CRT terminals, rough simulation.
+
+Window handling
+  * Virtual Tabs support on title bar (#699).
+  * Flexible configuration of scroll modifiers (~#894).
+  * User-definable functions for scrollback scrolling (~#894).
+  * Fixed sixel image list handling (#905).
+  * Optimized sixel image rendering if overlapped (#905).
+  * Dark colour theme support in scrollbar (mintty/wsltty#157).
+  * Clear resizing popup after leaving fullscreen and moving (#913).
+
+Other
+  * Cache emoji image data (speedup emoji display).
+  * Dropped PATH dependency of printer feature (#897).
+  * Dropped float: left from copied HTML style (#900).
+  * Fixed Windows handle resource leak when displaying many emojis (mintty/wsltty#185).
+  * Fixed potential crash on sixel display after resource leak.
+  * Preventing Windows handle resource exhaustion when displaying many sixel images.
+  * Fixed potential crash when confirming exit (#907).
+
+Configuration
+  * Option Bloom.
+  * Option KeyFunctions can assign scrollback scrolling keys (~#894).
+  * Option CharNarrowing (#892).
+  * Options dialog supports setting Emojis and EmojiPlacement.
+  * Options dialog: additional "Selection" panel with additional settings.
+  * Option OldOptions to customize changed areas in Options dialog.
+  * Options -Rp and -RP to report process IDs (#909).
+
 ### 3.0.2 (13 July 2019) ###
 
 Terminal features

@@ -208,8 +208,8 @@ typedef unsigned long long cattrflags;
 typedef struct {
   cattrflags attr;
   int link;
-  uint truefg;
-  uint truebg;
+  colour truebg;
+  colour truefg;
   colour ulcolr;
 } cattr;
 
@@ -384,6 +384,7 @@ typedef struct {
   bool origin;
   short gl, gr;
   term_cset csets[4];
+  term_cset decsupp;
   term_cset cset_single;
   uchar oem_acs;
   bool utf;
@@ -597,7 +598,7 @@ extern void term_clear_scrollback(void);
 extern void term_mouse_click(mouse_button, mod_keys, pos, int count);
 extern void term_mouse_release(mouse_button, mod_keys, pos);
 extern void term_mouse_move(mod_keys, pos);
-extern void term_mouse_wheel(int delta, int lines_per_notch, mod_keys, pos);
+extern void term_mouse_wheel(bool horizontal, int delta, int lines_per_notch, mod_keys, pos);
 extern void term_select_all(void);
 extern void term_paint(void);
 extern void term_invalidate(int left, int top, int right, int bottom);

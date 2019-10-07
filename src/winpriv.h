@@ -37,6 +37,7 @@ extern char * fontpropinfo(void);
 extern bool title_settable;
 extern bool support_wsl;
 extern wstring wsl_basepath;
+extern bool report_child_pid;
 
 extern int ini_width, ini_height;
 extern bool win_is_fullscreen;
@@ -85,12 +86,13 @@ extern void user_function(wstring commands, int n);
 extern void win_show_mouse(void);
 extern void win_mouse_click(mouse_button, LPARAM);
 extern void win_mouse_release(mouse_button, LPARAM);
-extern void win_mouse_wheel(WPARAM, LPARAM);
+extern void win_mouse_wheel(POINT wpos, bool horizontal, int delta);
 extern void win_mouse_move(bool nc, LPARAM);
 
 extern void win_key_reset(void);
 extern bool win_key_down(WPARAM, LPARAM);
 extern bool win_key_up(WPARAM, LPARAM);
+extern void do_win_key_toggle(int vk, bool on);
 extern void win_csi_seq(char * pre, char * suf);
 
 extern void win_led(int led, bool set);

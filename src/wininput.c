@@ -15,6 +15,7 @@
 
 static HMENU ctxmenu = NULL;
 static HMENU sysmenu;
+static int sysmenulen;
 static uint super_key = 0;
 static uint hyper_key = 0;
 static uint newwin_key = 0;
@@ -163,7 +164,7 @@ append_commands(HMENU menu, wstring commands, UINT_PTR idm_cmd, bool add_icons, 
     // check for multi-line separation
     if (*cmdp == '\\' && cmdp[1] == '\n') {
       cmdp += 2;
-      while (isspace(*cmdp))
+      while (iswspace(*cmdp))
         cmdp++;
     }
   }
@@ -586,7 +587,7 @@ win_update_menus(bool callback)
       // check for multi-line separation
       if (*cmdp == '\\' && cmdp[1] == '\n') {
         cmdp += 2;
-        while (isspace(*cmdp))
+        while (iswspace(*cmdp))
           cmdp++;
       }
     }
@@ -596,6 +597,15 @@ win_update_menus(bool callback)
     check_commands(ctxmenu, cfg.ctx_user_commands, IDM_CTXMENUFUNCTION);
   if (*cfg.sys_user_commands)
     check_commands(sysmenu, cfg.sys_user_commands, IDM_SYSMENUFUNCTION);
+
+#ifdef vary_sysmenu
+  static bool switcher_in_sysmenu = false;
+  if (!switcher_in_sysmenu) {
+    add_switcher(sysmenu, true, false, true);
+    switcher_in_sysmenu = true;
+  }
+#endif
+  (void)sysmenulen;
 }
 
 static bool
@@ -704,6 +714,8 @@ win_init_menus(void)
   }
 
   InsertMenuW(sysmenu, SC_CLOSE, MF_SEPARATOR, 0, 0);
+
+  sysmenulen = GetMenuItemCount(sysmenu);
 }
 
 static void
@@ -794,6 +806,12 @@ void
 win_popup_menu(mod_keys mods)
 {
   open_popup_menu(false, null, mods);
+}
+
+void
+win_title_menu(void)
+{
+  open_popup_menu(false, "Ws", 0);
 }
 
 
@@ -1023,18 +1041,14 @@ win_mouse_move(bool nc, LPARAM lp)
 }
 
 void
-win_mouse_wheel(WPARAM wp, LPARAM lp)
+win_mouse_wheel(POINT wpos, bool horizontal, int delta)
 {
-  // WM_MOUSEWHEEL reports screen coordinates rather than client coordinates
-  POINT wpos = {.x = GET_X_LPARAM(lp), .y = GET_Y_LPARAM(lp)};
-  ScreenToClient(wnd, &wpos);
   pos tpos = translate_pos(wpos.x, wpos.y);
 
-  int delta = GET_WHEEL_DELTA_WPARAM(wp);  // positive means up
   int lines_per_notch;
   SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, &lines_per_notch, 0);
 
-  term_mouse_wheel(delta, lines_per_notch, get_mods(), tpos);
+  term_mouse_wheel(horizontal, delta, lines_per_notch, get_mods(), tpos);
 }
 
 void
@@ -1196,6 +1210,32 @@ toggle_bidi()
 {
   term.disable_bidi = !term.disable_bidi;
 }
+
+static void scroll_HOME()
+  { SendMessage(wnd, WM_VSCROLL, SB_TOP, 0); }
+static void scroll_END()
+  { SendMessage(wnd, WM_VSCROLL, SB_BOTTOM, 0); }
+static void scroll_PRIOR()
+  { SendMessage(wnd, WM_VSCROLL, SB_PAGEUP, 0); }
+static void scroll_NEXT()
+  { SendMessage(wnd, WM_VSCROLL, SB_PAGEDOWN, 0); }
+static void scroll_UP()
+  { SendMessage(wnd, WM_VSCROLL, SB_LINEUP, 0); }
+static void scroll_DOWN()
+  { SendMessage(wnd, WM_VSCROLL, SB_LINEDOWN, 0); }
+static void scroll_LEFT()
+  { SendMessage(wnd, WM_VSCROLL, SB_PRIOR, 0); }
+static void scroll_RIGHT()
+  { SendMessage(wnd, WM_VSCROLL, SB_NEXT, 0); }
+
+static void switch_NEXT()
+  { win_switch(false, true); }
+static void switch_PREV()
+  { win_switch(true, true); }
+static void switch_visible_NEXT()
+  { win_switch(false, false); }
+static void switch_visible_PREV()
+  { win_switch(true, false); }
 
 static void
 nop()
@@ -1401,6 +1441,20 @@ static struct function_def cmd_defs[] = {
 
   {"super", {.fct_key = super_down}, 0},
   {"hyper", {.fct_key = hyper_down}, 0},
+
+  {"scroll_top", {.fct = scroll_HOME}, 0},
+  {"scroll_end", {.fct = scroll_END}, 0},
+  {"scroll_pgup", {.fct = scroll_PRIOR}, 0},
+  {"scroll_pgdn", {.fct = scroll_NEXT}, 0},
+  {"scroll_lnup", {.fct = scroll_UP}, 0},
+  {"scroll_lndn", {.fct = scroll_DOWN}, 0},
+  {"scroll_prev", {.fct = scroll_LEFT}, 0},
+  {"scroll_next", {.fct = scroll_RIGHT}, 0},
+
+  {"switch-prev", {.fct = switch_PREV}, 0},
+  {"switch-next", {.fct = switch_NEXT}, 0},
+  {"switch-visible-prev", {.fct = switch_visible_PREV}, 0},
+  {"switch-visible-next", {.fct = switch_visible_NEXT}, 0},
 
   {"void", {.fct = nop}, 0}
 };
@@ -1703,7 +1757,7 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
       // check for multi-line separation
       if (*cmdp == '\\' && cmdp[1] == '\n') {
         cmdp += 2;
-        while (isspace(*cmdp))
+        while (iswspace(*cmdp))
           cmdp++;
       }
     }
@@ -3008,8 +3062,9 @@ win_key_up(WPARAM wp, LPARAM lp)
 }
 
 static int
-win_key_fake(uchar vk)
+win_key_fake(int vk)
 {
+  //printf("-> win_key_fake %02X\n", vk);
   INPUT ki[2];
   ki[0].type = INPUT_KEYBOARD;
   ki[1].type = INPUT_KEYBOARD;
@@ -3026,11 +3081,24 @@ win_key_fake(uchar vk)
   return SendInput(2, ki, sizeof(INPUT));
 }
 
-static void
-win_vk(int vk, bool on)
+void
+do_win_key_toggle(int vk, bool on)
 {
-  if ((GetKeyState(vk) & 1) != on)
+  // this crap does not work
+  return;
+
+  // use some heuristic combination to detect the toggle state
+  int delay = 33333;
+  usleep(delay);
+  int st = GetKeyState(vk);  // volatile; save in case of debugging
+  int ast = GetAsyncKeyState(vk);  // volatile; save in case of debugging
+  //uchar kbd[256];
+  //GetKeyboardState(kbd);
+  //printf("do_win_key_toggle %02X %d (st %02X as %02X kb %02X)\n", vk, on, st, ast, kbd[vk]);
+  if (((st | ast) & 1) != on) {
     win_key_fake(vk);
+    usleep(delay);
+  }
   /* It is possible to switch the LED only and revert the actual 
      virtual input state of the current thread as it was by using 
      SetKeyboardState in win_key_down, but this "fix" would only 
@@ -3039,14 +3107,22 @@ win_vk(int vk, bool on)
    */
 }
 
+static void
+win_key_toggle(int vk, bool on)
+{
+  //printf("send IDM_KEY_DOWN_UP %02X\n", vk | (on ? 0x10000 : 0));
+  send_syscommand2(IDM_KEY_DOWN_UP, vk | (on ? 0x10000 : 0));
+}
+
 void
 win_led(int led, bool set)
 {
+  //printf("\n[%ld] win_led %d %d\n", mtime(), led, set);
   int led_keys[] = {VK_NUMLOCK, VK_CAPITAL, VK_SCROLL};
   if (led <= 0)
     for (uint i = 0; i < lengthof(led_keys); i++)
-      win_vk(led_keys[i], set);
+      win_key_toggle(led_keys[i], set);
   else if (led <= (int)lengthof(led_keys))
-    win_vk(led_keys[led - 1], set);
+    win_key_toggle(led_keys[led - 1], set);
 }
 

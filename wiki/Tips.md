@@ -128,7 +128,7 @@ installed, mintty can be called from cygwin to run a WSL terminal session:
 * `mintty --WSL=Ubuntu`
 * `mintty --WSL` (for the Default distribution as set with `wslconfig /s`)
 
-Note, the `wslbridge` tool needs to be installed in `/bin` for this purpose 
+Note, the `wslbridge2` gateways need to be installed in `/bin` for this purpose 
 (see below for details).
 
 A WSL terminal session can be configured for the mintty session launcher 
@@ -146,11 +146,14 @@ using either the wsltty installer, a Chocolatey package, or a Windows Appx packa
 ### Manual setup of WSL terminal ###
 
 To help reproduce the installation manually, for users of cygwin or msys2:
-* From https://github.com/rprichard/wslbridge/releases, download the `wslbridge` archive corresponding to your system (cygwin/msys2 32/64 bit)
-* Install `wslbridge.exe` and `wslbridge-backend` into your cygwin or msys2 `/bin` directory
+* Download from the https://github.com/Biswa96/wslbridge2 repository
+* Build the wslbridge2 gateways with
+  * `make` for the frontends (e.g. from cygwin)
+  * `wsl make` or `wsl -d` _distro_ `make` for the backends, using a distro that has `make` and `g++` installed
+* From subdirectory `bin`, install the gateway tools `wslbridge2.exe`, `wslbridge2-backend`, `hvpty.exe`, `hvpty-backend` into your `/bin` directory
 * Make a desktop shortcut (Desktop right-click – New ▸ Shortcut) with
-  * Target: `X:\cygwin64\bin\mintty.exe --WSL=Linux_Distribution -`
-  * Icon location (Change Icon…) for Legacy “Ubuntu on Windows”: `%LOCALAPPDATA%\lxss\bash.ico`
+  * Target: `X:\cygwin64\bin\mintty.exe --WSL=`_distro_` -`, with the desired WSL distro (or empty for default)
+  * Icon location (Change Icon…) as appropriate; the wsltty installer will find the distro-specific icon
 
 Replace `X:\cygwin64` with your cygwin or msys2 root directory path 
 and `Linux_Distribution` with your preferred distribution. The suitable 
@@ -261,6 +264,11 @@ _Note:_ There is no point in reporting this for the 15th time as a mintty
 issue, because it is not a mintty issue (or well, an issue maybe, but not 
 caused by, or fixable by, mintty); it is a generic problem of cygwin/msys 
 and occurs likewise in all other pty-based terminals (e.g. xterm).
+
+### Signal processing with alien programs ###
+
+The same workaround handles interrupt signals, particularly Control+C, 
+which does not otherwise function as expected with non-cygwin programs.
 
 
 ## Terminal type detection – check if running inside mintty ##
@@ -692,6 +700,15 @@ Font8=FangSong
 Font9=MingLiU
 ```
 
+A special name is `PictoSymbols` to assign an alternative font to 
+ranges of pictographic symbols, including arrows, mathematical and technical 
+symbols, shapes, dingbats, emoticons etc.
+Configuration example:
+```
+FontChoice=PictoSymbols:2
+Font2=DejaVu Sans Mono
+```
+
 
 ## Character width ##
 
@@ -771,9 +788,10 @@ to adjust line spacing.
 
 ## Text attributes and rendering ##
 
-Mintty supports a maximum of usual and unusual text attributes.
-For underline styles and colour values, colon-separated 
-ISO/IEC 8613-6 sub-parameters are supported.
+Mintty supports a maximum of usual and unusual text attributes, 
+settable with “Select Graphic Rendition” (SGR) escape sequences.
+For underline styles and some other values, colon-separated 
+ECMA-48 sub-parameters are supported.
 
 | **start `^[[...m`**    | **end `^[[...m`** | **attribute**                 |
 |:-----------------------|:------------------|:------------------------------|
@@ -828,7 +846,9 @@ to the respectively selected font attribute.
 
 Note: The control sequence for alternative font 1 overrides the identical 
 control sequence to select the VGA character set. Configuring alternative 
-font 1 is therefore discouraged.
+font 1 is therefore discouraged. Note, on the other hand, that the 
+VGA character set control sequence SGR 11 (effective if Font1 is not configured) 
+is _not_ reset with SGR 0 but only with SGR 10.
 
 Note: The control sequences for Fraktur (“Gothic”) font are described 
 in ECMA-48, see also [wiki:ANSI code](https://en.wikipedia.org/wiki/ANSI_escape_code).
@@ -975,7 +995,9 @@ is likely to reset the working directory to the home directory.
 
 The Virtual Tabs feature provides a list of all running mintty sessions 
 as well as configurable launch parameters for new sessions.
-By default, the list is shown in the extended context menu (Ctrl+right-click), 
+The session list is shown when right-clicking the title bar (if 
+virtual tabs mode is configured or with Ctrl) or ctrl+left-clicking it.
+By default, the list is also shown in the extended context menu (Ctrl+right-click), 
 the mouse button 5 menu, and the menus opened with the Ctrl+Menu key 
 and the Ctrl+Shift+I shortcut (if enabled).
 (Menu contents for the various context menu invocations is configurable.)
@@ -1112,8 +1134,8 @@ To bundle an application which is not natively compiled on cygwin with mintty,
 some way of bridging the terminal interworking incompatiblity problems 
 ([pty incompatibility problem](https://github.com/mintty/mintty/issues/56) and
 [character encoding incompatibility problem](https://github.com/mintty/mintty/issues/376))
-needs to be integrated. A generic solution is [winpty](https://github.com/rprichard/winpty)
-or its WSL-specific variant ʻwslbridge’.
+needs to be integrated. A generic solution is [winpty](https://github.com/rprichard/winpty).
+To run WSL, use ʻwslbridge2’ instead (see above).
 For software that is aware of Posix terminal conventions, it may be a feasible 
 solution if the software detects a terminal and its character encoding by 
 checking environment variable `TERM` and the locale variables and invokes 

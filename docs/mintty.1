@@ -248,6 +248,14 @@ as determined by mintty, and exits.
 With value "W", mintty lists installed WSL distributions and properties, 
 and exits.
 
+With value "p", mintty reports the PID of the child process (e.g. the shell).
+With value "P", mintty reports the cygwin PID and the Windows PID 
+of the mintty process (i.e. running the terminal).
+
+.TP
+\fB--trace\fP \fIOUTPUT\fP
+This option redirects reporting (and debug) output to a file.
+
 .TP
 \fB--store-taskbar-properties\fP
 Enable persistent storage of Windows taskbar properties together with 
@@ -277,7 +285,7 @@ namespace and converted before opening in Windows.
 .TP
 \fB--WSL\fP \fIWSL DISTRIBUTION NAME\fP
 Run a WSL session, setting other parameters as appropriate and involving 
-the \fIwslbridge\fP gateway implicitly 
+one of the \fIwslbridge2\fP gateways implicitly 
 (which should be installed in /bin for this purpose).
 If the distribution name is empty, the default WSL installation is run; 
 otherwise, it refers to the installed WSL packages as listed by the 
@@ -546,6 +554,7 @@ It can be accessed using the scrollbar, the mouse wheel, or the keyboard.
 Hold the \fBShift\fP key while pressing the \fBUp\fP and \fBDown\fP arrow keys
 to scroll line-by-line or the \fBPageUp\fP and \fBPageDown\fP keys to scroll
 page-by-page.
+With option \fBKeyFunctions\fP, user-defined keys can be used for scrolling.
 
 .SS Searching in the text and scrollback buffer
 
@@ -584,13 +593,18 @@ Minimized windows are skipped unless both \fBCtrl\fP keys are used.
 
 The Virtual Tabs feature provides a list of all running mintty sessions (session switcher) 
 as well as configurable launch parameters for new sessions (session launcher).
-By default, the list is shown in the extended context menu (Ctrl+right-click), 
+The session list is shown when right-clicking the title bar (if 
+virtual tabs mode is configured or with Ctrl) or ctrl+left-clicking it.
+By default, the list is also shown in the extended context menu (Ctrl+right-click), 
 the mouse button 5 menu, and the menus opened with the Ctrl+Menu key 
 and the Ctrl+Shift+I shortcut (if enabled).
 (Menu contents for the various context menu invocations is configurable.)
 For configuration, see settings \fBSessionCommands\fP, \fBMenu*\fP, 
 and \fBSessionGeomSync\fP.
 Distinct sets of sessions can be set up with the setting \fB-o Class=...\fP.
+
+Virtual Tabs can be switched quickly with user-defined key assignments, 
+using user-definable functions switch-[visible-](prev|next).
 
 .SS Closing a session
 
@@ -832,6 +846,9 @@ An example of the benefit of this feature is the output of `gnuplot`
 with the command
 .br
 GNUTERM=sixel gnuplot -e "splot [x=-3:3] [y=-3:3] sin(x) * cos(y)"
+
+\fINote:\fP The number of sixel images displayed on the screen is limited 
+in order to prevent Windows handle resource exhaustion.
 
 .SS Emoji display support
 
@@ -1089,6 +1106,12 @@ Script names are as specified in the Unicode file Scripts.txt, listed
 in \fIhttps://en.wikipedia.org/wiki/Script_(Unicode)\fP column "Alias".
 (The definition list can be split over multiple lines if a separator is 
 followed by a backslash, newline, and optional whitespace indentation.)
+A special name is \fBPictoSymbols\fP to assign an alternative font to 
+ranges of pictographic symbols from Unicode blocks matching 
+Arrows, Mathematical Operators, Technical, Enclosed Alphanumerics, 
+Pictographs, Control Pictures, Optical, Box Drawing, Miscellaneous.*Symbols, 
+Block Elements, Geometric Shapes, Dingbats, Tiles, Cards, Emoticons, 
+Transport, Alchemical, Chess.
 .br
 Example:
 .br
@@ -1101,9 +1124,13 @@ Example:
   \fBFont8=FangSong\fP
 .br
   \fBFont9=MingLiU\fP
+.br
+  \fBFontChoice=PictoSymbols:2\fP
+.br
+  \fBFont2=DejaVu Sans Mono\fP
 
 \(en \fBFont sample text\fP (FontSample=):
-This setting overrides the text for the "Sample" box in the Font chooser dialog.
+This hidden setting overrides the text for the "Sample" box in the Font chooser dialog.
 
 \(en \fBShow "hidden" fonts\fP (ShowHiddenFonts=no):
 This hidden setting enables display of monospace fonts in the font selection 
@@ -1122,11 +1149,59 @@ value 0 selects a built-in inline font chooser.
 
 .TP
 \fBText lines\fP (UnderlineManual=false)
-By setting this true, text attributes underline, doubly underline, strikeout and overline 
-are enforced to be drawn manually. 
-The default is to use Windows font variants for strikeout and for underline, 
-unless mintty detects that the underlined font would not display properly.
+By enabling this hidden setting, text attributes underline, doubly underline, 
+strikeout and overline are enforced to be drawn manually. 
+The default is to use Windows font variants for strikeout and for 
+underline, unless mintty detects that the underlined font would not 
+display properly.
 Note that font smoothing may be affected by Windows-generated underline modes.
+
+.TP
+\fBEmoji support\fP (Emojis=none)
+With this option, mintty emoji support is enabled and the emojis style 
+is chosen. Mintty will match output for valid emoji sequences, 
+presentation forms and emoji style selectors.
+(Note that up to cygwin 2.10 it may be useful to set \fBCharwidth=unicode\fP in addition.)
+
+Supported styles are:
+.br
+\(en \fBnone\fP Emoji support disabled; symbols are taken from the font.
+.br
+\(en \fBemojione\fP Use EmojiOne graphics.
+.br
+\(en \fBnoto\fP Use graphics from the Noto Emoji font.
+.br
+\(en \fBapple\fP Use Apple emoji graphics.
+.br
+\(en \fBgoogle\fP Use Google emoji graphics.
+.br
+\(en \fBtwitter\fP Use Twitter emoji graphics.
+.br
+\(en \fBfacebook\fP Use Facebook emoji graphics.
+.br
+\(en \fBsamsung\fP Use Samsung emoji graphics.
+.br
+\(en \fBwindows\fP Use Windows emoji graphics.
+
+Note that all style options only work if the respective emoji graphics repository 
+is deployed in a mintty resource directory, subdirectory \fIemojis\fP.
+See the Tips wiki page \fIhttps://github.com/mintty/mintty/wiki/Tips#emojis\fP 
+for details.
+
+.TP
+\fBEmoji placement\fP (EmojiPlacement=stretch)
+Emojis are displayed in the rectangular character cell group determined 
+by the cumulated width of the emoji sequence characters. The following 
+options are provided to tune their display:
+.br
+\(en \fBstretch\fP Emojis are scaled to fit in their display area.
+.br
+\(en \fBalign\fP Emojis are aligned in their display area.
+.br
+\(en \fBmiddle\fP Emojis are centered in their display area.
+.br
+\(en \fBfull\fP Emojis are full-size with original aspect ratio;
+note that they may overlap into the next character(s).
 
 .TP
 \fBShow bold as font\fP (BoldAsFont=no)
@@ -1331,7 +1406,7 @@ allowed to detect a Ctrl+Menu sequence as AltGr.
 \fBOld method of AltGr detection\fP (OldAltGrDetection=no)
 Setting this hidden option would disable a workaround for an 
 incompatibility in the Windows on-screen keyboard, 
-just in case is has any side effects.
+just in case it has any side effects.
 
 .TP
 \fBSupport injection of external hotkeys\fP (SupportExternalHotkeys=2)
@@ -1586,17 +1661,22 @@ The modifier key that needs to be pressed together with the arrow-up/down,
 PgUp/PgDn, Home/End, or arrow-left/right keys to access the scrollback buffer.
 .br
 The default is \fBShift\fP.
-The \fBOff\fP setting disables scrolling with keyboard shortcuts.
+The \fBOff\fP setting disables scrolling with keyboard shortcuts. 
+A combined numeric value selects the respective combination of modifier keys.
 .br
-\(en \fBShift\fP
+\(en \fBShift\fP (1)
 .br
-\(en \fBCtrl\fP
+\(en \fBAlt\fP (2)
 .br
-\(en \fBAlt\fP
+\(en \fBCtrl\fP (4)
 .br
-\(en \fBWin\fP
+\(en \fBWin\fP (8)
 .br
-\(en \fBOff\fP
+\(en \fBSuper\fP (16)
+.br
+\(en \fBHyper\fP (32)
+.br
+\(en \fBOff\fP (0)
 
 .TP
 \fBPgUp and PgDn scroll without modifier\fP (PgUpDnScroll=no)
@@ -1950,6 +2030,15 @@ options, which means they can only be set in config files or using the
 \fB--option\fP or \fB-o\fP command line option.
 
 .TP
+\fBCustomize Options dialog\fP (OldOptions=)
+Listing comma-separated tags in this setting will disable extended or 
+enhanced parts of the Options dialog.
+.br
+\(en \fBemoji\fP Disable emoji style section in "Text" panel.
+.br
+\(en \fBselection\fP Disable separate "Selection" panel.
+
+.TP
 \fBAccelerate display speed\fP (DisplaySpeedup=6)
 If mintty processes high volume of output, it will skip up to the given 
 number of refresh intervals (of 16ms each) in order to save output that 
@@ -1961,6 +2050,10 @@ The maximum value is 9.
 This setting can demonstrate a legacy feeling of a serial terminal connection.
 Typical baud rates (as supported by DEC VT420) were 
 300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 56700, 76800, 115200.
+
+.TP
+\fBBloom effect around characters\fP (Bloom=0)
+This setting enables a rough simulation of old CRT terminals' bloom effect.
 
 .TP
 \fBClear selection highlighting on input\fP (ClearSelectionOnInput=true)
@@ -2018,51 +2111,14 @@ inconsistent for the impacted characters, which may confuse
 screen applications (such as editors) that rely on \fBwcwidth\fP information.
 
 .TP
-\fBEmoji support\fP (Emojis=none)
-With this option, mintty emoji support is enabled and the emojis style 
-is chosen. Mintty will match output for valid emoji sequences, 
-presentation forms and emoji style selectors.
-(Note that up to cygwin 2.10 it may be useful to set \fBCharwidth=unicode\fP in addition.)
-
-Supported styles are:
-.br
-\(en \fBnone\fP Emoji support disabled; symbols are taken from the font.
-.br
-\(en \fBemojione\fP Use EmojiOne graphics.
-.br
-\(en \fBnoto\fP Use graphics from the Noto Emoji font.
-.br
-\(en \fBapple\fP Use Apple emoji graphics.
-.br
-\(en \fBgoogle\fP Use Google emoji graphics.
-.br
-\(en \fBtwitter\fP Use Twitter emoji graphics.
-.br
-\(en \fBfacebook\fP Use Facebook emoji graphics.
-.br
-\(en \fBsamsung\fP Use Samsung emoji graphics.
-.br
-\(en \fBwindows\fP Use Windows emoji graphics.
-
-Note that all style options only work if the respective emoji graphics repository 
-is deployed in a mintty resource directory, subdirectory \fIemojis\fP.
-See the Tips wiki page \fIhttps://github.com/mintty/mintty/wiki/Tips#emojis\fP 
-for details.
-
-.TP
-\fBEmoji placement\fP (EmojiPlacement=stretch)
-Emojis are displayed in the rectangular character cell group determined 
-by the cumulated width of the emoji sequence characters. The following 
-options are provided to tune their display:
-.br
-\(en \fBstretch\fP Emojis are scaled to fit in their display area.
-.br
-\(en \fBalign\fP Emojis are aligned in their display area.
-.br
-\(en \fBmiddle\fP Emojis are centered in their display area.
-.br
-\(en \fBfull\fP Emojis are full-size with original aspect ratio;
-note that they may overlap into the next character(s).
+\fBCharacter narrowing factor\fP (CharNarrowing=70)
+Depending on the font and font fallback (either by Windows means or 
+via option \fBFontChoice\fP), some glyphs may be too wide for the 
+character cell grid. Mintty applies automatic narrowing heuristics 
+to fit such glyphs into a character cell so they do not overlap 
+subsequent characters.
+With this setting, the horizontal scaling for narrowed characters can 
+be adjusted between 50% and 100%.
 
 .TP
 \fBBidirectional rendering\fP (Bidi=2)
@@ -2406,6 +2462,32 @@ Supported actions are described as follows:
 \(en \fBsuper\fP: use this key as Super modifier key
 .br
 \(en \fBhyper\fP: use this key as Hyper modifier key
+.br
+\(en \fBscroll_top\fP: scroll scrollback view to beginning
+.br
+\(en \fBscroll_end\fP: scroll scrollback view to end
+.br
+\(en \fBscroll_pgup\fP: scroll scrollback view one page up
+.br
+\(en \fBscroll_pgdn\fP: scroll scrollback view one page down
+.br
+\(en \fBscroll_lnup\fP: scroll scrollback view one line up
+.br
+\(en \fBscroll_lndn\fP: scroll scrollback view one line down
+.br
+\(en \fBscroll_prev\fP: scroll scrollback view to previous marker
+.br
+\(en \fBscroll_next\fP: scroll scrollback view to next marker
+.br
+
+\(en \fBswitch-prev\fP: switch to previous virtual tab
+.br
+\(en \fBswitch-next\fP: switch to next virtual tab
+.br
+\(en \fBswitch-visible-prev\fP: switch to previous virtual tab which is not iconized
+.br
+\(en \fBswitch-visible-next\fP: switch to next virtual tab which is not iconized
+.br
 
 \fINote (*):\fP The exact behaviour of some actions depends on the 
 state of the Shift key.
@@ -2452,6 +2534,9 @@ the CapsLock key
 .br
 \(en \fBKeyFunctions=*Menu:29\fP turns the Menu key into an F16 function key 
 (xterm default) and applies all modifiers to it
+.br
+\(en \fBKeyFunctions=S+KP_Prior:scroll_pgup;C+KP_Prior:scroll_pgup;C+KP_Next:scroll_pgdn;S+KP_Next:scroll_pgdn\fP 
+enables scrollback scrolling with either of Shift or Control modifiers
 
 .TP
 \fBUse system colours\fP (UseSystemColours=no)

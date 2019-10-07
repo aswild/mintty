@@ -250,6 +250,7 @@ term_cursor_reset(term_cursor *curs)
   curs->utf = false;
   for (uint i = 0; i < lengthof(curs->csets); i++)
     curs->csets[i] = CSET_ASCII;
+  curs->decsupp = CSET_DECSPGR;
   curs->cset_single = CSET_ASCII;
 
   curs->bidimode = 0;
@@ -1013,9 +1014,6 @@ term_resize(int newrows, int newcols)
 void
 term_switch_screen(bool to_alt, bool reset)
 {
-  imglist *first, *last;
-  long long int offset;
-
   if (to_alt == term.on_alt_screen)
     return;
 
@@ -1026,9 +1024,9 @@ term_switch_screen(bool to_alt, bool reset)
   term.other_lines = oldlines;
 
   /* swap image list */
-  first = term.imgs.first;
-  last = term.imgs.last;
-  offset = term.virtuallines;
+  imglist * first = term.imgs.first;
+  imglist * last = term.imgs.last;
+  long long int offset = term.virtuallines;
   term.imgs.first = term.imgs.altfirst;
   term.imgs.last = term.imgs.altlast;
   term.virtuallines = term.altvirtuallines;
@@ -1161,7 +1159,7 @@ term_do_scroll(int topline, int botline, int lines, bool sb)
     win_update(true);
   }
 
-  if (term.lrmargmode) {
+  if (term.lrmargmode && (term.marg_left || term.marg_right != term.cols - 1)) {
     scroll_rect(topline, botline, lines);
     return;
   }
@@ -1315,11 +1313,16 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
   if (!from_begin || !to_end)
     term_check_boundary(curs->x, curs->y);
 
+#ifdef scrollback_erase_lines
+#warning this behaviour is not compatible with xterm
  /* Lines scrolled away shouldn't be brought back on if the terminal resizes. */
   bool erasing_lines_from_top =
     start.y == 0 && start.x == 0 && end.x == 0 && !line_only && !selective;
 
-  if (erasing_lines_from_top && !term.lrmargmode) {
+  if (erasing_lines_from_top && 
+      !(term.lrmargmode && (term.marg_left || term.marg_right != term.cols - 1))
+     )
+  {
    /* If it's a whole number of lines, starting at the top, and
     * we're fully erasing them, erase by scrolling and keep the
     * lines in the scrollback. */
@@ -1337,7 +1340,9 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
     if (!term.on_alt_screen)
       term.tempsblines = 0;
   }
-  else {
+  else
+#endif
+  {
     termline *line = term.lines[start.y];
     while (poslt(start, end)) {
       int cols = min(line->cols, line->size);
@@ -1371,10 +1376,14 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
 #define EM_base 16
 
 struct emoji_base {
-  void * res;  // filename (char*/wchar*) or cached image
-  uint tags: 11;
-  xchar ch: 21;
-} __attribute__((packed));
+  wchar * efn;  // image filename
+  void * buf;  // cached image
+  int buflen;  // cached image
+  struct {
+    uint tags: 11;
+    xchar ch: 21;
+  } __attribute__((packed));
+};
 
 struct emoji_base emoji_bases[] = {
 #include "emojibase.t"
@@ -1423,7 +1432,9 @@ emoji_tags(int i)
 #endif
 
 struct emoji_seq {
-  void * res;   // filename (char*/wchar*) or cached image
+  wchar * efn;  // image filename
+  void * buf;   // cached image
+  int buflen;   // cached image
   echar chs[8]; // code points
   char * name;  // short name in emoji-sequences.txt, emoji-zwj-sequences.txt
 };
@@ -1440,6 +1451,33 @@ struct emoji {
 } __attribute__((packed));
 
 #define dont_debug_emojis 1
+
+void
+clear_emoji_data()
+{
+  for (uint i = 0; i < lengthof(emoji_bases); i++) {
+    if (emoji_bases[i].efn) {
+      free(emoji_bases[i].efn);
+      emoji_bases[i].efn = 0;
+    }
+    if (emoji_bases[i].buf) {
+      free(emoji_bases[i].buf);
+      emoji_bases[i].buf = 0;
+      emoji_bases[i].buflen = 0;
+    }
+  }
+  for (uint i = 0; i < lengthof(emoji_seqs); i++) {
+    if (emoji_seqs[i].efn) {
+      free(emoji_seqs[i].efn);
+      emoji_seqs[i].efn = 0;
+    }
+    if (emoji_seqs[i].buf) {
+      free(emoji_seqs[i].buf);
+      emoji_seqs[i].buf = 0;
+      emoji_seqs[i].buflen = 0;
+    }
+  }
+}
 
 /*
    Get emoji sequence "short name".
@@ -1475,10 +1513,10 @@ check_emoji(struct emoji e)
 {
   wchar * * efnpoi;
   if (e.seq) {
-    efnpoi = (wchar * *)&emoji_seqs[e.idx].res;
+    efnpoi = (wchar * *)&emoji_seqs[e.idx].efn;
   }
   else {
-    efnpoi = (wchar * *)&emoji_bases[e.idx].res;
+    efnpoi = (wchar * *)&emoji_bases[e.idx].efn;
   }
   if (*efnpoi) { // emoji resource was checked before
     return **efnpoi;  // ... successfully?
@@ -1565,7 +1603,7 @@ fallback:;
       goto fallback;
     }
 
-    * efnpoi = W("");  // indicate "checked but not found"
+    * efnpoi = wcsdup(W(""));  // indicate "checked but not found"
     return false;
   }
 }
@@ -1769,17 +1807,23 @@ emoji_show(int x, int y, struct emoji e, int elen, cattr eattr, ushort lattr)
 {
   (void)eattr;
   wchar * efn;
+  void * * bufpoi;
+  int * buflen;
   if (e.seq) {
-    efn = emoji_seqs[e.idx].res;
+    efn = emoji_seqs[e.idx].efn;
+    bufpoi = &emoji_seqs[e.idx].buf;
+    buflen = &emoji_seqs[e.idx].buflen;
   }
   else {
-    efn = emoji_bases[e.idx].res;
+    efn = emoji_bases[e.idx].efn;
+    bufpoi = &emoji_bases[e.idx].buf;
+    buflen = &emoji_bases[e.idx].buflen;
   }
 #ifdef debug_emojis
-  printf("emoji_show <%ls>\n", efn);
+  printf("emoji_show @%d:%d..%d seq %d idx %d <%ls>\n", y, x, elen, e.seq, e.idx, efn);
 #endif
   if (efn && *efn)
-    win_emoji_show(x, y, efn, elen, lattr);
+    win_emoji_show(x, y, efn, bufpoi, buflen, elen, lattr);
 }
 
 #define dont_debug_win_text_invocation
@@ -2052,8 +2096,27 @@ term_paint(void)
             && win_char_width(tchar, tattr.attr) == 2
             // && !(line->lattr & LATTR_MODE) ? "do not tamper with graphics"
             // && ambigwide(tchar) ? but then they will be clipped...
-           ) {
-          tattr.attr |= ATTR_NARROW;
+           )
+        {
+          //printf("[%d:%d] narrow? %04X..%04X\n", i, j, tchar, chars[j + 1].chr);
+          xchar ch = tchar;
+          if ((ch & 0xFC00) == 0xD800 && d->cc_next) {
+            termchar * cc = d + d->cc_next;
+            if ((cc->chr & 0xFC00) == 0xDC00) {
+              ch = ((xchar) (ch - 0xD7C0) << 10) | (cc->chr & 0x03FF);
+            }
+          }
+          if ((ch >= 0x2190 && ch <= 0x2BFF)
+           || (ch >= 0x1F000 && ch <= 0x1FAFF)
+             )
+          {
+            //tattr.attr |= ATTR_NARROW1; // ?
+          }
+          else
+#ifdef failed_attempt_to_tame_narrowing
+            if (j + 1 < term.cols && chars[j + 1].chr != ' ')
+#endif
+            tattr.attr |= ATTR_NARROW;
         }
         else if (tattr.attr & ATTR_WIDE
                  // guard character expanding properly to avoid 
@@ -2066,12 +2129,14 @@ term_paint(void)
                     //? && !widerange(tchar)
                  // and reassure to apply this only to ambiguous width chars
                  && ambigwide(tchar)
-                ) {
+                )
+        {
           tattr.attr |= ATTR_EXPAND;
         }
       }
-      else if (dispchars[j].attr.attr & ATTR_NARROW)
+      else if (dispchars[j].attr.attr & ATTR_NARROW) {
         tattr.attr |= ATTR_NARROW;
+      }
 
 #define dont_debug_width_scaling
 #ifdef debug_width_scaling
@@ -2384,6 +2449,12 @@ term_paint(void)
                     || (tattr.truebg != attr.truebg)
                     || (tattr.ulcolr != attr.ulcolr);
 
+      if (tchar != SIXELCH && (tattr.attr & ATTR_NARROW))
+        trace_run("narrow"), break_run = true;
+
+      if (tattr.attr & TATTR_EMOJI)
+        trace_run("emoji"), break_run = true;
+
       inline bool has_comb(termchar * tc)
       {
         if (!tc->cc_next)
@@ -2445,7 +2516,7 @@ term_paint(void)
       }
       bc = tbc;
 
-      if (break_run) {
+      if (break_run || cfg.bloom) {
         if ((dirty_run && textlen) || overlaying)
           out_text(start, i, text, textlen, attr, textattr, line->lattr, has_rtl);
         start = j;

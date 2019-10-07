@@ -15,6 +15,8 @@
 
 #define dont_debug_bold 1
 
+#define dont_narrow_via_font
+
 enum {
   FONT_NORMAL    = 0x00,
   FONT_BOLD      = 0x01,
@@ -27,8 +29,14 @@ enum {
   FONT_ZOOMFULL  = 0x20,
   FONT_ZOOMSMALL = 0x40,
   FONT_WIDE      = 0x80,
+#ifdef narrow_via_font
+#warning narrowing via font is deprecated
   FONT_NARROW    = 0x100,
   FONT_MAXNO     = FONT_WIDE + FONT_NARROW
+#else
+  FONT_NARROW    = 0,	// disabled narrowing via font
+  FONT_MAXNO     = 2 * FONT_WIDE
+#endif
 };
 
 enum {LDRAW_CHAR_NUM = 31, LDRAW_CHAR_TRIES = 4};
@@ -937,7 +945,7 @@ win_zoom_font(int zoom, bool sync_size_with_font)
 
 static HDC dc;
 static enum { UPDATE_IDLE, UPDATE_BLOCKED, UPDATE_PENDING } update_state;
-static bool ime_open;
+static bool ime_open = false;
 
 static int update_skipped = 0;
 int lines_scrolled = 0;
@@ -1648,7 +1656,7 @@ load_background_image_brush(HDC dc, wstring fn)
       static wchar * prevbg = 0;
       bool isnewbg = !prevbg || wcscmp(cfg.background, prevbg);
       printf("isnewbg %d <%ls> <%ls>\n", isnewbg, cfg.background, prevbg);
-      if (ratio && isnewbg && abs(bw * h - bh * w) > 5) {
+      if (ratio && isnewbg && abs((int)bw * h - (int)bh * w) > 5) {
         if (prevbg)
           free(prevbg);
         prevbg = wcsdup(cfg.background);
@@ -2106,7 +2114,7 @@ scale_to_image_ratio()
   printf("  cur w %d h %d img bw %d bh %d\n", (int)w, (int)h, bw, bh);
 #endif
 
-  if (abs(bw * h - bh * w) < w + h)
+  if (abs((int)bw * h - (int)bh * w) < w + h)
     return;
 
   w = max(w, ini_width);
@@ -2593,6 +2601,11 @@ apply_attr_colour(cattr a, attr_colour_mode mode)
 void
 win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, bool has_rtl, bool clearpad, uchar phase)
 {
+#ifdef debug_wscale
+  if (attr.attr & (ATTR_EXPAND | ATTR_NARROW | ATTR_WIDE))
+    for (int i = 0; i < len; i++)
+      printf("[%2d:%2d] %c%c%c%c %04X\n", ty, tx + i, attr.attr & ATTR_NARROW ? 'n' : ' ', attr.attr & ATTR_EXPAND ? 'x' : ' ', attr.attr & ATTR_WIDE ? 'w' : ' ', " WUL"[lattr & LATTR_MODE], text[i]);
+#endif
   //if (kb_trace) {printf("[%ld] <win_text\n", mtime()); kb_trace = 0;}
 
   int graph = (attr.attr & GRAPH_MASK) >> ATTR_GRAPH_SHIFT;
@@ -2724,11 +2737,23 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     otherwise:       nfont = FONT_WIDE + FONT_HIGH;
   }
 
-  if (attr.attr & ATTR_EXPAND)
+  int wscale = 100;
+
+  if (attr.attr & ATTR_EXPAND) {
+    if (nfont & FONT_WIDE)
+      wscale = 200;
     nfont |= FONT_WIDE;
-  else
-  if (attr.attr & ATTR_NARROW)
+  }
+#ifndef narrow_via_font
+  else if ((attr.attr & ATTR_NARROW) && !(attr.attr & TATTR_ZOOMFULL)) {
+    wscale = cfg.char_narrowing;
+    if (wscale > 100)
+      wscale = 100;
+    if (wscale < 50)
+      wscale = 50;
     nfont |= FONT_NARROW;
+  }
+#endif
 
   bool do_special_underlay = false;
   if (cfg.bold_as_special && (attr.attr & ATTR_BOLD)) {
@@ -2761,8 +2786,11 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     // Don't force manual bold, it could be bad news.
     nfont &= ~(FONT_BOLD | FONT_UNDERLINE);
   }
+#ifdef narrow_via_font
   if ((nfont & (FONT_WIDE | FONT_NARROW)) == (FONT_WIDE | FONT_NARROW))
     nfont &= ~(FONT_WIDE | FONT_NARROW);
+#endif
+
   another_font(ff, nfont);
   if (!ff->fonts[nfont])
     nfont = FONT_NORMAL;
@@ -2991,7 +3019,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
       underlaid = true;
   }
 
- /* Coordinate transformation */
+ /* Coordinate transformation per line */
   int coord_transformed = 0;
   XFORM old_xform;
   if (lpresrtl) {
@@ -3067,7 +3095,46 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     SetTextColor(dc, fg);
   }
 
+  int bloom = 0;
+  XFORM old_xform_bloom;
+  int coord_transformed_bloom = 0;
+  if (cfg.bloom) {
+    bloom = 2;
+    fg = ((fg & 0xFEFEFEFE) >> 1) + ((win_get_colour(BG_COLOUR_I) & 0xFEFEFEFE) >> 1);
+    SetTextColor(dc, fg);
+  }
+
 draw:;
+  if (bloom) {
+    if (bloom > 1 || bloom >= 1)
+      fg = ((fg & 0xFEFEFEFE) >> 1) + ((win_get_colour(BG_COLOUR_I) & 0xFEFEFEFE) >> 1);
+    else {
+      colour fg2 = (fg & 0xFEFEFEFE) >> 1;
+      colour bg2 = (win_get_colour(BG_COLOUR_I) & 0xFEFEFEFE) >> 1;
+      colour fg4 = (fg & 0xFCFCFCFC) >> 2;
+      colour bg4 = (win_get_colour(BG_COLOUR_I) & 0xFCFCFCFC) >> 2;
+      fg = fg2 + fg4 + bg2 + bg4;
+    }
+    SetTextColor(dc, fg);
+    SelectObject(dc, ff->fonts[nfont | FONT_BOLD]);
+
+    coord_transformed_bloom = SetGraphicsMode(dc, GM_ADVANCED);
+    if (coord_transformed_bloom && GetWorldTransform(dc, &old_xform_bloom)) {
+      clear_run();
+
+      float scale = 1.0 + (float)bloom / 7.0;
+      /*
+        xt' = xt + cell_width / 2
+        x' - xt' = sc * (x - xt')
+        x' = xt' + sc * x - sc * xt'
+        x' = sc * x + (1 - sc) * xt'
+      */
+      XFORM xform = (XFORM){scale, 0.0, 0.0, scale, 
+                    ((float)xt + (float)cell_width / 2) * (1.0 - scale), 
+                    ((float)yt + (float)cell_height / 2) * (1.0 - scale)};
+      coord_transformed_bloom = ModifyWorldTransform(dc, &xform, MWT_LEFTMULTIPLY);
+    }
+  }
 #ifdef debug_draw
   if (*text != ' ')
     printf("draw @%d:%d %d:%d %d:%d\n", ty, tx, yt, xt, y, x);
@@ -3175,6 +3242,8 @@ draw:;
     DeleteObject(oldpen);
   }
 
+  int dxs_[len];
+
  /* Background for overhang overlay */
   if (ldisp1) {
     if (!underlaid)
@@ -3196,6 +3265,39 @@ draw:;
         text[i] = 0x2502;
     else if (graph == 0xF7)  // VT52 fraction numerator
       yt -= line_width;
+  }
+
+ /* Coordinate transformation per character */
+  int coord_transformed2 = 0;
+  XFORM old_xform2;
+  RECT box_, box2_;
+  if (wscale != 100) {
+    coord_transformed2 = SetGraphicsMode(dc, GM_ADVANCED);
+    if (coord_transformed2 && GetWorldTransform(dc, &old_xform2)) {
+      clear_run();
+
+      float scale = (float)wscale / 100.0;
+      XFORM xform = (XFORM){scale, 0.0, 0.0, 1.0, xt * (1.0 - scale), 0.0};
+      coord_transformed2 = ModifyWorldTransform(dc, &xform, MWT_LEFTMULTIPLY);
+      if (coord_transformed2) {
+        for (int i = 0; i < len; i++)
+          dxs_[i] = dxs[i];
+        box_ = box;
+        box2_ = box2;
+        // compensate for the scaling
+        for (int i = 0; i < len; i++)
+          dxs[i] /= scale;
+        if (wscale <= 100) {
+          box.right /= scale;
+          box2.right /= scale;
+        }
+        else { // evolutionary algorithm; don't ask why or how it works :/
+        // extend bounding box by the scaling
+          box.right *= scale;
+          box2.right *= scale;
+        }
+      }
+    }
   }
 
  /* Finally, draw the text */
@@ -3220,8 +3322,8 @@ draw:;
 
   if (combining || combining_double)
     *dxs = char_width;  // convince Windows to apply font underlining
-  text_out_start(dc, text, len, dxs);
 
+  text_out_start(dc, text, len, dxs);
   for (int xoff = 0; xoff < xwidth; xoff++)
     if (combining || combining_double) {
       // Workaround for mangled display of combining characters;
@@ -3270,6 +3372,15 @@ draw:;
       }
     }
   text_out_end();
+
+  if (coord_transformed2) {
+    SetWorldTransform(dc, &old_xform2);
+    // restore these in case we're in a shadow loop
+    for (int i = 0; i < len; i++)
+      dxs[i] = dxs_[i];
+    box = box_;
+    box2 = box2_;
+  }
 
  /* Manual drawing of certain graphics */
   // line_width already set above for DEC Tech adjustments
@@ -3678,6 +3789,16 @@ draw:;
 
   _return:
 
+  if (bloom && coord_transformed_bloom) {
+    bloom--;
+    SetWorldTransform(dc, &old_xform_bloom);
+    fg = fg0;
+    SetTextColor(dc, fg);
+    if (!bloom)
+      SelectObject(dc, ff->fonts[nfont]);
+    goto draw;
+  }
+
   if (layer) {
     layer--;
     yt = yt0;
@@ -4059,8 +4180,10 @@ win_set_colour(colour_i i, colour c)
       cc(i, cfg.fg_colour);
     else if (i == BG_COLOUR_I)
       cc(i, cfg.bg_colour);
-    else if (i == CURSOR_COLOUR_I)
+    else if (i == CURSOR_COLOUR_I) {
       cc(i, cfg.cursor_colour);
+      cc(IME_CURSOR_COLOUR_I, cfg.ime_cursor_colour);
+    }
     else if (i == SEL_COLOUR_I)
       cc(i, cfg.sel_bg_colour);
     else if (i == SEL_TEXT_COLOUR_I)
@@ -4103,7 +4226,28 @@ win_set_colour(colour_i i, colour c)
         // Set the colour of text under the cursor to whichever of foreground
         // and background colour is further away from the cursor colour.
         colour fg = colours[FG_COLOUR_I], bg = colours[BG_COLOUR_I];
-        cc(CURSOR_TEXT_COLOUR_I, colour_dist(c, fg) > colour_dist(c, bg) ? fg : bg);
+        colour _cc = colour_dist(c, fg) > colour_dist(c, bg) ? fg : bg;
+        cc(CURSOR_TEXT_COLOUR_I, _cc);
+        if (cfg.ime_cursor_colour != DEFAULT_COLOUR) {
+          // effective IME cursor colour : configured IME cursor colour
+          // = effective cursor colour : configured cursor colour
+          // resp.
+          // effective IME cursor colour : effective cursor colour
+          // = configured IME cursor colour : configured cursor colour
+          uint r = (uint)red(_cc) * (uint)red(cfg.ime_cursor_colour);
+          if (red(cfg.cursor_colour))
+            r /= red(cfg.cursor_colour);
+          r = max(r, 255);
+          uint g = (uint)green(_cc) * (uint)green(cfg.ime_cursor_colour);
+          if (green(cfg.cursor_colour))
+            g /= green(cfg.cursor_colour);
+          g = max(r, 255);
+          uint b = (uint)blue(_cc) * (uint)blue(cfg.ime_cursor_colour);
+          if (blue(cfg.cursor_colour))
+            b /= blue(cfg.cursor_colour);
+          b = max(r, 255);
+          c = RGB(r, g, b);
+        }
         cc(IME_CURSOR_COLOUR_I, c);
       }
       otherwise:

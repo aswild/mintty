@@ -102,6 +102,8 @@ bool title_settable = true;
 static string border_style = 0;
 static string report_geom = 0;
 static bool report_moni = false;
+bool report_child_pid = false;
+static bool report_winpid = false;
 static int monitor = 0;
 static bool center = false;
 static bool right = false;
@@ -115,6 +117,7 @@ static bool prevent_pinning = false;
 bool support_wsl = false;
 wchar * wslname = 0;
 wstring wsl_basepath = W("");
+static uint wsl_ver = 0;
 static char * wsl_guid = 0;
 static bool wsl_launch = false;
 static bool start_home = false;
@@ -166,7 +169,7 @@ mtime(void)
 
 
 #ifdef debug_resize
-#define SetWindowPos(wnd, after, x, y, cx, cy, flags)	{printf("SWP[%s] %ld %ld\n", __FUNCTION__, (long int)cx, (long int)cy); Set##WindowPos(wnd, after, x, y, cx, cy, flags);}
+#define SetWindowPos(wnd, after, x, y, cx, cy, flags)	printf("SWP[%s] %ld %ld\n", __FUNCTION__, (long int)cx, (long int)cy), Set##WindowPos(wnd, after, x, y, cx, cy, flags)
 static void
 trace_winsize(char * tag)
 {
@@ -183,7 +186,13 @@ trace_winsize(char * tag)
 static HRESULT (WINAPI * pDwmIsCompositionEnabled)(BOOL *) = 0;
 static HRESULT (WINAPI * pDwmExtendFrameIntoClientArea)(HWND, const MARGINS *) = 0;
 static HRESULT (WINAPI * pDwmEnableBlurBehindWindow)(HWND, void *) = 0;
+static HRESULT (WINAPI * pDwmSetWindowAttribute)(HWND, DWORD, LPCVOID, DWORD) = 0;
+
 static HRESULT (WINAPI * pSetWindowCompositionAttribute)(HWND, void *) = 0;
+static BOOL (WINAPI * pSystemParametersInfo)(UINT, UINT, PVOID, UINT) = 0;
+
+static BOOLEAN (WINAPI * pShouldAppsUseDarkMode)(void) = 0; /* undocumented */
+static HRESULT (WINAPI * pSetWindowTheme)(HWND, const wchar_t *, const wchar_t *) = 0;
 
 // Helper for loading a system library. Using LoadLibrary() directly is insecure
 // because Windows might be searching the current working directory first.
@@ -206,6 +215,8 @@ load_dwm_funcs(void)
 {
   HMODULE dwm = load_sys_library("dwmapi.dll");
   HMODULE user32 = load_sys_library("user32.dll");
+  HMODULE uxtheme = load_sys_library("uxtheme.dll");
+
   if (dwm) {
     pDwmIsCompositionEnabled =
       (void *)GetProcAddress(dwm, "DwmIsCompositionEnabled");
@@ -213,10 +224,20 @@ load_dwm_funcs(void)
       (void *)GetProcAddress(dwm, "DwmExtendFrameIntoClientArea");
     pDwmEnableBlurBehindWindow =
       (void *)GetProcAddress(dwm, "DwmEnableBlurBehindWindow");
+    pDwmSetWindowAttribute = 
+      (void *)GetProcAddress(dwm, "DwmSetWindowAttribute");
   }
   if (user32) {
     pSetWindowCompositionAttribute =
       (void *)GetProcAddress(user32, "SetWindowCompositionAttribute");
+    pSystemParametersInfo =
+      (void *)GetProcAddress(user32, "SystemParametersInfoW");
+  }
+  if (uxtheme) {
+    pShouldAppsUseDarkMode = 
+      (void *)GetProcAddress(uxtheme, MAKEINTRESOURCEA(132)); /* ordinal */
+    pSetWindowTheme = 
+      (void *)GetProcAddress(uxtheme, "SetWindowTheme");
   }
 }
 
@@ -1303,19 +1324,25 @@ win_has_scrollbar(void)
 void
 win_get_pixels(int *height_p, int *width_p, bool with_borders)
 {
+  trace_winsize("win_get_pixels");
   RECT r;
-  GetWindowRect(wnd, &r);
   //printf("win_get_pixels: width %d win_has_scrollbar %d\n", r.right - r.left, win_has_scrollbar());
   if (with_borders) {
+    GetWindowRect(wnd, &r);
     *height_p = r.bottom - r.top;
     *width_p = r.right - r.left;
   }
   else {
+    GetClientRect(wnd, &r);
     int sy = win_search_visible() ? SEARCHBAR_HEIGHT : 0;
-    *height_p = r.bottom - r.top - extra_height - 2 * PADDING - sy;
-    *width_p = r.right - r.left - extra_width - 2 * PADDING
-             //- (cfg.scrollbar ? GetSystemMetrics(SM_CXVSCROLL) : 0);
-             - (win_has_scrollbar() ? GetSystemMetrics(SM_CXVSCROLL) : 0);
+    *height_p = r.bottom - r.top - 2 * PADDING - sy
+              //- extra_height
+              ;
+    *width_p = r.right - r.left - 2 * PADDING
+             //- extra_width
+             //- (cfg.scrollbar ? GetSystemMetrics(SM_CXVSCROLL) : 0)
+             //- (win_has_scrollbar() ? GetSystemMetrics(SM_CXVSCROLL) : 0)
+             ;
   }
 }
 
@@ -1399,28 +1426,30 @@ win_update_glass(bool opaque)
   if (pSetWindowCompositionAttribute) {
     enum AccentState
     {
-        ACCENT_DISABLED = 0,
-        ACCENT_ENABLE_GRADIENT = 1,
-        ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
-        ACCENT_ENABLE_BLURBEHIND = 3,
-        ACCENT_INVALID_STATE = 4
+      ACCENT_DISABLED = 0,
+      ACCENT_ENABLE_GRADIENT = 1,
+      ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
+      ACCENT_ENABLE_BLURBEHIND = 3,
+      ACCENT_INVALID_STATE = 4
     };
     enum WindowCompositionAttribute
     {
-        WCA_ACCENT_POLICY = 19
+      WCA_ACCENT_POLICY = 19
     };
     struct ACCENTPOLICY
     {
-      enum AccentState nAccentState;
+      //enum AccentState nAccentState;
+      int nAccentState;
       int nFlags;
       int nColor;
       int nAnimationId;
     };
     struct WINCOMPATTRDATA
     {
-      enum WindowCompositionAttribute nAttribute;
+      //enum WindowCompositionAttribute attribute;
+      DWORD attribute;
       PVOID pData;
-      ULONG ulDataSize;
+      ULONG dataSize;
     };
     struct ACCENTPOLICY policy = {
       enabled ? ACCENT_ENABLE_BLURBEHIND : ACCENT_DISABLED,
@@ -2048,6 +2077,8 @@ win_reconfig(void)
     new_cfg.bold_as_colour != cfg.bold_as_colour ||
     new_cfg.font_smoothing != cfg.font_smoothing;
 
+  bool emojistyle_changed = new_cfg.emojis != cfg.emojis;
+
   if (new_cfg.fg_colour != cfg.fg_colour)
     win_set_colour(FG_COLOUR_I, new_cfg.fg_colour);
 
@@ -2059,6 +2090,11 @@ win_reconfig(void)
 
   /* Copy the new config and refresh everything */
   copy_config("win_reconfig", &cfg, &new_cfg);
+
+  if (emojistyle_changed) {
+    clear_emoji_data();
+    win_invalidate_all(false);
+  }
 
   font_cs_reconfig(font_changed);
 }
@@ -2330,6 +2366,7 @@ static struct {
 # endif
     printf("[%d]->%8p %04X %s (%04X %08X)\n", (int)time(0), wnd, message, wm_name, (unsigned)wp, (unsigned)lp);
 #endif
+
   switch (message) {
     when WM_NCCREATE:
       if (cfg.handle_dpichanged && pEnableNonClientDpiScaling) {
@@ -2531,6 +2568,12 @@ static struct {
           child_fork(main_argc, main_argv, moni);
         }
         when IDM_COPYTITLE: win_copy_title();
+        when IDM_KEY_DOWN_UP: {
+          bool on = lp & 0x10000;
+          int vk = lp & 0xFFFF;
+          //printf("IDM_KEY_DOWN_UP -> do_win_key_toggle %02X\n", vk);
+          do_win_key_toggle(vk, on);
+        }
       }
     }
 
@@ -2586,7 +2629,12 @@ static struct {
           }
         }
 
-    when WM_MOUSEWHEEL: {
+#ifndef WM_MOUSEHWHEEL
+#define WM_MOUSEHWHEEL 0x020E
+#endif
+
+    when WM_MOUSEWHEEL or WM_MOUSEHWHEEL: {
+      bool horizontal = message == WM_MOUSEHWHEEL;
       // check whether in client area (terminal pane) or over scrollbar...
       POINT wpos = {.x = GET_X_LPARAM(lp), .y = GET_Y_LPARAM(lp)};
       ScreenToClient(wnd, &wpos);
@@ -2594,12 +2642,12 @@ static struct {
       win_get_pixels(&height, &width, false);
       height += 2 * PADDING;
       width += 2 * PADDING;
-      int delta = GET_WHEEL_DELTA_WPARAM(wp);  // positive means up
+      int delta = GET_WHEEL_DELTA_WPARAM(wp);  // positive means up or right
       //printf("%d %d %d %d %d\n", wpos.y, wpos.x, height, width, delta);
       if (wpos.y >= 0 && wpos.y < height) {
         if (wpos.x >= 0 && wpos.x < width)
-          win_mouse_wheel(wp, lp);
-        else {
+          win_mouse_wheel(wpos, horizontal, delta);
+        else if (!horizontal) {
           int hsb = win_has_scrollbar();
           if (hsb && term.app_scrollbar) {
             int wsb = GetSystemMetrics(SM_CXVSCROLL);
@@ -2636,6 +2684,16 @@ static struct {
       switch (HIWORD(wp)) {
         when XBUTTON1: win_mouse_release(MBT_4, lp);
         when XBUTTON2: win_mouse_release(MBT_5, lp);
+      }
+    when WM_NCLBUTTONDOWN:
+      if (wp == HTCAPTION && (GetKeyState(VK_CONTROL) & 0x80)) {
+        win_title_menu();
+        return 0;
+      }
+    when WM_NCRBUTTONDOWN:
+      if (wp == HTCAPTION && (cfg.geom_sync > 0 || (GetKeyState(VK_CONTROL) & 0x80))) {
+        win_title_menu();
+        return 0;
       }
 
     when WM_KEYDOWN or WM_SYSKEYDOWN:
@@ -2783,6 +2841,7 @@ static struct {
 
     when WM_MOVING:
       trace_resize(("# WM_MOVING VK_SHIFT %02X\n", (uchar)GetKeyState(VK_SHIFT)));
+      win_destroy_tip();
       zoom_token = -4;
       moving = true;
 
@@ -3357,13 +3416,28 @@ regclose(HKEY key)
 }
 
 static int
-getlxssinfo(bool list, wstring wslname,
+getlxssinfo(bool list, wstring wslname, uint * wsl_ver,
             char ** wsl_guid, wstring * wsl_rootfs, wstring * wsl_icon)
 {
   static wstring lxsskeyname = W("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss");
   HKEY lxss = regopen(HKEY_CURRENT_USER, lxsskeyname);
   if (!lxss)
     return 1;
+
+#ifdef use_wsl_getdistconf
+  typedef enum
+  {
+    WSL_DISTRIBUTION_FLAGS_NONE = 0,
+    //...
+  } WSL_DISTRIBUTION_FLAGS;
+  HRESULT (WINAPI * pWslGetDistributionConfiguration)
+           (PCWSTR name, ULONG *distVersion, ULONG *defaultUID,
+            WSL_DISTRIBUTION_FLAGS *,
+            PSTR **defaultEnvVars, ULONG *defaultEnvVarCount
+           ) =
+    // this works only in 64 bit mode
+    load_library_func("wslapi.dll", "WslGetDistributionConfiguration");
+#endif
 
   wchar * legacy_icon()
   {
@@ -3388,13 +3462,14 @@ getlxssinfo(bool list, wstring wslname,
       return 3;
 
     wchar * pn = getregstr(lxss, guid, W("PackageFamilyName"));
+    wchar * pfn = 0;
     if (pn) {  // look for installation directory and icon file
       rootfs = newn(wchar, wcslen(bp) + 8);
       wcscpy(rootfs, bp);
       wcscat(rootfs, W("\\rootfs"));
       HKEY appdata = regopen(HKEY_CURRENT_USER, W("Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\SystemAppData"));
       HKEY package = regopen(appdata, pn);
-      wchar * pfn = getregstr(package, W("Schemas"), W("PackageFullName"));
+      pfn = getregstr(package, W("Schemas"), W("PackageFullName"));
       regclose(package);
       regclose(appdata);
       // "%ProgramW6432%/WindowsApps/<PackageFullName>/images/icon.ico"
@@ -3411,13 +3486,36 @@ getlxssinfo(bool list, wstring wslname,
       rootfs = wcsdup(bp);
       icon = legacy_icon();
     }
+
+    wchar * name = getregstr(lxss, guid, W("DistributionName"));
+#ifdef use_wsl_getdistconf
+    // this has currently no benefit, and it does not work in 32-bit cygwin
+    if (pWslGetDistributionConfiguration) {
+      ULONG ver, uid, varc;
+      WSL_DISTRIBUTION_FLAGS flags;
+      PSTR * vars;
+      if (S_OK == pWslGetDistributionConfiguration(name, &ver, &uid, &flags, &vars, &varc)) {
+        for (uint i = 0; i < varc; i++)
+          CoTaskMemFree(vars[i]);
+        CoTaskMemFree(vars);
+        //printf("%d %ls %d uid %d %X\n", (int)res, name, (int)ver, (int)uid, (uint)flags);
+      }
+    }
+#endif
+
     if (list) {
-      printf("WSL distribution name %ls\n", getregstr(lxss, guid, W("DistributionName")));
+      printf("WSL distribution name [7m%ls[m\n", name);
       printf("-- guid %ls\n", guid);
+      printf("-- flag %u\n", getregval(lxss, guid, W("Flags")));
       printf("-- root %ls\n", rootfs);
-      printf("-- pack %ls\n", pn);
+      if (pn)
+        printf("-- pack %ls\n", pn);
+      if (pfn)
+        printf("-- full %ls\n", pfn);
       printf("-- icon %ls\n", icon);
     }
+
+    *wsl_ver = 1 + ((getregval(lxss, guid, W("Flags")) >> 3) & 1);
     *wsl_guid = cs__wcstoutf(guid);
     *wsl_rootfs = rootfs;
     *wsl_icon = icon;
@@ -3440,6 +3538,7 @@ getlxssinfo(bool list, wstring wslname,
         rootfs = renewn(rootfs, wcslen(rootfs) + 6);
         wcscat(rootfs, W("\\lxss"));
         *wsl_rootfs = rootfs;
+        *wsl_ver = 1;
         *wsl_guid = "";
         *wsl_icon = legacy_icon();
         err = 0;
@@ -3447,6 +3546,7 @@ getlxssinfo(bool list, wstring wslname,
       else
         err = 7;
 #else
+      *wsl_ver = 1;
       *wsl_guid = "";
       *wsl_rootfs = W("");  // activate legacy tricks in winclip.c
       *wsl_icon = legacy_icon();
@@ -3515,7 +3615,7 @@ select_WSL(char * wsl)
   wslname = cs__mbstowcs(wsl ?: "");
   wstring wsl_icon;
   // set --rootfs implicitly
-  int err = getlxssinfo(false, wslname, &wsl_guid, &wsl_basepath, &wsl_icon);
+  int err = getlxssinfo(false, wslname, &wsl_ver, &wsl_guid, &wsl_basepath, &wsl_icon);
   if (!err) {
     // set --title
     if (title_settable)
@@ -3569,7 +3669,7 @@ cmd_enum(wstring label, wstring cmd, wstring icon, int icon_index)
   jumplist_len++;
 }
 
-wstring 
+wstring
 wslicon(wchar * params)
 {
   wstring icon = 0;  // default: no icon
@@ -3595,9 +3695,10 @@ wslicon(wchar * params)
       wchar * wslname = newn(wchar, len + 1);
       wcsncpy(wslname, wsl, len);
       wslname[len] = 0;
+      uint ver;
       char * guid;
       wstring basepath;
-      int err = getlxssinfo(false, wslname, &guid, &basepath, &icon);
+      int err = getlxssinfo(false, wslname, &ver, &guid, &basepath, &icon);
       free(wslname);
       if (!err) {
         delete(basepath);
@@ -3653,7 +3754,7 @@ enum_commands(wstring commands, CMDENUMPROC cmdenum)
       // check for multi-line separation
       if (*cmdp == '\\' && cmdp[1] == '\n') {
         cmdp += 2;
-        while (isspace(*cmdp))
+        while (iswspace(*cmdp))
           cmdp++;
       }
     }
@@ -4045,7 +4146,7 @@ main(int argc, char *argv[])
   }
 
   bool wdpresent = true;
-  if (invoked_from_shortcut) {
+  if (invoked_from_shortcut && sui.lpTitle) {
     shortcut = wcsdup(sui.lpTitle);
     setenv("MINTTY_SHORTCUT", path_win_w_to_posix(shortcut), true);
     wchar * icon = get_shortcut_icon_location(sui.lpTitle, &wdpresent);
@@ -4186,10 +4287,16 @@ main(int argc, char *argv[])
 #if CYGWIN_VERSION_API_MINOR >= 74
           when 'W': {
             wstring wsl_icon;
-            getlxssinfo(true, 0, &wsl_guid, &wsl_basepath, &wsl_icon);
+            getlxssinfo(true, 0, &wsl_ver, &wsl_guid, &wsl_basepath, &wsl_icon);
             exit(0);
           }
 #endif
+          when 'p':
+            report_child_pid = true;
+          when 'P':
+            report_winpid = true;
+          otherwise:
+            option_error(__("Unknown option '%s'"), optarg, 0);
         }
       when 'u': cfg.create_utmp = true;
       when '':
@@ -4388,11 +4495,19 @@ main(int argc, char *argv[])
   printf("per_monitor_dpi_aware %d\n", per_monitor_dpi_aware);
 #endif
 
+#define dont_debug_wsl
+#define wslbridge2
+
   // Work out what to execute.
   argv += optind;
   if (wsl_guid && wsl_launch) {
-#define dont_debug_wsl
+#ifdef wslbridge2
+    cmd = wsl_ver > 1 ? "/bin/hvpty" : "/bin/wslbridge2";
+    char * cmd0 = wsl_ver > 1 ? "-hvpty" : "-wslbridge2";
+#else
     cmd = "/bin/wslbridge";
+    char * cmd0 = "-wslbridge";
+#endif
     argc -= optind;
     bool login_dash = false;
     if (*argv && !strcmp(*argv, "-") && !argv[1]) {
@@ -4401,10 +4516,13 @@ main(int argc, char *argv[])
       //argc--;
       //argc++; // for "-l"
     }
+#ifdef wslbridge2
+    argc += start_home;
+#endif
     char ** new_argv = newn(char *, argc + 8 + start_home + (wsltty_appx ? 2 : 0));
     char ** pargv = new_argv;
     if (login_dash) {
-      *pargv++ = "-wslbridge";
+      *pargv++ = cmd0;
 #ifdef wslbridge_supports_l
 #warning redundant option wslbridge -l not needed
       *pargv++ = "-l";
@@ -4413,14 +4531,29 @@ main(int argc, char *argv[])
     else
       *pargv++ = cmd;
     if (*wsl_guid) {
+#ifdef wslbridge2
+      if (*wslname) {
+        *pargv++ = "-d";
+        *pargv++ = cs__wcstombs(wslname);
+      }
+#else
       *pargv++ = "--distro-guid";
       *pargv++ = wsl_guid;
+#endif
     }
+#ifdef wslbridge_t
     *pargv++ = "-t";
+#endif
     *pargv++ = "-e";
     *pargv++ = "APPDATA";
-    if (start_home)
+    if (start_home) {
+#ifdef wslbridge2
+      *pargv++ = "--wsldir";
+      *pargv++ = "~";
+#else
       *pargv++ = "-C~";
+#endif
+    }
 
 #if CYGWIN_VERSION_API_MINOR >= 74
     // provide wslbridge-backend in a reachable place for invocation
@@ -4440,7 +4573,7 @@ main(int argc, char *argv[])
       char buf[1024];
       int len;
       bool res = true;
-      while ((len = read(t, buf, sizeof buf)) >= 0)
+      while ((len = read(t, buf, sizeof buf)) > 0)
         if (write(t, buf, len) < 0) {
           res = false;
           break;
@@ -4459,9 +4592,20 @@ main(int argc, char *argv[])
     }
 
     if (wsltty_appx && lappdata && *lappdata) {
+#ifdef wslbridge2
+      char * wslbridge_backend = asform(
+                                 wsl_ver > 1
+                                 ? "%s/hvpty-backend"
+                                 : "%s/wslbridge2-backend"
+                                 , lappdata);
+      char * bin_backend = wsl_ver > 1
+                           ? "/bin/hvpty-backend"
+                           : "/bin/wslbridge2-backend";
+      bool ok = copyfile(bin_backend, wslbridge_backend, true);
+#else
       char * wslbridge_backend = asform("%s/wslbridge-backend", lappdata);
-
       bool ok = copyfile("/bin/wslbridge-backend", wslbridge_backend, true);
+#endif
       (void)ok;
 
       *pargv++ = "--backend";
@@ -4574,7 +4718,7 @@ main(int argc, char *argv[])
 
   // Expand AppID placeholders
   wchar * app_id = 0;
-  if (invoked_from_shortcut)
+  if (invoked_from_shortcut && sui.lpTitle)
     app_id = get_shortcut_appid(sui.lpTitle);
   if (!app_id)
     app_id = group_id(cfg.app_id);
@@ -4676,6 +4820,27 @@ main(int argc, char *argv[])
                         x, y, width, height,
                         null, null, inst, null);
   trace_winsize("createwindow");
+
+  // Dark mode support
+  if (pShouldAppsUseDarkMode) {
+    HIGHCONTRASTW hc;
+    hc.cbSize = sizeof hc;
+    pSystemParametersInfo(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0);
+    //printf("High Contrast scheme <%ls>\n", hc.lpszDefaultScheme);
+
+    if (!(hc.dwFlags & HCF_HIGHCONTRASTON) && pShouldAppsUseDarkMode()) {
+      pSetWindowTheme(wnd, W("DarkMode_Explorer"), NULL);
+      BOOL dark = 1;
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 19
+#endif
+
+      pDwmSetWindowAttribute(wnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                             &dark, sizeof dark);
+    }
+  }
+
   // Workaround for failing title parameter:
   if (pEnableNonClientDpiScaling)
     SetWindowTextW(wnd, wtitle);
@@ -4952,6 +5117,14 @@ main(int argc, char *argv[])
   // Install keyboard hook.
   hook_windows(WH_KEYBOARD_LL, hookprockbll, true);
 #endif
+
+  if (report_winpid) {
+    DWORD wpid = -1;
+    DWORD parent = GetWindowThreadProcessId(wnd, &wpid);
+    (void)parent;
+    printf("%d %d\n", getpid(), (int)wpid);
+    fflush(stdout);
+  }
 
   // Message loop.
   for (;;) {
