@@ -145,6 +145,7 @@ enum {
   TATTR_COMBINING = 0x0000000200000000u, /* combining characters */
   TATTR_COMBDOUBL = 0x0000000400000000u, /* combining double characters */
   TATTR_ZOOMFULL  = 0x0000001000000000u, /* to be zoomed to full cell size */
+  TATTR_SINGLE    = 0x0040000000000000u, /* zoom down to single cell width */
 
   TATTR_RIGHTCURS = 0x0000002000000000u, /* cursor-on-RHS */
   TATTR_PASCURS   = 0x0000004000000000u, /* passive cursor (box) */
@@ -162,7 +163,6 @@ enum {
   DATTR_MASK      = TATTR_RIGHTCURS | TATTR_PASCURS | TATTR_ACTCURS
                     | DATTR_STARTRUN
   // unassigned bits:
-  //                0x0040000000000000u
   //                0x0080000000000000u
 };
 
@@ -207,10 +207,11 @@ typedef unsigned long long cattrflags;
 
 typedef struct {
   cattrflags attr;
-  int link;
   colour truebg;
   colour truefg;
   colour ulcolr;
+  int link;
+  int imgi;
 } cattr;
 
 extern const cattr CATTR_DEFAULT;
@@ -262,6 +263,8 @@ extern int sblines(void);
 extern termline *fetch_line(int y);
 extern void release_line(termline *);
 
+
+/* Terminal state */
 typedef struct {
   int width;
   ushort lattr;
@@ -311,11 +314,13 @@ typedef struct {
   bool r;
 } pos;
 
+
 typedef enum {
   MBT_LEFT = 1, MBT_MIDDLE = 2, MBT_RIGHT = 3, MBT_4 = 4, MBT_5 = 5
 } mouse_button;
 
 
+/* Searching */
 typedef struct {
   int x;
   int y;
@@ -334,37 +339,57 @@ typedef struct {
 } termresults;
 
 
+/* Images */
 typedef struct {
-  void *fp;
+  void * fp;
   uint ref_counter;
   uint amount;
 } tempfile_t;
 
 typedef struct {
-  tempfile_t *tempfile;
+  tempfile_t * tempfile;
   size_t position;
 } temp_strage_t;
 
 typedef struct imglist {
-  unsigned char *pixels;
-  void *hdc;
-  void *hbmp;
-  temp_strage_t *strage;
-  int top;
-  int left;
-  int width;
-  int height;
-  int pixelwidth;
-  int pixelheight;
-  struct imglist *next;
+  // linked list
+  struct imglist * next;
+  // image ref for multiple use (currently unused)
+  char * id;
+  // sixel: rendering data
+  void * hdc;
+  void * hbmp;
+  // sixel: disk cache
+  temp_strage_t * strage;
+
+  // image data
+  unsigned char * pixels;
+  // image: data size; sixel: 0
+  int len;
+
+  // image ref for disposal management
+  int imgi;
+  // position within scrollback (top includes offset term.virtuallines)
+  int top, left;
+
+  // image area (cell units)
+  int width, height;
+  // sixel: image area size at time of output
+  // image: adjusted image size as requested, at time of output
+  int pixelwidth, pixelheight;
+  // image: terminal cell size at time of output
+  // sixel: actual graphic size, at time of output
+  int cwidth, cheight;
+  // image: cropping
+  int crop_x, crop_y, crop_width, crop_height;
 } imglist;
 
 typedef struct {
-  void *parser_state;
-  imglist *first;
-  imglist *last;
-  imglist *altfirst;
-  imglist *altlast;
+  void * parser_state;
+  imglist * first;
+  imglist * last;
+  imglist * altfirst;
+  imglist * altlast;
 } termimgs;
 
 
@@ -482,6 +507,7 @@ struct term {
                              // off(default): sixel scrolling moves cursor to left of graphics
   bool private_color_registers;
   int  cursor_type;
+  int  cursor_size;
   bool cursor_blinkmode;
   int  cursor_blinks;
   int  cursor_blink_interval;

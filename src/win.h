@@ -42,7 +42,7 @@ extern void win_copy_text(const char *s);
 extern colour win_get_colour(colour_i);
 extern void win_set_colour(colour_i, colour);
 extern void win_reset_colours(void);
-extern colour win_get_sys_colour(bool fg);
+extern colour win_get_sys_colour(int colid);
 extern uint colour_dist(colour a, colour b);
 extern colour truecolour(cattr *, colour bg);
 
@@ -60,7 +60,7 @@ extern void win_get_scrpos(int *xp, int *yp, bool with_borders);
 extern void win_get_pixels(int *height_p, int *width_p, bool with_borders);
 extern void win_get_screen_chars(int *rows_p, int *cols_p);
 extern void win_popup_menu(mod_keys mods);
-extern void win_title_menu(void);
+extern bool win_title_menu(bool leftbut);
 
 extern void win_zoom_font(int, bool sync_size_with_font);
 extern void win_set_font_size(int, bool sync_size_with_font);

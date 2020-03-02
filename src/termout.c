@@ -205,7 +205,7 @@ illegal_rect_char(xchar chr)
 {
   int width;
 #if HAS_LOCALES
-  if (cfg.charwidth)
+  if (cfg.charwidth % 10)
     width = xcwidth(chr);
   else
     width = wcwidth(chr);
@@ -733,11 +733,24 @@ write_char(wchar c, int width)
   if (term.insert && width > 0)
     insert_char(width);
 
+  bool single_width = false;
+  if (cfg.charwidth >= 10 || cs_single_forced) {
+    if (width > 1) {
+      single_width = true;
+      width = 1;
+    }
+    else if (is_wide(c) || (cs_ambig_wide && is_ambig(c))) {
+      single_width = true;
+    }
+  }
+
   switch (width) {
     when 1:  // Normal character.
       term_check_boundary(curs->x, curs->y);
       term_check_boundary(curs->x + 1, curs->y);
       put_char(c);
+      if (single_width)
+        line->chars[curs->x].attr.attr |= TATTR_SINGLE;
     when 2 or 3:  // Double-width char (Triple-width was an experimental option).
      /*
       * If we're about to display a double-width character 
@@ -842,6 +855,16 @@ mapfont(char * script, uchar f)
   for (uint i = 0; i < lengthof(scriptfonts); i++)
     if (0 == strcmp(scriptfonts[i].scriptname, script))
       scriptfonts[i].font = f;
+  if (0 == strcmp(script, "CJK")) {
+    mapfont("Han", f);
+    mapfont("Hangul", f);
+    mapfont("Katakana", f);
+    mapfont("Hiragana", f);
+    mapfont("Bopomofo", f);
+    mapfont("Kanbun", f);
+    mapfont("Fullwidth", f);
+    mapfont("Halfwidth", f);
+  }
 }
 
 static char *
@@ -890,7 +913,7 @@ init_scriptfonts(void)
   scriptfonts_init = true;
 }
 
-static uchar
+uchar
 scriptfont(ucschar ch)
 {
   if (!*cfg.font_choice)
@@ -921,10 +944,21 @@ write_ucschar(wchar hwc, wchar wc, int width)
   cattrflags attr = term.curs.attr.attr;
   ucschar c = hwc ? combine_surrogates(hwc, wc) : wc;
   uchar cf = scriptfont(c);
+#ifdef debug_scriptfonts
+  if (c && cf)
+    printf("scriptfont %04X: %d\n", c, cf);
+#endif
   if (cf && cf <= 10 && !(attr & FONTFAM_MASK))
     term.curs.attr.attr = attr | ((cattrflags)cf << ATTR_FONTFAM_SHIFT);
 
   if (hwc) {
+    if (width == 1
+        && (cfg.charwidth == 10 || cs_single_forced)
+        && (is_wide(c) || (cs_ambig_wide && is_ambig(c)))
+       )
+    { // ensure indication of cjksingle width handling to trigger down-zooming
+      width = 2;
+    }
     write_char(hwc, width);
     write_char(wc, -1);  // -1 indicates low surrogate
   }
@@ -955,8 +989,7 @@ contains(string s, int i)
       s++;
     int si = -1;
     int len;
-    sscanf(s, "%d%n", &si, &len);
-    if (len <= 0)
+    if (sscanf(s, "%d%n", &si, &len) <= 0)
       return false;
     s += len;
     if (si == i && (!*s || *s == ','))
@@ -2241,7 +2274,7 @@ do_csi(uchar c)
         write_primary_da();
     when CPAIR('>', 'c'):     /* Secondary DA: report device version */
       if (!arg0) {
-        if (cfg.charwidth)
+        if (cfg.charwidth % 10)
           child_printf("\e[>77;%u;%uc", DECIMAL_VERSION, UNICODE_VERSION);
         else
           child_printf("\e[>77;%u;0c", DECIMAL_VERSION);
@@ -2553,6 +2586,8 @@ do_csi(uchar c)
         term.cursor_blink_interval = arg1;
       term.cursor_invalid = true;
       term_schedule_cblink();
+    when CPAIR('?', 'c'):  /* Cursor size (Linux console) */
+      term.cursor_size = arg0;
     when CPAIR('"', 'q'):  /* DECSCA: select character protection attribute */
       switch (arg0) {
         when 0 or 2: term.curs.attr.attr &= ~ATTR_PROTECTED;
@@ -2752,6 +2787,49 @@ do_csi(uchar c)
   }
 }
 
+/*
+ * Fill image area with sixel placeholder characters and set cursor.
+ */
+static void
+fill_image_space(imglist * img)
+{
+  cattrflags attr0 = term.curs.attr.attr;
+  // refer SIXELCH cells to image for display/discard management
+  term.curs.attr.imgi = img->imgi;
+
+  short x0 = term.curs.x;
+  if (term.sixel_display) {  // sixel display mode
+    short y0 = term.curs.y;
+    term.curs.y = 0;
+    for (int y = 0; y < img->height && y < term.rows; ++y) {
+      term.curs.y = y;
+      term.curs.x = 0;
+      //printf("SIXELCH @%d imgi %d\n", y, term.curs.attr.imgi);
+      for (int x = x0; x < x0 + img->width && x < term.cols; ++x)
+        write_char(SIXELCH, 1);
+    }
+    term.curs.y = y0;
+    term.curs.x = x0;
+  } else {  // sixel scrolling mode
+    for (int i = 0; i < img->height; ++i) {
+      term.curs.x = x0;
+      //printf("SIXELCH @%d imgi %d\n", term.curs.y, term.curs.attr.imgi);
+      for (int x = x0; x < x0 + img->width && x < term.cols; ++x)
+        write_char(SIXELCH, 1);
+      if (i == img->height - 1) {  // in the last line
+        if (!term.sixel_scrolls_right) {
+          write_linefeed();
+          term.curs.x = term.sixel_scrolls_left ? 0: x0;
+        }
+      } else {
+        write_linefeed();
+      }
+    }
+  }
+
+  term.curs.attr.attr = attr0;
+}
+
 static void
 do_dcs(void)
 {
@@ -2812,72 +2890,40 @@ do_dcs(void)
         return;
       }
 
-      int size_pixels = st->image.width * st->image.height * 4;
-      unsigned char * pixels = (unsigned char *)malloc(size_pixels);
-      //printf("alloc pixels 1 w %d h %d (%d) -> %p\n", st->image.width, st->image.height, size_pixels, pixels);
-      if (!pixels)
-        return;
-
-      status = sixel_parser_finalize(st, pixels);
+      unsigned char * pixels = sixel_parser_finalize(st);
+      //printf("sixel_parser_finalize %p\n", pixels);
       sixel_parser_deinit(st);
-      if (status < 0) {
+      if (!pixels) {
         //printf("free state 3 %p\n", term.imgs.parser_state);
         free(term.imgs.parser_state);
-        //printf("free pixels\n");
-        free(pixels);
         term.imgs.parser_state = NULL;
         return;
       }
 
       short left = term.curs.x;
       short top = term.virtuallines + (term.sixel_display ? 0: term.curs.y);
-      int width = st->image.width / st->grid_width;
-      int height = st->image.height / st->grid_height;
+      int width = (st->image.width -1 ) / st->grid_width + 1;
+      int height = (st->image.height -1 ) / st->grid_height + 1;
       int pixelwidth = st->image.width;
       int pixelheight = st->image.height;
+      //printf("w %d/%d %d h %d/%d %d\n", pixelwidth, st->grid_width, width, pixelheight, st->grid_height, height);
 
       imglist * img;
-      if (!winimg_new(&img, pixels, left, top, width, height, pixelwidth, pixelheight) != 0) {
+      if (!winimg_new(&img, 0, pixels, 0, left, top, width, height, pixelwidth, pixelheight, false, 0, 0, 0, 0)) {
+        free(pixels);
         sixel_parser_deinit(st);
         //printf("free state 4 %p\n", term.imgs.parser_state);
         free(term.imgs.parser_state);
         term.imgs.parser_state = NULL;
         return;
       }
+      img->cwidth = st->max_x;
+      img->cheight = st->max_y;
 
-      short x0 = term.curs.x;
-      cattrflags attr0 = term.curs.attr.attr;
+      fill_image_space(img);
 
-      // fill with space characters
-      term.curs.attr.attr = (ulong)img;
-      if (term.sixel_display) {  // sixel display mode
-        short y0 = term.curs.y;
-        term.curs.y = 0;
-        for (int y = 0; y < img->height && y < term.rows; ++y) {
-          term.curs.y = y;
-          term.curs.x = 0;
-          for (int x = x0; x < x0 + img->width && x < term.cols; ++x)
-            write_char(SIXELCH, 1);
-        }
-        term.curs.y = y0;
-        term.curs.x = x0;
-      } else {  // sixel scrolling mode
-        for (int i = 0; i < img->height; ++i) {
-          term.curs.x = x0;
-          for (int x = x0; x < x0 + img->width && x < term.cols; ++x)
-            write_char(SIXELCH, 1);
-          if (i == img->height - 1) {  // in the last line
-            if (!term.sixel_scrolls_right) {
-              write_linefeed();
-              term.curs.x = term.sixel_scrolls_left ? 0: x0;
-            }
-          } else {
-            write_linefeed();
-          }
-        }
-      }
-      term.curs.attr.attr = attr0;
-
+      // add image to image list;
+      // replace previous for optimisation in some cases
       if (term.imgs.first == NULL) {
         term.imgs.first = term.imgs.last = img;
       } else {
@@ -2898,6 +2944,7 @@ do_dcs(void)
               printf("img replace\n");
 #endif
               memcpy(cur->pixels, img->pixels, img->pixelwidth * img->pixelheight * 4);
+              cur->imgi = img->imgi;
               winimg_destroy(img);
               return;
             }
@@ -2917,6 +2964,7 @@ do_dcs(void)
                        img->pixels + y * img->pixelwidth * 4,
                        img->pixelwidth * 4);
               }
+              cur->imgi = img->imgi;
               winimg_destroy(img);
               return;
             }
@@ -3310,6 +3358,163 @@ do_cmd(void)
       else
         term.curs.attr.link = -1;
     }
+    when 1337: {  // iTerm2 image protocol
+                  // https://www.iterm2.com/documentation-images.html
+      char * payload = strchr(s, ':');
+      if (payload) {
+        *payload = 0;
+        payload++;
+      }
+
+      // verify protocol
+      if (0 == strncmp("File=", s, 5))
+        s += 5;
+      else
+        return;
+
+      char * name = 0;
+      int width = 0;
+      int height = 0;
+      int pixelwidth = 0;
+      int pixelheight = 0;
+      bool pAR = true;
+      int crop_x = 0;
+      int crop_y = 0;
+      int crop_width = 0;
+      int crop_height = 0;
+
+      // process parameters
+      while (s && *s) {
+        char * nxt = strchr(s, ';');
+        if (nxt) {
+          *nxt = 0;
+          nxt++;
+        }
+        char * sval = strchr(s, '=');
+        if (sval) {
+          *sval = 0;
+          sval++;
+        }
+        else
+          sval = "";
+        int val = atoi(sval);
+        char * suf = sval;
+        while (isdigit((uchar)*suf))
+          suf++;
+        bool pix = 0 == strcmp("px", suf);
+        bool per = 0 == strcmp("%", suf);
+        //printf("<%s>=<%s>%d<%s>\n", s, sval, val, suf);
+
+        if (0 == strcmp("name", s))
+          name = s;  // can serve as cache id
+        else if (0 == strcmp("width", s)) {
+          if (pix) {
+            pixelwidth = val;
+            width = (val - 1) / cell_width + 1;
+          }
+          else if (per) {
+            width = term.cols * val / 100;
+            pixelwidth = width * cell_width;
+          }
+          else {
+            width = val;
+            pixelwidth = val * cell_width;
+          }
+        }
+        else if (0 == strcmp("height", s)) {
+          if (pix) {
+            pixelheight = val;
+            height = (val - 1) / cell_height + 1;
+          }
+          else if (per) {
+            height = term.rows * val / 100;
+            pixelheight = height * cell_height;
+          }
+          else {
+            height = val;
+            pixelheight = val * cell_height;
+          }
+        }
+        else if (0 == strcmp("preserveAspectRatio", s)) {
+          pAR = val;
+        }
+        else if (0 == strcmp("cropX", s) || 0 == strcmp("cropLeft", s)) {
+          if (pix) {
+            crop_x = val;
+          }
+        }
+        else if (0 == strcmp("cropY", s) || 0 == strcmp("cropTop", s)) {
+          if (pix) {
+            crop_y = val;
+          }
+        }
+        else if (0 == strcmp("cropWidth", s)) {
+          if (pix) {
+            crop_width = val;
+          }
+        }
+        else if (0 == strcmp("cropHeight", s)) {
+          if (pix) {
+            crop_height = val;
+          }
+        }
+        else if (0 == strcmp("cropRight", s)) {
+          if (pix) {
+            crop_width = - val;
+          }
+        }
+        else if (0 == strcmp("cropBottom", s)) {
+          if (pix) {
+            crop_height = - val;
+          }
+        }
+
+        s = nxt;
+      }
+
+      if (payload) {
+#ifdef strip_newlines
+#warning not applicable as preprocessing OSC would not pass it here
+        char * from = strpbrk(payload, "\r\n");
+        if (from) {  // strip new lines
+          char * to = from;
+          while (*from) {
+            if (*from >= ' ')
+              *to++ = *from;
+            from++;
+          }
+          *to = 0;
+        }
+#endif
+        int len = strlen(payload);
+        int datalen = len - (len / 4);
+        void * data = malloc(datalen);
+        if (!data)
+          return;
+        datalen = base64_decode_clip(payload, len, data, datalen);
+        if (datalen > 0) {
+          // OK
+          imglist * img;
+          short left = term.curs.x;
+          short top = term.virtuallines + term.curs.y;
+          if (winimg_new(&img, name, data, datalen, left, top, width, height, pixelwidth, pixelheight, pAR, crop_x, crop_y, crop_width, crop_height)) {
+            fill_image_space(img);
+
+            if (term.imgs.first == NULL) {
+              term.imgs.first = term.imgs.last = img;
+            } else {
+              // append image to list
+              term.imgs.last->next = img;
+              term.imgs.last = img;
+            }
+          }
+          else
+            free(data);
+        }
+        else
+          free(data);
+      }
+    }
   }
 }
 
@@ -3437,7 +3642,8 @@ term_do_write(const char *buf, uint len)
         if (is_low_surrogate(wc)) {
           if (hwc) {
 #if HAS_LOCALES
-            int width = cfg.charwidth ? xcwidth(combine_surrogates(hwc, wc)) :
+            int width = (cfg.charwidth % 10)
+                        ? xcwidth(combine_surrogates(hwc, wc)) :
 # ifdef __midipix__
                         wcwidth(combine_surrogates(hwc, wc));
 # else
@@ -3496,7 +3702,7 @@ term_do_write(const char *buf, uint len)
         }
         else
 #if HAS_LOCALES
-          if (cfg.charwidth)
+          if (cfg.charwidth % 10)
             width = xcwidth(wc);
           else
             width = wcwidth(wc);
@@ -3711,6 +3917,16 @@ term_do_write(const char *buf, uint len)
           term.curs.attr.attr &= ~FONTFAM_MASK;
           term.curs.attr.attr |= (cattrflags)gcode << ATTR_FONTFAM_SHIFT;
         }
+#ifdef draw_powerline_geometric_symbols
+#warning graphical results of this approach are unpleasant; not enabled
+        else if (wc >= 0xE0B0 && wc <= 0xE0BF && wc != 0xE0B5 && wc != 0xE0B7) {
+          // draw geometric full-cell Powerline symbols,
+          // to avoid artefacts at their borders (#943)
+          term.curs.attr.attr &= ~FONTFAM_MASK;
+          term.curs.attr.attr |= (cattrflags)13 << ATTR_FONTFAM_SHIFT;
+          term.curs.attr.attr |= (cattrflags)15 << ATTR_GRAPH_SHIFT;
+        }
+#endif
 
         write_ucschar(0, wc, width);
         term.curs.attr.attr = asav;

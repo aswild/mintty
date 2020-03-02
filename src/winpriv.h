@@ -27,6 +27,7 @@ extern LOGFONT lfont;
 
 extern int font_size;  // logical font size, as configured (< 0: pixel size)
 extern int cell_width, cell_height;  // includes spacing
+extern bool font_ambig_wide;
 extern int line_scale;
 extern int PADDING;
 extern bool show_charinfo;
@@ -53,6 +54,7 @@ extern uint kb_trace;
 
 extern void win_update_now(void);
 
+extern bool fill_background(HDC dc, RECT * boxp);
 extern void win_flush_background(bool clearbg);
 extern void win_paint(void);
 

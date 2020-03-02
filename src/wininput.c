@@ -99,7 +99,7 @@ icon_bitmap(HICON hIcon)
     return NULL;
 
   // Fill the background of the compatible DC with the given colour
-  SetBkColor(dst_hdc, GetSysColor(COLOR_MENU));
+  SetBkColor(dst_hdc, win_get_sys_colour(COLOR_MENU));
   ExtTextOut(dst_hdc, 0, 0, ETO_OPAQUE, &rect, NULL, 0, NULL);
 
   // Draw the icon into the compatible DC
@@ -808,10 +808,16 @@ win_popup_menu(mod_keys mods)
   open_popup_menu(false, null, mods);
 }
 
-void
-win_title_menu(void)
+bool
+win_title_menu(bool leftbut)
 {
-  open_popup_menu(false, "Ws", 0);
+  string title_menu = leftbut ? cfg.menu_title_ctrl_l : cfg.menu_title_ctrl_r;
+  if (*title_menu) {
+    open_popup_menu(false, title_menu, 0);
+    return true;
+  }
+  else
+    return false;
 }
 
 
@@ -1518,6 +1524,7 @@ win_key_reset(void)
 
 #define dont_debug_virtual_key_codes
 #define dont_debug_key
+#define dont_debug_alt
 #define dont_debug_compose
 
 #ifdef debug_virtual_key_codes
@@ -1548,6 +1555,12 @@ vk_name(uint key)
 #define trace_key(tag)	printf(" <-%s\n", tag)
 #else
 #define trace_key(tag)	
+#endif
+
+#ifdef debug_alt
+#define trace_alt	printf
+#else
+#define trace_alt(...)	
 #endif
 
 // key names for user-definable functions
@@ -1860,20 +1873,26 @@ win_key_down(WPARAM wp, LPARAM lp)
   bool lalt = is_key_down(VK_LMENU);
   bool ralt = is_key_down(VK_RMENU);
   bool alt = lalt | ralt;
+  trace_alt("alt %d lalt %d ralt %d\n", alt, lalt, ralt);
+  bool rctrl = is_key_down(VK_RCONTROL);
+  bool ctrl = lctrl | rctrl;
+  bool ctrl_lalt_altgr = cfg.ctrl_alt_is_altgr & ctrl & lalt & !ralt;
+  bool altgr0 = ralt | ctrl_lalt_altgr;
+
   bool external_hotkey = false;
   if (ralt && !scancode && cfg.external_hotkeys) {
     // Support external hot key injection by overriding disabled Alt+Fn
     // and fix buggy StrokeIt (#833).
+    trace_alt("ralt = false\n");
     ralt = false;
     if (cfg.external_hotkeys > 1)
       external_hotkey = true;
   }
-  bool rctrl = is_key_down(VK_RCONTROL);
-  bool ctrl = lctrl | rctrl;
-  bool ctrl_lalt_altgr = cfg.ctrl_alt_is_altgr & ctrl & lalt & !ralt;
+
   bool altgr = ralt | ctrl_lalt_altgr;
   bool win = (is_key_down(VK_LWIN) && key != VK_LWIN)
           || (is_key_down(VK_RWIN) && key != VK_RWIN);
+  trace_alt("alt %d lalt %d ralt %d altgr %d\n", alt, lalt, ralt, altgr);
 
   mod_keys mods = shift * MDK_SHIFT
                 | alt * MDK_ALT
@@ -2471,6 +2490,7 @@ static struct {
     // https://web.archive.org/web/20120103012712/http://blogs.msdn.com/b/michkap/archive/2006/03/24/559169.aspx
     wchar wbuf[4];
     int wlen = ToUnicode(key, scancode, kbd, wbuf, lengthof(wbuf), 0);
+    trace_alt("layout %d alt %d altgr %d\n", wlen, alt, altgr);
     if (!wlen)     // Unassigned.
       return false;
     if (wlen < 0)  // Dead key.
@@ -2607,6 +2627,7 @@ static struct {
   }
 
   bool char_key(void) {
+    trace_alt("char_key alt %d -> %d\n", alt, lalt & !ctrl_lalt_altgr);
     alt = lalt & !ctrl_lalt_altgr;
 
     // Sync keyboard layout with our idea of AltGr.
@@ -2624,6 +2645,7 @@ static struct {
     if (ralt) {
       // Try with RightAlt/AltGr key treated as Alt.
       kbd[VK_CONTROL] = 0;
+      trace_alt("char_key ralt; alt = true\n");
       alt = true;
       layout();
       return true;
@@ -2635,6 +2657,7 @@ static struct {
     if (!altgr)
       return false;
 
+    trace_alt("altgr_key alt %d -> %d\n", alt, lalt & !ctrl_lalt_altgr);
     alt = lalt & !ctrl_lalt_altgr;
 
     // Sync keyboard layout with our idea of AltGr.
@@ -2716,6 +2739,7 @@ static struct {
     if (altgr) {
       // Try with AltGr treated as Alt.
       kbd[VK_CONTROL] = 0;
+      trace_alt("ctrl_key altgr alt = true\n");
       alt = true;
       return try_shifts();
     }
@@ -2899,6 +2923,9 @@ static struct {
       else if (VK_OEM_PLUS <= key && key <= VK_OEM_PERIOD)
         app_pad_code(key - VK_OEM_PLUS + '+');
     when VK_PACKET:
+      trace_alt("VK_PACKET alt %d lalt %d ralt %d altgr %d altgr0 %d\n", alt, lalt, ralt, altgr, altgr0);
+      if (altgr0)
+        alt = lalt;
       if (!layout())
         return false;
     otherwise:

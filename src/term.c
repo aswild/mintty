@@ -348,6 +348,7 @@ term_reset(bool full)
   term.sixel_scrolls_left = 0;
 
   term.cursor_type = -1;
+  term.cursor_size = 0;
   term.cursor_blinks = -1;
   term.cursor_blink_interval = 0;
   if (full) {
@@ -1227,6 +1228,13 @@ term_do_scroll(int topline, int botline, int lines, bool sb)
     scroll_pos(&term.sel_start);
     scroll_pos(&term.sel_anchor);
     scroll_pos(&term.sel_end);
+
+    // Move graphics if within the scroll region
+    for (imglist * cur = term.imgs.first; cur; cur = cur->next) {
+      if (cur->top - term.virtuallines >= topline) {
+        cur->top += lines;
+      }
+    }
   }
   else {
     int seltop = topline;
@@ -2095,7 +2103,7 @@ term_paint(void)
         if ((tattr.attr & ATTR_WIDE) == 0
             && win_char_width(tchar, tattr.attr) == 2
             // && !(line->lattr & LATTR_MODE) ? "do not tamper with graphics"
-            // && ambigwide(tchar) ? but then they will be clipped...
+            // && is_ambigwide(tchar) ? but then they will be clipped...
            )
         {
           //printf("[%d:%d] narrow? %04X..%04X\n", i, j, tchar, chars[j + 1].chr);
@@ -2117,6 +2125,8 @@ term_paint(void)
             if (j + 1 < term.cols && chars[j + 1].chr != ' ')
 #endif
             tattr.attr |= ATTR_NARROW;
+            //if (ch != 0x25CC)
+            //printf("char %lc U+%04X narrow %d ambig %d\n", ch, ch, !!(tattr.attr & ATTR_NARROW), is_ambigwide(ch));
         }
         else if (tattr.attr & ATTR_WIDE
                  // guard character expanding properly to avoid 
@@ -2124,11 +2134,19 @@ term_paint(void)
                  // considering that Windows may report width 1 
                  // for double-width characters 
                  // (if double-width by font substitution)
-                 && cs_ambig_wide && !font_ambig_wide
+                 && cs_ambig_wide
+                 // the following restriction would be good for
+                 // MS PGothic (but bad non-CJK range anyway)
+                 // but bad for
+                 // MS Mincho: wide Greek/Cyrillic but narrow æ, œ, ...
+                 // SimSun, NSimSun, Yu Gothic
+                 //&& !font_ambig_wide
                  && win_char_width(tchar, tattr.attr) == 1
-                    //? && !widerange(tchar)
                  // and reassure to apply this only to ambiguous width chars
-                 && ambigwide(tchar)
+                 && is_ambigwide(tchar) // is_ambig(tchar) && !is_wide(tchar)
+                 // do not widen Geometric Shapes
+                 // (Geometric Shapes Extended are not ambiguous)
+                 && !(0x25A0 <= tchar && tchar <= 0x25FF)
                 )
         {
           tattr.attr |= ATTR_EXPAND;

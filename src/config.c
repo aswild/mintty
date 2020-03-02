@@ -124,7 +124,7 @@ const config default_cfg = {
   .scroll_mod = MDK_SHIFT,
   .pgupdn_scroll = false,
   .lang = W(""),
-  .search_bar = "",
+  .search_bar = W(""),
   .search_context = 0,
   // Terminal
   .term = "xterm",
@@ -171,7 +171,7 @@ const config default_cfg = {
   .suspbuf_max = 8080,
   .trim_selection = true,
   .charwidth = 0,
-  .char_narrowing = 80,
+  .char_narrowing = 75,
   .emojis = 0,
   .emoji_placement = 0,
   .app_id = W(""),
@@ -189,10 +189,13 @@ const config default_cfg = {
   .menu_altmouse = "ls",
   .menu_menu = "bs",
   .menu_ctrlmenu = "e|ls",
+  .menu_title_ctrl_l = "Ws",
+  .menu_title_ctrl_r = "Ws",
   .geom_sync = 0,
   .col_spacing = 0,
   .row_spacing = 0,
   .padding = 1,
+  .ligatures = 1,
   .ligatures_support = 0,
   .handle_dpichanged = 2,
   .check_version_update = 900,
@@ -368,7 +371,7 @@ options[] = {
   {"ScrollMod", OPT_MOD, offcfg(scroll_mod)},
   {"PgUpDnScroll", OPT_BOOL, offcfg(pgupdn_scroll)},
   {"Language", OPT_WSTRING, offcfg(lang)},
-  {"SearchBar", OPT_STRING, offcfg(search_bar)},
+  {"SearchBar", OPT_WSTRING, offcfg(search_bar)},
   {"SearchContext", OPT_INT, offcfg(search_context)},
 
   // Terminal
@@ -427,6 +430,7 @@ options[] = {
   {"AppID", OPT_WSTRING, offcfg(app_id)},
   {"AppName", OPT_WSTRING, offcfg(app_name)},
   {"AppLaunchCmd", OPT_WSTRING, offcfg(app_launch_cmd)},
+
   {"DropCommands", OPT_WSTRING | OPT_KEEPCR, offcfg(drop_commands)},
   {"UserCommands", OPT_WSTRING | OPT_KEEPCR, offcfg(user_commands)},
   {"CtxMenuFunctions", OPT_WSTRING | OPT_KEEPCR, offcfg(ctx_user_commands)},
@@ -439,10 +443,14 @@ options[] = {
   {"MenuMouse5", OPT_STRING, offcfg(menu_altmouse)},
   {"MenuMenu", OPT_STRING, offcfg(menu_menu)},
   {"MenuCtrlMenu", OPT_STRING, offcfg(menu_ctrlmenu)},
+  {"MenuTitleCtrlLeft", OPT_STRING, offcfg(menu_title_ctrl_l)},
+  {"MenuTitleCtrlRight", OPT_STRING, offcfg(menu_title_ctrl_r)},
+
   {"SessionGeomSync", OPT_INT, offcfg(geom_sync)},
   {"ColSpacing", OPT_INT, offcfg(col_spacing)},
   {"RowSpacing", OPT_INT, offcfg(row_spacing)},
   {"Padding", OPT_INT, offcfg(padding)},
+  {"Ligatures", OPT_INT, offcfg(ligatures)},
   {"LigaturesSupport", OPT_INT, offcfg(ligatures_support)},
   {"HandleDPI", OPT_INT, offcfg(handle_dpichanged)},
   {"CheckVersionUpdate", OPT_INT, offcfg(check_version_update)},
@@ -503,6 +511,8 @@ static opt_val
     {"locale", 0},
     {"unicode", 1},
     {"ambig-wide", 2},
+    {"single", 10},
+    {"single-unicode", 11},
     {0, 0}
   },
   [OPT_EMOJIS] = (opt_val[]) {
@@ -713,8 +723,8 @@ check_legacy_options(void (*remember_option)(char * tag, uint))
 {
   if (cfg.use_system_colours) {
     // Translate 'UseSystemColours' to colour settings.
-    cfg.fg_colour = cfg.cursor_colour = win_get_sys_colour(true);
-    cfg.bg_colour = win_get_sys_colour(false);
+    cfg.fg_colour = cfg.cursor_colour = win_get_sys_colour(COLOR_WINDOWTEXT);
+    cfg.bg_colour = win_get_sys_colour(COLOR_WINDOW);
     cfg.use_system_colours = false;
 
     // Make sure they're written to the config file.
@@ -2786,6 +2796,56 @@ emoji_placement_handler(control *ctrl, int event)
   opt_handler(ctrl, event, &new_cfg.emoji_placement, opt_vals[OPT_EMOJI_PLACEMENT]);
 }
 
+static bool bold_like_xterm;
+
+static void
+checkbox_option_set(control *ctrl, bool checked)
+{
+  if (ctrl) {
+    bool *bp = ctrl->context;
+    *bp = checked;
+    dlg_checkbox_set(ctrl, checked);
+  }
+}
+
+void
+bold_handler(control *ctrl, int event)
+{
+  bool *bp = ctrl->context;
+  static control * ctrl_bold_as_font = 0;
+  static control * ctrl_bold_as_colour = 0;
+  static control * ctrl_bold_like_xterm = 0;
+  if (event == EVENT_REFRESH) {
+    bold_like_xterm = !new_cfg.bold_as_font && !new_cfg.bold_as_colour;
+    dlg_checkbox_set(ctrl, *bp);
+    if (bp == &new_cfg.bold_as_font)
+      ctrl_bold_as_font = ctrl;
+    else if (bp == &new_cfg.bold_as_colour)
+      ctrl_bold_as_colour = ctrl;
+    else
+      ctrl_bold_like_xterm = ctrl;
+  }
+  else if (event == EVENT_VALCHANGE) {
+    *bp = dlg_checkbox_get(ctrl);
+    if (bp == &bold_like_xterm) {
+      if (*bp) {
+        checkbox_option_set(ctrl_bold_as_font, false);
+        checkbox_option_set(ctrl_bold_as_colour, false);
+      }
+      else {
+        //checkbox_option_set(ctrl_bold_as_font, false);
+        //checkbox_option_set(ctrl_bold_as_colour, true);
+        // disable switching off: restore "true"
+        checkbox_option_set(ctrl_bold_like_xterm, true);
+      }
+    }
+    else if (!new_cfg.bold_as_font && !new_cfg.bold_as_colour)
+      checkbox_option_set(ctrl_bold_like_xterm, true);
+    else
+      checkbox_option_set(ctrl_bold_like_xterm, false);
+  }
+}
+
 
 void
 setup_config_box(controlbox * b)
@@ -2943,18 +3003,41 @@ setup_config_box(controlbox * b)
 
     // emoji style here, right after font?
 
-    s = ctrl_new_set(b, _("Text"), null, null);
-    ctrl_columns(s, 2, 50, 50);
-    ctrl_checkbox(
-      //__ Options - Text:
-      s, _("Sho&w bold as font"),
-      dlg_stdcheckbox_handler, &new_cfg.bold_as_font
-    )->column = 0;
-    ctrl_checkbox(
-      //__ Options - Text:
-      s, _("Show &bold as colour"),
-      dlg_stdcheckbox_handler, &new_cfg.bold_as_colour
-    )->column = 1;
+    if (strstr(cfg.old_options, "bold")) {
+      s = ctrl_new_set(b, _("Text"), null, null);
+      ctrl_columns(s, 2, 50, 50);
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("Sho&w bold as font"),
+        dlg_stdcheckbox_handler, &new_cfg.bold_as_font
+      )->column = 0;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("Show &bold as colour"),
+        dlg_stdcheckbox_handler, &new_cfg.bold_as_colour
+      )->column = 1;
+    }
+    else {
+      s = ctrl_new_set(b, _("Text"), null, 
+                       //__ Options - Text:
+                       _("Show bold"));
+      ctrl_columns(s, 3, 35, 35, 30);
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("as font"),
+        bold_handler, &new_cfg.bold_as_font
+      )->column = 0;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("as colour"),
+        bold_handler, &new_cfg.bold_as_colour
+      )->column = 1;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("xterm"),
+        bold_handler, &bold_like_xterm
+      )->column = 2;
+    }
   }
   else {
     ctrl_fontsel(
@@ -2963,38 +3046,76 @@ setup_config_box(controlbox * b)
 
     // emoji style here, right after font?
 
-    s = ctrl_new_set(b, _("Text"), null, null);
-    ctrl_columns(s, 2, 50, 50);
-    ctrl_radiobuttons(
-      //__ Options - Text:
-      s, _("Font smoothing"), 2,
-      dlg_stdradiobutton_handler, &new_cfg.font_smoothing,
-      //__ Options - Text:
-      _("&Default"), FS_DEFAULT,
-      //__ Options - Text:
-      _("&None"), FS_NONE,
-      //__ Options - Text:
-      _("&Partial"), FS_PARTIAL,
-      //__ Options - Text:
-      _("&Full"), FS_FULL,
-      null
-    )->column = 1;
+    if (strstr(cfg.old_options, "bold")) {
+      s = ctrl_new_set(b, _("Text"), null, null);
+      ctrl_columns(s, 2, 50, 50);
+      ctrl_radiobuttons(
+        //__ Options - Text:
+        s, _("Font smoothing"), 2,
+        dlg_stdradiobutton_handler, &new_cfg.font_smoothing,
+        //__ Options - Text:
+        _("&Default"), FS_DEFAULT,
+        //__ Options - Text:
+        _("&None"), FS_NONE,
+        //__ Options - Text:
+        _("&Partial"), FS_PARTIAL,
+        //__ Options - Text:
+        _("&Full"), FS_FULL,
+        null
+      )->column = 1;
 
-    ctrl_checkbox(
-      //__ Options - Text:
-      s, _("Sho&w bold as font"),
-      dlg_stdcheckbox_handler, &new_cfg.bold_as_font
-    )->column = 0;
-    ctrl_checkbox(
-      //__ Options - Text:
-      s, _("Show &bold as colour"),
-      dlg_stdcheckbox_handler, &new_cfg.bold_as_colour
-    )->column = 0;
-    ctrl_checkbox(
-      //__ Options - Text:
-      s, _("&Allow blinking"),
-      dlg_stdcheckbox_handler, &new_cfg.allow_blinking
-    )->column = 0;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("Sho&w bold as font"),
+        dlg_stdcheckbox_handler, &new_cfg.bold_as_font
+      )->column = 0;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("Show &bold as colour"),
+        dlg_stdcheckbox_handler, &new_cfg.bold_as_colour
+      )->column = 0;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("&Allow blinking"),
+        dlg_stdcheckbox_handler, &new_cfg.allow_blinking
+      )->column = 0;
+    }
+    else {
+      ctrl_radiobuttons(
+        //__ Options - Text:
+        s, _("Font smoothing"), 4,
+        dlg_stdradiobutton_handler, &new_cfg.font_smoothing,
+        //__ Options - Text:
+        _("&Default"), FS_DEFAULT,
+        //__ Options - Text:
+        _("&None"), FS_NONE,
+        //__ Options - Text:
+        _("&Partial"), FS_PARTIAL,
+        //__ Options - Text:
+        _("&Full"), FS_FULL,
+        null
+      )->column = 0;
+
+      s = ctrl_new_set(b, _("Text"), null, 
+                       //__ Options - Text:
+                       _("Show bold"));
+      ctrl_columns(s, 3, 35, 35, 30);
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("as font"),
+        bold_handler, &new_cfg.bold_as_font
+      )->column = 0;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("as colour"),
+        bold_handler, &new_cfg.bold_as_colour
+      )->column = 1;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("xterm"),
+        bold_handler, &bold_like_xterm
+      )->column = 2;
+    }
   }
 
   s = ctrl_new_set(b, _("Text"), null, null);
@@ -3008,14 +3129,25 @@ setup_config_box(controlbox * b)
 
   // emoji style here, after locale?
   if (!strstr(cfg.old_options, "emoj")) {
-    s = ctrl_new_set(b, _("Text"), null, 
-                     //__ Options - Text:
-                     _("Emojis"));
-    ctrl_columns(s, 2, 50, 50);
-    ctrl_combobox(
-      //__ Options - Text - Emojis:
-      s, _("Style"), 100, emojis_handler, 0
-    )->column = 0;
+    if (cfg.fontmenu == 0 && !strstr(cfg.old_options, "bold")) {
+      // save some space
+      s = ctrl_new_set(b, _("Text"), null, null);
+      ctrl_columns(s, 2, 50, 50);
+      ctrl_combobox(
+        //__ Options - Text - Emojis:
+        s, _("Emojis"), 100, emojis_handler, 0
+      )->column = 0;
+    }
+    else {
+      s = ctrl_new_set(b, _("Text"), null, 
+                       //__ Options - Text:
+                       _("Emojis"));
+      ctrl_columns(s, 2, 50, 50);
+      ctrl_combobox(
+        //__ Options - Text - Emojis:
+        s, _("Style"), 100, emojis_handler, 0
+      )->column = 0;
+    }
     ctrl_combobox(
       //__ Options - Text - Emojis:
       s, _("Placement"), 100, emoji_placement_handler, 0
