@@ -425,6 +425,7 @@ win_copy(const wchar *data, cattr *cattrs, int len)
 void
 win_copy_as(const wchar *data, cattr *cattrs, int len, char what)
 {
+  //printf("win_copy %d '%c'\n", len, what);
   HGLOBAL clipdata, clipdata2, clipdata3 = 0;
   int len2;
   void *lock, *lock2, *lock3;
@@ -702,6 +703,7 @@ win_copy_as(const wchar *data, cattr *cattrs, int len, char what)
   GlobalUnlock(clipdata);
   GlobalUnlock(clipdata2);
 
+  //printf("OpenClipboard win_copy\n");
   if (OpenClipboard(wnd)) {
     clipboard_token = true;
     EmptyClipboard();
@@ -818,23 +820,28 @@ buf_add(char c)
 }
 
 static void
-buf_path(wchar * wfn)
+buf_path(wchar * wfn, bool convert, bool quote)
 {
-    char *fn = path_win_w_to_posix(wfn);
+    bool posix_path = convert || support_wsl;
+    char * fn = posix_path
+              ? path_win_w_to_posix(wfn)
+              : cs__wcstoutf(wfn);
 
     bool has_tick = false, needs_quotes = false, needs_dollar = false;
     for (char *p = fn; *p && !needs_dollar; p++) {
       uchar c = *p;
       has_tick |= c == '\'';
-      needs_quotes |= isascii(c) && !isalnum(c) && !strchr("+,-./@_~'", c);
+      if (posix_path || !strchr("\\:", c))
+        needs_quotes |= isascii(c) && !isalnum(c) && !strchr("+,-./@_~'", c);
       needs_dollar = iscntrl(c) || (needs_quotes && has_tick);
     }
     needs_quotes |= needs_dollar;
+    needs_quotes &= quote;
 
     if (needs_dollar)
       buf_add('$');
     if (needs_quotes)
-      buf_add('\'');
+      buf_add(posix_path ? '\'' : '"');
     else if (*fn == '~')
       buf_add('\\');
     char *p = fn;
@@ -936,7 +943,7 @@ buf_path(wchar * wfn)
       }
     }
     if (needs_quotes)
-      buf_add('\'');
+      buf_add(posix_path ? '\'' : '"');
     free(fn);
 }
 
@@ -949,17 +956,20 @@ paste_hdrop(HDROP drop)
 #endif
   uint n = DragQueryFileW(drop, -1, 0, 0);
 
-  buf_init();
-  for (uint i = 0; i < n; i++) {
-    uint wfn_len = DragQueryFileW(drop, i, 0, 0);
-    wchar wfn[wfn_len + 1];
-    DragQueryFileW(drop, i, wfn, wfn_len + 1);
+  void bufpaths(bool convert, bool quote) {
+    buf_init();
+    for (uint i = 0; i < n; i++) {
+      uint wfn_len = DragQueryFileW(drop, i, 0, 0);
+      wchar wfn[wfn_len + 1];
+      DragQueryFileW(drop, i, wfn, wfn_len + 1);
 #ifdef debug_dragndrop
-    printf("dropped file <%ls>\n", wfn);
+      printf("dropped file <%ls>\n", wfn);
 #endif
-    if (i)
-      buf_add(' ');  // Filename separator
-    buf_path(wfn);
+      if (i)
+        buf_add(' ');  // Filename separator
+      buf_path(wfn, convert, quote);
+    }
+    buf[buf_pos] = 0;
   }
 
   if (!support_wsl && *cfg.drop_commands) {
@@ -970,12 +980,23 @@ paste_hdrop(HDROP drop)
       char * drops = cs__wcstombs(cfg.drop_commands);
       char * paste = matchconf(drops, fg_prog);
       if (paste) {
-        buf[buf_pos] = 0;
-        char * pastebuf = newn(char, strlen(paste) + strlen(buf) + 1);
-        sprintf(pastebuf, paste, buf);
-        child_send(pastebuf, strlen(pastebuf));
-        free(pastebuf);
-        free(drops);
+        char * format = strchr(paste, '%');
+        if (format && strchr("swSW", *(++format)) && !strchr(format, '%')) {
+          switch (*format) {
+            when 's': bufpaths(true, false);
+            when 'S': bufpaths(true, true);
+            when 'w': bufpaths(false, false);
+            when 'W': bufpaths(false, true);
+          }
+          *format = 's';
+          char * pastebuf = newn(char, strlen(paste) + strlen(buf) + 1);
+          sprintf(pastebuf, paste, buf);
+          child_send(pastebuf, strlen(pastebuf));
+          free(pastebuf);
+        }
+        else
+          child_send(paste, strlen(paste));
+        free(drops);  // also frees paste which points into drops
         free(fg_prog);
         free(buf);
         return;
@@ -984,6 +1005,8 @@ paste_hdrop(HDROP drop)
       free(fg_prog);
     }
   }
+
+  bufpaths(true, true);
 
   if (term.bracketed_paste)
     child_write("\e[200~", 6);
@@ -998,7 +1021,7 @@ paste_path(HANDLE data)
 {
   wchar *s = GlobalLock(data);
   buf_init();
-  buf_path(s);
+  buf_path(s, true, true);
   GlobalUnlock(data);
 
   if (term.bracketed_paste)
@@ -1032,6 +1055,7 @@ paste_text(HANDLE data)
 static void
 do_win_paste(bool do_path)
 {
+  //printf("OpenClipboard win_paste\n");
   if (!OpenClipboard(null))
     return;
 

@@ -120,6 +120,14 @@ cs_descs[] = {
 string locale_menu[8];
 string charset_menu[lengthof(cs_descs) + 4];
 
+#define dont_debug_locale
+#ifdef debug_locale
+#define trace_locale(tag, l)	printf("[%s] %s->%s\n", tag, l, setlocale(LC_CTYPE, 0))
+#else
+#define trace_locale(tag, l)	
+#endif
+
+
 #if HAS_LOCALES
 static bool
 ge_release(uint v1, uint v2)
@@ -272,6 +280,37 @@ get_cp_info(void)
 }
 
 static void
+fallback_charset()
+{
+  if (0 == strcasecmp(cfg.charset, "GB18030")) {
+#if HAS_LOCALES
+    if (!setlocale(LC_CTYPE, config_locale))
+#endif
+    {
+#ifdef enforce_GB18030_wide
+      // enforce GB18030 ambiguous-wide handling
+      cfg.charwidth = 2;
+      //codepage = 54936;
+      //use_locale = false;
+      //cs_ambig_wide = true;
+#endif
+      trace_locale("fallback", config_locale);
+      delete(config_locale);
+      config_locale =
+        asform("%s.%s", cfg.locale,
+                        cfg.charwidth == 2 ? "GBK" : "GBK@cjknarrow");
+      //setlocale(LC_CTYPE, config_locale); // apparently redundant
+      //trace_locale("fallback", config_locale);
+    }
+#if HAS_LOCALES
+    else {
+      trace_locale("fallback", config_locale);
+    }
+#endif
+  }
+}
+
+static void
 update_mode(void)
 {
   codepage =
@@ -292,7 +331,9 @@ update_mode(void)
             :
               "C.UTF-8"
   );
+  trace_locale("update_mode", "?");
   use_locale = use_default_locale || mode == CSM_UTF8;
+  //printf("mode %d valid_def %d use_loc %d\n", mode, valid_default_locale, use_locale);
   if (use_locale)
     cs_cur_max = MB_CUR_MAX;
   else
@@ -327,9 +368,11 @@ update_locale(void)
 
 #if HAS_LOCALES
   string set_locale = setlocale(LC_CTYPE, locale);
+  trace_locale("update_locale", locale);
   if (!set_locale) {
     locale = asform("C.%s", charset);
     set_locale = setlocale(LC_CTYPE, locale);
+    trace_locale("update_locale", locale);
     delete(locale);
   }
 
@@ -359,6 +402,7 @@ update_locale(void)
       delete(l);
       // indicate @cjksingle to locale lib
       setlocale(LC_CTYPE, default_locale);
+      trace_locale("cjksingle", default_locale);
       // in case it's not accepted, yet indicate @cjksingle to shell
       setenv("LC_CTYPE", default_locale, true);
     }
@@ -372,6 +416,7 @@ update_locale(void)
       delete(l);
       // indicate @cjkwide to locale lib
       setlocale(LC_CTYPE, default_locale);
+      trace_locale("ambigwide", default_locale);
       // in case it's not accepted, yet indicate @cjkwide to shell
       setenv("LC_CTYPE", default_locale, true);
     }
@@ -380,6 +425,9 @@ update_locale(void)
 #else
   cs_ambig_wide = cfg.charwidth == 2 || font_ambig_wide;
 #endif
+
+  // Map GB18030 -> GBK for child
+  fallback_charset();
 
   update_mode();
 }
@@ -424,6 +472,7 @@ cs_reconfig(void)
         delete(l);
       }
     }
+    trace_locale("cs_reconfig", config_locale);
 #endif
   }
   else
@@ -456,6 +505,7 @@ cs_init(void)
     setlocale(LC_CTYPE, "") ?:
 #endif
     getlocenvcat("LC_CTYPE");
+  trace_locale("cs_init", "");
 
   env_locale = env_locale ? strdup(env_locale) : "C";
 

@@ -19,6 +19,16 @@ The full details of all supported control sequences are only available in the
 [source code](https://github.com/mintty/mintty/blob/master/src/termout.c).
 
 
+## Terminal identification ##
+
+These escape sequences cause mintty to report its identification.
+
+| **request** | **response**                      | **comment** |
+|:------------|:----------------------------------|:------------|
+| `^[[>0c`    | `^[[>77;`_version_`;`_unicode_`c` | secondary devices attributes (DEC); _version_ like 30105, _unicode_ version when using built-in data |
+| `^[[>0q`    | `^[P>|mintty `_version_`^[\`      | terminal identification query (xterm 354); _version_ like 3.1.5 |
+
+
 ## Escape keycode ##
 
 There are two settings controlling the keycode sent by the [Esc key](http://en.wikipedia.org/wiki/Esc_key).
@@ -87,6 +97,21 @@ When shortcut override mode is on, all shortcut key combinations are sent to the
 |:--------------|:-------------|
 | `^[[?7783l`   | off          |
 | `^[[?7783h`   | on           |
+
+
+## Keyboard auto repeat ##
+
+With the VT520 sequence DECARR the keyboard auto-repeat speed can be 
+limited to the given value in characters per second.
+Unlike original DECARR, a value of 0 disables repeat rate limitation.
+Keyboard auto-repeat can also be disabled with DECSET 8 (DECARM).
+
+| **sequence**   | **comment**         |
+|:---------------|:--------------------|
+| `^[[`_cps_`-p` | max 30              |
+| `^[[-p       ` | unlimited           |
+| `^[[?8l`       | disable auto-repeat |
+| `^[[?8h`       | enable auto-repeat  |
 
 
 ## Bidirectional rendering ##
@@ -278,6 +303,26 @@ The list of long Unicode characters considered "wide" is
 U+2001, U+2003, U+2014, U+27DD..U+27DE, U+27F5..U+27FF, 
 U+2910, U+296A..U+296D, U+2B33, U+2E0E..U+2E11, U+2E3A..U+2E3B;
 this list is subject to change in future versions.
+
+
+## Explicit character width ##
+
+— EXPERIMENTAL —
+
+Mintty provides explicit width override as a character attribute, 
+so an application can enforce single-width characters to be rendered wide 
+or double-width ("wide") characters to be rendered narrow.
+Experimentally, for this purpose the ECMA-48 escape sequences 
+"Presentation Expand Or Contract" (PEC) `CSI` _num_ `SP Z` are used, 
+with one extension:
+
+| **sequence** | **effect**                                    |
+|:-------------|:----------------------------------------------|
+| `^[[0 Z`     | default: normal single or double width        |
+| `^[[1 Z`     | expand: enforce double-cell display           |
+| `^[[2 Z`     | contract: enforce single-cell display         |
+| `^[[22 Z`    | zoom down to single-cell display (like setting `Charwidth=single`) |
+| `^[[2;2 Z`   | like `^[[22 Z`                                |
 
 
 ## Font size ##

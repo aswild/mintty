@@ -132,6 +132,7 @@ restore_cursor(void)
   *curs = term.saved_cursors[term.on_alt_screen];
   term.erase_char.attr = curs->attr;
   term.erase_char.attr.attr &= (ATTR_FGMASK | ATTR_BGMASK);
+  term.erase_char.attr.attr |= TATTR_CLEAR;
 
  /* Make sure the window hasn't shrunk since the save */
   if (curs->x >= term.cols)
@@ -200,19 +201,20 @@ insert_char(int n)
   }
 }
 
-static bool
-illegal_rect_char(xchar chr)
+static int
+charwidth(xchar chr)
 {
-  int width;
 #if HAS_LOCALES
   if (cfg.charwidth % 10)
-    width = xcwidth(chr);
+    return xcwidth(chr);
   else
-    width = wcwidth(chr);
+    if (chr > 0xFFFF)
+      return wcswidth((wchar[]){high_surrogate(chr), low_surrogate(chr)}, 2);
+    else
+      return wcwidth(chr);
 #else
-  width = xcwidth(chr);
+  return xcwidth(chr);
 #endif
-  return width != 1;
 }
 
 static void
@@ -264,11 +266,15 @@ attr_rect(cattrflags add, cattrflags sub, cattrflags xor, short y0, short x0, sh
   }
 }
 
+//static void write_char(wchar c, int width);
+static void term_do_write(const char *buf, uint len);
+
 static void
 fill_rect(xchar chr, cattr attr, bool sel, short y0, short x0, short y1, short x1)
 {
   //printf("fill_rect %d,%d..%d,%d\n", y0, x0, y1, x1);
-  if (chr == UCSWIDE || illegal_rect_char(chr))
+  int width = charwidth(chr);
+  if (chr == UCSWIDE || width < 1)
     return;
   wchar low = 0;
   if (chr > 0xFFFF) {
@@ -293,6 +299,65 @@ fill_rect(xchar chr, cattr attr, bool sel, short y0, short x0, short y1, short x
   if (x1 >= term.cols)
     x1 = term.cols - 1;
   //printf("%d,%d..%d,%d\n", y0, x0, y1, x1);
+
+  //printf("gl %d gr %d csets %d %d %d %d /%d sup %d acs %d\n", term.curs.gl, term.curs.gr, term.curs.csets[0], term.curs.csets[1], term.curs.csets[2], term.curs.csets[3], term.curs.cset_single, term.curs.decsupp, term.curs.oem_acs);
+  if ((chr > ' ' && chr < 0x80 
+       && (term.curs.csets[term.curs.gl] != CSET_ASCII
+           ||
+           term.curs.cset_single != CSET_ASCII
+          )
+      )
+      ||
+      (chr >= 0x80 && chr < 0x100 
+       && ((term.curs.gr && term.curs.csets[term.curs.gr] != CSET_ASCII)
+           || term.curs.oem_acs
+          )
+      )
+      || (chr >= 0x2580 && chr <= 0x259F)
+     )
+  {
+    term_cursor csav = term.curs;
+    term.curs.attr = attr;
+#ifdef debug_FRA_special
+    // make this code branch visible
+    term.curs.attr.attr &= ~ATTR_FGMASK;
+    term.curs.attr.attr |= RED_I << ATTR_FGSHIFT;
+#endif
+    term.curs.width = 1;
+    if (!(width < 2 || (cs_ambig_wide && is_ambig(chr))))
+      term.curs.attr.attr |= TATTR_CLEAR | TATTR_NARROW;
+    term.state = NORMAL;
+
+    char * cbuf = 0;
+    if (chr > 0xFF) {
+      wchar * wc = (wchar[]){chr, low, 0};
+      cbuf = cs__wcstombs(wc);
+    }
+    for (int y = y0; y <= y1; y++) {
+      term.curs.y = y;
+      for (int x = x0; x <= x1; x++) {
+        term.curs.x = x;
+        term.curs.cset_single = csav.cset_single;
+        if (chr > 0xFF) {
+          //write_char(chr, 1); // would skip NRCS handling in term_do_write
+          term_do_write(cbuf, strlen(cbuf));
+        }
+        else {
+          char c = chr;
+          term_do_write(&c, 1);
+        }
+      }
+    }
+    if (cbuf)
+      free(cbuf);
+
+    term.curs = csav;
+    term.curs.cset_single = CSET_ASCII;
+    return;
+  }
+
+  if (width > 1)
+    attr.attr |= TATTR_CLEAR | TATTR_NARROW;
 
   for (int y = y0; y <= y1; y++) {
     termline * l = term.lines[y];
@@ -376,7 +441,7 @@ copy_rect(short y0, short x0, short y1, short x1, short y2, short x2)
       copy_termchar(dst, x + x2 - x0, &src->chars[x]);
       //printf("copy %d:%d -> %d:%d\n", y, x, y + y2 - y0, x + x2 - x0);
       if ((x == x0 && src->chars[x].chr == UCSWIDE)
-       || (x == x1 && illegal_rect_char(src->chars[x].chr))
+       || (x == x1 && charwidth(src->chars[x].chr) != 1)
          )
       {
         clear_cc(dst, x);
@@ -567,11 +632,16 @@ write_tab(void)
 {
   term_cursor *curs = &term.curs;
 
+  int last = -1;
   do {
     if (curs->x == term.marg_right)
       break;
+    last = curs->x;
+    term.lines[curs->y]->chars[last].attr.attr |= ATTR_DIM;
     curs->x++;
   } while (curs->x < term.cols - 1 && !term.tabs[curs->x]);
+  if (last >= 0)
+    term.lines[curs->y]->chars[last].attr.attr |= ATTR_BOLD;
 
   if ((term.lines[curs->y]->lattr & LATTR_MODE) != LATTR_NORM) {
     if (curs->x >= term.cols / 2)
@@ -694,6 +764,11 @@ write_char(wchar c, int width)
 
   void put_char(wchar c)
   {
+    if (term.ring_enabled && curs->x == term.marg_right + 1 - 8) {
+      win_margin_bell(&cfg);
+      term.ring_enabled = false;
+    }
+
     clear_cc(line, curs->x);
     line->chars[curs->x].chr = c;
     line->chars[curs->x].attr = curs->attr;
@@ -730,10 +805,42 @@ write_char(wchar c, int width)
     curs->wrapnext = false;
   }
 
-  if (term.insert && width > 0)
-    insert_char(width);
-
   bool single_width = false;
+
+  // adjust to explicit width attribute; not for combinings and low surrogates
+  if (curs->width && width > 0) {
+    //if ((c & 0xFFF) == 0x153) printf("%llX %d\n", curs->attr.attr, width);
+    if (curs->width == 1) {
+      if (!(width < 2 || (cs_ambig_wide && is_ambig(c))))
+        curs->attr.attr |= TATTR_CLEAR | TATTR_NARROW;
+      width = 1;
+    }
+    else if (curs->width == 11) {
+      if (width > 1) {
+        if (!(cs_ambig_wide && is_ambig(c))) {
+          single_width = true;
+          curs->attr.attr |= TATTR_SINGLE;
+        }
+        width = 1;
+      }
+    }
+    else if (curs->width == 2) {
+      if (width < 2) {
+        curs->attr.attr |= TATTR_EXPAND;
+        width = 2;
+      }
+    }
+#ifdef support_triple_width
+    else if (curs->width == 3) {
+      if (width < 2 || (cs_ambig_wide && is_ambig(c)))
+        curs->attr.attr |= TATTR_EXPAND;
+#define TATTR_TRIPLE 0x0080000000000000u
+      curs->attr.attr |= TATTR_TRIPLE;
+      width = 3;
+    }
+#endif
+  }
+
   if (cfg.charwidth >= 10 || cs_single_forced) {
     if (width > 1) {
       single_width = true;
@@ -743,6 +850,9 @@ write_char(wchar c, int width)
       single_width = true;
     }
   }
+
+  if (term.insert && width > 0)
+    insert_char(width);
 
   switch (width) {
     when 1:  // Normal character.
@@ -785,11 +895,15 @@ write_char(wchar c, int width)
       }
       put_char(c);
       curs->x++;
-#ifdef support_triple_width
-      if (width > 2)
-        curs->x += width - 2;
-#endif
       put_char(UCSWIDE);
+#ifdef support_triple_width
+      if (width > 2) {
+        for (int i = 2; i < width; i++) {
+          curs->x++;
+          put_char(UCSWIDE);
+        }
+      }
+#endif
     when 0 or -1:  // Combining character or Low surrogate.
 #ifdef debug_surrogates
       printf("write_char %04X %2d %08llX\n", c, width, curs->attr.attr);
@@ -839,6 +953,8 @@ write_char(wchar c, int width)
       curs->wrapnext = true;
   }
 }
+
+#define dont_debug_scriptfonts
 
 static struct {
   ucschar first, last;
@@ -985,14 +1101,14 @@ static bool
 contains(string s, int i)
 {
   while (*s) {
-    while (*s == ',')
+    while (*s == ',' || *s == ' ')
       s++;
     int si = -1;
     int len;
     if (sscanf(s, "%d%n", &si, &len) <= 0)
       return false;
     s += len;
-    if (si == i && (!*s || *s == ','))
+    if (si == i && (!*s || *s == ',' || *s == ' '))
       return true;
   }
   return false;
@@ -1664,6 +1780,7 @@ do_sgr(void)
   term.curs.attr = attr;
   term.erase_char.attr = attr;
   term.erase_char.attr.attr &= (ATTR_FGMASK | ATTR_BGMASK);
+  term.erase_char.attr.attr |= TATTR_CLEAR;
 }
 
 /*
@@ -1746,6 +1863,8 @@ set_modes(bool state)
           term.deccolm_noclear = state;
         when 42: /* DECNRCM: national replacement character sets */
           term.decnrc_enabled = state;
+        when 44: /* turn on margin bell (xterm) */
+          term.margin_bell = state;
         when 67: /* DECBKM: backarrow key mode */
           term.backspace_sends_bs = state;
         when 69: /* DECLRMM/VT420 DECVSSM: enable left/right margins DECSLRM */
@@ -1958,6 +2077,8 @@ get_mode(bool privatemode, int arg)
         return 2 - term.deccolm_allowed;
       when 42: /* DECNRCM: national replacement character sets */
         return 2 - term.decnrc_enabled;
+      when 44: /* margin bell (xterm) */
+        return 2 - term.margin_bell;
       when 67: /* DECBKM: backarrow key mode */
         return 2 - term.backspace_sends_bs;
       when 69: /* DECLRMM: enable left and right margin mode DECSLRM */
@@ -2279,6 +2400,9 @@ do_csi(uchar c)
         else
           child_printf("\e[>77;%u;0c", DECIMAL_VERSION);
       }
+    when CPAIR('>', 'q'):     /* Report terminal name and version */
+      if (!arg0)
+        child_printf("\eP>|%s %s\e\\", APPNAME, VERSION);
     when 'a':        /* HPR: move right N cols */
       move(curs->x + arg0_def1, curs->y, 1);
     when 'C':        /* CUF: Cursor right */
@@ -2784,6 +2908,34 @@ do_csi(uchar c)
       push_mode(-1, win_get_ime());
     when CPAIR('<', 'r'):  /* TTIMERS: restore IME state (Tera Term) */
       win_set_ime(pop_mode(-1));
+    when CPAIR(' ', 't'):     /* DECSWBV: VT520 warning bell volume */
+      if (arg0 <= 8)
+        term.bell.vol = arg0;
+    when CPAIR(' ', 'u'):     /* DECSMBV: VT520 margin bell volume */
+      if (!arg0)
+        term.marginbell.vol = 8;
+      else if (arg0 <= 8)
+        term.marginbell.vol = arg0;
+    when CPAIR(' ', 'Z'): /* PEC: ECMA-48 Presentation Expand Or Contract */
+      if (!arg0)
+        curs->width = 0;
+      else if (arg0 == 1)   // expanded
+        curs->width = 2;
+      else if (arg0 == 2) { // condensed
+        if (arg1 == 2)      // single-cell zoomed down
+          curs->width = 11;
+        else
+          curs->width = 1;
+      }
+      else if (arg0 == 22)  // single-cell zoomed down
+        curs->width = 11;
+#ifdef support_triple_width
+      else if (arg0 == 3)   // triple-cell
+        curs->width = 3;
+#endif
+    when CPAIR('-', 'p'): /* DECARR: VT520 Select Auto Repeat Rate */
+      if (arg0 <= 30)
+        term.repeat_rate = arg0;
   }
 }
 
@@ -2796,6 +2948,9 @@ fill_image_space(imglist * img)
   cattrflags attr0 = term.curs.attr.attr;
   // refer SIXELCH cells to image for display/discard management
   term.curs.attr.imgi = img->imgi;
+#ifdef debug_img_disp
+  printf("fill %d:%d %d\n", term.curs.y, term.curs.x, img->imgi);
+#endif
 
   short x0 = term.curs.x;
   if (term.sixel_display) {  // sixel display mode
@@ -2931,6 +3086,13 @@ do_dcs(void)
 #ifdef debug_sixel_list
         printf("do_dcs checking imglist\n");
 #endif
+#ifdef replace_images
+#warning do not replace images in the list anymore
+        // with new flicker-reduce strategy of rendering overlapped images,
+        // new images should always be added to the end of the queue;
+        // completely overlayed images should be collected for removal 
+        // during the rendering loop (winimgs_paint),
+        // or latest when they are scrolled out of the scrollback buffer
         for (imglist * cur = term.imgs.first; cur; cur = cur->next) {
           if (cur->pixelwidth == cur->width * st->grid_width &&
               cur->pixelheight == cur->height * st->grid_height)
@@ -2971,7 +3133,9 @@ do_dcs(void)
 #endif
           }
         }
+#endif
         // append image to list
+        img->prev = term.imgs.last;
         term.imgs.last->next = img;
         term.imgs.last = img;
       }
@@ -3504,6 +3668,7 @@ do_cmd(void)
               term.imgs.first = term.imgs.last = img;
             } else {
               // append image to list
+              img->prev = term.imgs.last;
               term.imgs.last->next = img;
               term.imgs.last = img;
             }
@@ -3652,6 +3817,11 @@ term_do_write(const char *buf, uint len)
 #else
             int width = xcwidth(combine_surrogates(hwc, wc));
 #endif
+#ifdef support_triple_width
+            // do not handle triple-width here
+            //if (term.curs.width)
+            //  width = term.curs.width % 10;
+#endif
             write_ucschar(hwc, wc, width);
           }
           else
@@ -3698,7 +3868,7 @@ term_do_write(const char *buf, uint len)
         else if (term.wide_extra && wc >= 0x2000 && extrawide(wc)) {
           width = 2;
           if (win_char_width(wc, term.curs.attr.attr) < 2)
-            term.curs.attr.attr |= ATTR_EXPAND;
+            term.curs.attr.attr |= TATTR_EXPAND;
         }
         else
 #if HAS_LOCALES
@@ -3706,6 +3876,11 @@ term_do_write(const char *buf, uint len)
             width = xcwidth(wc);
           else
             width = wcwidth(wc);
+#ifdef support_triple_width
+          // do not handle triple-width here
+          //if (term.curs.width)
+          //  width = term.curs.width % 10;
+#endif
 # ifdef hide_isolate_marks
           // force bidi isolate marks to be zero-width;
           // however, this is inconsistent with locale width
@@ -3723,7 +3898,7 @@ term_do_write(const char *buf, uint len)
             // ensure symmetric handling of matching brackets
             && win_char_width(wc ^ 1, term.curs.attr.attr) < 2)
         {
-          term.curs.attr.attr |= ATTR_EXPAND;
+          term.curs.attr.attr |= TATTR_EXPAND;
         }
 
         wchar NRC(wchar * map)
@@ -4040,10 +4215,12 @@ term_do_write(const char *buf, uint len)
           when ';':
             term.cmd_num = 0;
             term.state = CMD_STRING;
-          when '\a' or '\n' or '\r':
+          when '\a':
             term.state = NORMAL;
           when '\e':
             term.state = ESCAPE;
+          when '\n' or '\r':
+            term.state = IGNORE_STRING;
           otherwise:
             term.state = IGNORE_STRING;
         }
@@ -4062,7 +4239,7 @@ term_do_write(const char *buf, uint len)
           when '\e':
             term.state = CMD_ESCAPE;
           when '\n' or '\r':
-            term.state = NORMAL;
+            term.state = IGNORE_STRING;
           otherwise:
             term.state = IGNORE_STRING;
         }
@@ -4091,23 +4268,29 @@ term_do_write(const char *buf, uint len)
 
       when CMD_STRING:
         switch (c) {
-          when '\n' or '\r':
-            term.state = NORMAL;
           when '\a':
             do_cmd();
             term.state = NORMAL;
           when '\e':
             term.state = CMD_ESCAPE;
+          when '\n' or '\r':
+            // accept new lines in OSC strings
+            if (term.cmd_num != 1337)
+              term_push_cmd(c);
+            // else ignore new lines in base64-encoded images
           otherwise:
             term_push_cmd(c);
         }
 
       when IGNORE_STRING:
         switch (c) {
-          when '\n' or '\r' or '\a':
+          when '\a':
             term.state = NORMAL;
           when '\e':
             term.state = ESCAPE;
+          when '\n' or '\r':
+            // keep IGNORE_STRING
+            ;
         }
 
       when DCS_START:
@@ -4213,6 +4396,9 @@ term_do_write(const char *buf, uint len)
         }
     }
   }
+
+  if (term.ring_enabled && term.curs.y != oldy)
+    term.ring_enabled = false;
 
   if (cfg.ligatures_support > 1) {
     // refresh ligature rendering in old cursor line

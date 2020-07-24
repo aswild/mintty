@@ -1,3 +1,107 @@
+### 3.2.0 (20 June 2020) ###
+
+Sixel and image display
+  * For overlapping images, fixed background and clipping borders (~#1010).
+  * Avoid image flickering by revised image list rendering strategy (#1010).
+  * New strategy to detect and collect overlayed images (~#1010).
+
+### 3.1.8 (7 June 2020) ###
+
+Terminal features
+  * Handle new lines within OSC strings, ignore for image data (#1010).
+
+Keyboard handling
+  * Optional legacy Alt modifier fallback for AltGr key.
+
+Window handling
+  * Fixed crash with empty search pattern (#1011).
+
+Configuration
+  * Changing default CheckVersionUpdate=0 to disable version checking by default.
+  * Option AltGrIsAlsoAlt.
+
+### 3.1.7 (6 June 2020) ###
+
+Terminal features
+  * New default CSI - p (DECARR 0) to disable keyboard repeat rate limitation.
+
+Keyboard handling
+  * Keyboard auto-repeat handling is now as usual (not affected) by default (#1009).
+  * Tweaked auto-repeat rate adjustment to better reflect selected values.
+  * Configurable key to activate keyboard selecting mode (#997, #84).
+  * Restored right-Alt modifier (if not AltGr) (#1003, ~#969).
+
+Window handling
+  * Ctrl+Alt+mouse-click restored to move the window (#1008).
+  * Search results are cleared on reset (#998).
+  * Constrain dark mode handling (#983) to Windows 10 Version 1809 (#1001).
+  * Alt+F2 clones maximised and fullscreen window modes (#999, ~#633).
+
+Configuration
+  * New user-definable function kb-select (#997, #84).
+
+Other
+  * Adding Windows build information to About info.
+
+### 3.1.6 (21 May 2020) ###
+
+Window handling
+  * Fixed resource leak when displaying images (#995).
+  * Fixed crash condition on keyboard auto-repeat (#996).
+
+### 3.1.5 (21 May 2020) ###
+
+Terminal features
+  * Limit coordinates of all mouse reports to text area (#972).
+  * Support bell volume escape sequence DECSWBV (#974) with wave files.
+  * Support margin bell feature (#974), with DECSET 44 enabling sequence (xterm).
+  * Support margin bell volume escape sequence DECSMBV (#974) with wave files.
+  * Support visible space indication.
+  * Fixed insert mode in single-width character mode (#964).
+  * DECFRA (fill rectangular area) works with wide and non-BMP characters.
+  * DECFRA works with NRCS and DEC Line Drawing characters (VT420).
+  * New CSI > 0 q to report terminal name and version (#881).
+  * New CSI 2/1 SP Z (ECMA-48 PEC) as character attribute to enforce single/double width (#615, #979, #973, #938, #638, ~#88, ~#671).
+  * New CSI cps - p DECARR Select Auto Repeat Rate (VT520).
+  * Support Ctrl+Alt-mouse clicks (#987).
+
+Character encoding
+  * Enhanced and documented GB18030 support (mintty/wsltty#224).
+
+Keyboard handling
+  * Unmapped AltGr combinations: don't fallback to ESC prefixing (~#969).
+  * Guard Compose key against hotkey injection (~#877).
+
+Unicode and Emoji data
+  * Unicode 13.0 update.
+  * Distinct support for EmojiOne (from unicode.org) and JoyPixels emojis.
+
+Font rendering
+  * Enable auto-narrowing for Private Use characters (#979, "Nerd Fonts").
+  * Adjust and zoom rendering for geometric Powerline symbols (#979).
+  * Support emoji style OpenMoji (#985).
+
+Window handling
+  * Tweak title bar dark mode adaptation to undocumented Windows changes (#983, mintty/wsltty#157).
+  * Support dark mode for menus (#983, mintty/wsltty#157).
+  * DropCommands secured against multiple placeholders.
+  * DropCommands optionally pastes Windows format paths (#982).
+  * Drag-and-drop import of itermcolors schemes (mintty/wsltty#227).
+  * Workaround to interact with Hot Keyboard (#877, setting SupportExternalHotkeys=4).
+  * Disable deprecated glass mode from interactive options (#501, mintty/wsltty#241).
+  * Speedup of scrollback searching (#988, #986).
+
+Other
+  * Warning and error popups are placed on top of desktop.
+  * Environment variables TERM_PROGRAM[_VERSION] provide unreliable info about terminal application (#776, #881).
+
+Configuration
+  * Options BellFile2 ... BellFile7 (#974).
+  * Options DispSpace, DispTab, DispClear.
+  * Options Suppress* are now resilient against space (mintty/wsltty#235).
+  * Option value SupportExternalHotkeys=4 (#877).
+  * Option value Emojis=openmoji (#985).
+
 ### 3.1.4 (25 February 2020) ###
 
 Terminal features

@@ -8,6 +8,7 @@
 #include "charset.h"
 
 #include "winpriv.h"  /* win_prefix_title, win_update_now */
+#include "appinfo.h"  /* APPNAME, VERSION */
 
 #include <pwd.h>
 #include <fcntl.h>
@@ -283,6 +284,9 @@ child_create(char *argv[], struct winsize *winp)
     signal(SIGTTOU, SIG_IGN);
 
     setenv("TERM", cfg.term, true);
+    // unreliable info about terminal application (#881)
+    setenv("TERM_PROGRAM", APPNAME, true);
+    setenv("TERM_PROGRAM_VERSION", VERSION, true);
 
     if (lang) {
       unsetenv("LC_ALL");
@@ -520,9 +524,8 @@ child_proc(void)
         else
 #endif
         do {
-          //if (kb_trace) printf("[%lu] <read\n", mtime());
-
           int ret = read(pty_fd, buf + len, sizeof buf - len);
+          //if (kb_trace) printf("[%lu] read %d\n", mtime(), ret);
           if (ret > 0)
             len += ret;
           else
@@ -1144,6 +1147,11 @@ do_child_fork(int argc, char *argv[], int moni, bool launch)
     // propagate shortcut-inherited icon
     if (icon_is_from_shortcut)
       setenv("MINTTY_ICON", cs__wcstoutf(cfg.icon), true);
+    // provide environment to maximise window
+    if (win_is_fullscreen)
+      setenvi("MINTTY_MAXIMIZE", 2);
+    else if (IsZoomed(wnd))
+      setenvi("MINTTY_MAXIMIZE", 1);
 
     //setenv("MINTTY_CHILD", "1", true);
 

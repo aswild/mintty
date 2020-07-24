@@ -26,12 +26,11 @@ int SEARCHBAR_HEIGHT = 26;
 static int
 current_delta(bool adjust)
 {
-  if (term.results.length == 0) {
+  if (term.results.current.len == 0) {
     return 0;
   }
 
-  result * res = term.results.results + term.results.current;
-  int y = res->y - term.sblines;
+  int y = term.results.current.idx / term.cols - term.sblines;
   int delta = 0;
   if (y < term.disptop) {
     delta = y - term.disptop;
@@ -62,15 +61,18 @@ current_delta(bool adjust)
 }
 
 static void
-scroll_to_result(void)
-{
-  if (term.results.length == 0) {
+scroll_to_result(result res) {
+  if (res.len == 0) {
     return;
   }
 
-  int delta = current_delta(true);
+  if (current_delta(false) == 0) {
+    // Update term.results.current iff the current result is in screen.
+    term.results.current = res;
+  }
 
   // Scroll if we must!
+  int delta = current_delta(true);
   if (delta != 0) {
     term_scroll(0, delta);
   }
@@ -79,23 +81,13 @@ scroll_to_result(void)
 static void
 next_result(void)
 {
-  if (term.results.length == 0) {
-    return;
-  }
-  if (current_delta(false) == 0)
-    term.results.current = (term.results.current + 1) % term.results.length;
-  scroll_to_result();
+  scroll_to_result(term_search_next());
 }
 
 static void
 prev_result(void)
 {
-  if (term.results.length == 0) {
-    return;
-  }
-  if (current_delta(false) == 0)
-    term.results.current = (term.results.current + term.results.length - 1) % term.results.length;
-  scroll_to_result();
+  scroll_to_result(term_search_prev());
 }
 
 static LRESULT CALLBACK
@@ -142,6 +134,8 @@ edit_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   return CallWindowProc(default_edit_proc, mesg.hwnd, mesg.message, mesg.wParam, mesg.lParam);
 }
 
+#define dont_darken_searchbar
+
 static LRESULT CALLBACK
 search_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -170,6 +164,21 @@ search_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       if (wp) {
         update = true;
       }
+#ifdef darken_searchbar
+    when WM_CTLCOLOREDIT: {
+      bool support_dark_mode = true;
+      /// ... determine support_dark_mode as in win_dark_mode
+      if (support_dark_mode) {
+        HDC hdc = (HDC)wp;
+        colour fg = RGB(222, 22, 22); // test value
+        colour bg = RGB(22, 22, 22);  // test value
+        /// ... retrieve fg, bg from DarkMode_Explorer theme
+        SetTextColor(hdc, fg);
+        SetBkColor(hdc, bg);
+        return (INT_PTR)CreateSolidBrush(bg);
+      }
+    }
+#endif
   }
 
   if (update) {
@@ -313,6 +322,15 @@ win_toggle_search(bool show, bool focus)
     search_edit_wnd = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
                                      0, 0, 0, 0,
                                      search_wnd, NULL, inst, NULL);
+
+#ifdef darken_searchbar
+    win_dark_mode(search_prev_wnd);
+    win_dark_mode(search_next_wnd);
+    win_dark_mode(search_close_wnd);
+    // these two do not darken anything
+    //win_dark_mode(search_wnd);
+    //win_dark_mode(search_edit_wnd);
+#endif
 
     search_font = CreateFontW(sf_height, 0, 0, 0, FW_DONTCARE, false, false, false,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,

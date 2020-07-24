@@ -86,12 +86,14 @@ extern void win_update_menus(bool callback);
 extern void user_function(wstring commands, int n);
 
 extern void win_show_mouse(void);
-extern void win_mouse_click(mouse_button, LPARAM);
+extern bool win_mouse_click(mouse_button, LPARAM);
 extern void win_mouse_release(mouse_button, LPARAM);
 extern void win_mouse_wheel(POINT wpos, bool horizontal, int delta);
 extern void win_mouse_move(bool nc, LPARAM);
 
+extern mod_keys get_mods(void);
 extern void win_key_reset(void);
+extern void provide_input(wchar);
 extern bool win_key_down(WPARAM, LPARAM);
 extern bool win_key_up(WPARAM, LPARAM);
 extern void do_win_key_toggle(int vk, bool on);
@@ -113,6 +115,8 @@ extern int search_monitors(int * minx, int * miny, HMONITOR lookup_mon, int get_
 extern void win_set_ime_open(bool);
 extern void win_set_ime(bool open);
 extern bool win_get_ime(void);
+
+extern void win_dark_mode(HWND w);
 
 extern void show_message(char * msg, UINT type);
 extern void show_info(char * msg);

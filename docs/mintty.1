@@ -532,9 +532,9 @@ dimensions.
 
 .SS Full screen
 
-Full screen mode can be toggled using either the \fBFull Screen\fP command in
-the menu or either of the \fBAlt+Enter\fP and \fBAlt+F11\fP keyboard shortcuts, 
-or the generic window title functions.
+Full screen mode can be toggled using either the \fBFull Screen\fP command in the 
+menu or either of the \fBAlt+Enter\fP and \fBAlt+F11\fP keyboard shortcuts, 
+or the generic functions of the window title bar.
 
 .SS Default size
 
@@ -672,6 +672,15 @@ the most significant non-zero byte first.
 
 This section gives an overview of all the keyboard shortcuts.
 See also the final subsection on user-defined shortcuts.
+
+.TP
+\fBAlt modifier key\fP
+Note that \fBAlt+\fP in this description refers to the left Alt key. 
+For keyboards that have two Alt keys, the right Alt key is not generally 
+supported as an Alt modifier. The reason is that it cannot be safely 
+distinguished from the AltGr key of international keyboards which is used 
+to generate specific additional characters in various keyboard layouts 
+and can therefore not be used as a generic modifier.
 
 .TP
 \fBScrollback and Selection via keyboard\fP
@@ -829,8 +838,7 @@ Ctrl+Shift+T is released. Alternatively, while Ctrl+Shift+T is held down,
 the navigation keys on the numeric keypad can be used for further fine-tuning:
 .br
 Up/Dn to increase/decrease, PgUp/PgDn for steps, Del/Ins for no/max transparency, 
-End for highest preconfigured transparency, Home for previous value, 
-Clear ("5") for glass.
+End for highest preconfigured transparency, Home for previous value.
 .br
 If OpaqueWhenFocused is set, opaqueness is temporarily disabled to 
 provide visible feedback for the changes.
@@ -1029,12 +1037,8 @@ Window transparency level, with the following choices:
 .br
 \(en \fBGlass\fP
 
-The \fBGlass\fP option is only available on Vista and above with desktop
-compositing enabled.
-To make this reasonably usable, the glass colour needs to be set to be as dark
-as possible in the Windows control panel: choose \fIPersonalize\fP from the
-desktop context menu, click on \fIWindow Color\fP, turn the colour intensity up
-to the maximum, show the colour mixer, and turn the brightness down to black.
+The \fBGlass\fP option is deprecated as it was only supported in Windows Vista 
+and only if glass colour brightness was set black in the Windows control panel.
 
 Numeric transparency values ranging from 4 to 254 can be specified in config
 files or on the command line.  (Values below 4 are multiplied by 16, for
@@ -1061,6 +1065,23 @@ control panel / Ease of Access Center, mouse panel or Optimize visual display.
 .TP
 \fBCursor blink\fP (CursorBlinks=yes)
 If enabled, the cursor blinks at the rate set in the Keyboard control panel.
+
+.TP
+\fBVisible space indication\fP (DispSpace=0, DispClear=0, DispTab=0)
+These settings enable visual indication of blank space. 
+Setting \fBDispSpace\fP affects explicitly written space, 
+setting \fBDispClear\fP affects unwritten/cleared character cells, 
+setting \fBDispTab\fP affects TAB positions over clear space.
+Suggested settings are 6 or 14.
+The settings are bitmasks, adding the following values:
+.br
+\(en \fB1\fP bold indication of space
+.br
+\(en \fB2\fP dimmed indication of space
+.br
+\(en \fB4\fP indication of space in UnderlineColour if configured
+.br
+\(en \fB8\fP brighten background of clear space (DispClear only)
 
 .SS Text
 Settings controlling text display.
@@ -1417,6 +1438,7 @@ Settings controlling keyboard behaviour.
 \fBAuto-repeat keys\fP (AutoRepeat=on)
 When setting this off, keyboard auto-repeat is ignored. Auto-repeat can also 
 be switched dynamically with DECSET 8.
+Note that the repeat rate can be adjusted dynamically by an escape sequence.
 
 .TP
 \fBBackarrow sends ^H\fP (BackspaceSendsBS=no)
@@ -1436,9 +1458,8 @@ If this option is enabled, \fB^?\fP (ASCII DEL) is sent instead.
 .TP
 \fBCtrl+LeftAlt is AltGr\fP (CtrlAltIsAltGr=no)
 The AltGr key on non-US Windows systems is a strange beast: pressing it is
-synonymous with pressing the left Ctrl key and the right Alt key at the
-same time, and Windows programs usually treat any Ctrl+Alt combination as
-AltGr.
+similar to pressing the left Ctrl key and the right Alt key at the
+same time, and many Windows programs treat any Ctrl+Alt combination as AltGr.
 
 Some programs, however, chief among them Microsoft's very own Office, do not
 treat Ctrl+LeftAlt as AltGr, so that Ctrl+LeftAlt combinations can be used in
@@ -1450,6 +1471,14 @@ The "standard" Windows behaviour can be restored by ticking the checkbox here.
 
 The setting makes no difference for keys without AltGr key bindings
 (e.g. any key on the standard US layout).
+
+.TP
+\fBAltGr is also Alt\fP (AltGrIsAlsoAlt=no)
+This setting enables fallback of the AltGr key to the function of the 
+Alt modifier for those keys that do not have an AltGr mapping in the 
+keyboard layout.
+
+The setting makes no difference for keys with AltGr key bindings.
 
 .TP
 \fBAllow delay for AltGr detection\fP (CtrlAltDelayAltGr=0)
@@ -1470,7 +1499,9 @@ just in case it has any side effects.
 This setting supports external Alt+hotkey combinations, esp. Alt+F4 
 to close the window, independently of general Alt+Fn shortcuts support 
 (if option value is 2) and by fixing the buggy hotkey sequence sent 
-by StrokeIt.
+by StrokeIt. Setting 4 also disables the feature to clear the selection 
+when another application sets the clipboard; this is needed to workaround 
+weird behaviour of Hot Keyboard.
 
 .TP
 \fBCopy and Paste shortcuts\fP (ClipShortcuts=yes)
@@ -1853,6 +1884,11 @@ to a filename (like D:/.../soundfile.wav); this can be achieved also
 by drag-and-drop from a local file.
 This setting overrides the Bell system sound except No Beep.
 .br
+\(en \fBBell volume wave files\fP (BellFile2= ... BellFile7=): 
+Alternative wave files can be set in the config file for bell volumes 
+2 ... 7 as set by the escape sequence DECSWBV.
+The general BellFile setting corresponds to bell volume 8 (default).
+.br
 \(en \fBPlay\fP: The button plays the selected sound for testing.
 The sound is also played when it is changed.
 .br
@@ -1884,6 +1920,7 @@ switchable by an escape sequence.)
 switchable by an escape sequence.)
 .br
 \(en \fBMinimum delay between bells\fP (BellInterval=100): Multiple bells within this many milliseconds will sound as one.
+(Corresponds to the xterm resource \fBbellSuppressTime\fP.)
 .br
 
 A simple \fBfrequency beep\fP can be configured in the configuration file 
@@ -2522,6 +2559,8 @@ Supported actions are described as follows:
 .br
 \(en \fBhyper\fP: use this key as Hyper modifier key
 .br
+\(en \fBkb-select\fP: activate keyboard selection
+.br
 \(en \fBscroll_top\fP: scroll scrollback view to beginning
 .br
 \(en \fBscroll_end\fP: scroll scrollback view to end
@@ -2774,10 +2813,10 @@ This option can be set to support either DPI handling modes 1 or 2
 (if supported, respectively), or set to 0/false to suppress DPI adjustments.
 
 .TP
-\fBCheck availability of mintty version update\fP (CheckVersionUpdate=900)
-If non-zero, mintty checks whether there is a version update available 
-whenever the Options dialog is opened and this was not checked within 
-the last given number of seconds.
+\fBCheck availability of mintty version update\fP (CheckVersionUpdate=0)
+If non-zero (e.g. 900), mintty checks whether there is a version 
+update available whenever the Options dialog is opened and this was 
+not checked within the last given number of seconds.
 
 .TP
 \fBSixel image clipboard substitution\fP (SixelClipChars=\fIspace\fP)
@@ -2794,8 +2833,12 @@ in dependence of the program running in the terminal foreground.
 this features does not work with WSL or after remote login.
 
 The value is a series of semicolon-separated, colon-combined 
-pairs of program name and drop pattern; the pattern is pasted with the 
-actual clipboard contents replaced for a "%s".
+pairs of program name and drop pattern. The pattern is pasted; a single 
+placeholder "%s" is replaced with the clipboard contents, 
+paths converted into cygwin format; a single placeholder "%w" is replaced 
+with the clipboard contents, paths left in Windows format. Using capital 
+placeholders "%S" or "%W" embeds the pasted paths into respective quotes 
+if needed.
 If a semicolon shall be embedded into any of the drop patterns, 
 a non-whitespace control character (i.e. none of \fB^I^J^K^L^M\fP) can be 
 specified as an alternative separator by starting the whole setting with it.
@@ -2813,6 +2856,8 @@ Examples:
 \(en \fBDropCommands=bash:cd \(aq%s\(aq^M;mined:^[fo^M%s^M;vim:^[:e %s^M\fP
 .br
 \(en \fBDropCommands=^_bash:cd \(aq%s\(aq;echo $PWD^M^_vim:^[:e %s^M^_\fP
+.br
+\(en \fBDropCommands=cmd:cd /D %W^M\fP
 
 \fINote:\fP An "Enter" key has to be specified with the CR character code, 
 control characters need to be embedded verbatim 
@@ -3052,6 +3097,9 @@ Menu contents can be configured by a sequence of characters with the following m
 \fINote:\fP With empty values for \fBMenuTitleCtrlLeft\fP/\fBRight\fP 
 the default session launcher for Ctrl+left/right-click on title bar can be disabled.
 
+\fINote:\fP In multi-column layout (using a \fB|\fP vertical separator), 
+a Windows bug causes fallback to a default theme, affecting colours and icons.
+
 .TP
 \fBSession geometry synchronization / Virtual tabs\fP (SessionGeomSync=0)
 This setting defines the level of approximation of "tabbed" window 
@@ -3080,8 +3128,11 @@ for further hints, especially on the \fIwinpty\fP wrapper.
 
 .SS Termcap/terminfo
 
-Mintty does not have its own \fItermcap\fP or \fIterminfo\fP entries;
-like a number of other terminal emulators, it reuses the xterm entry.
+Mintty has two \fItermcap\fP or \fIterminfo\fP entries, \fBmintty\fP and 
+\fBmintty-direct\fP (the latter reflecting true-colour capability).
+However, it sets the environment variable \fBTERM\fP to \fBxterm\fP 
+by default in order to provide maximal seamless compatibility also in case 
+of remote login.
 
 .SS Screen control features, DEC and xterm compatibility
 

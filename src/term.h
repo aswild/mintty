@@ -120,18 +120,16 @@ enum {
   ATTR_BROKENUND  = 0x0000000800000000u,
   ATTR_ULCOLOUR   = 0x0020000000000000u,
 
+  ATTR_CURLYUND   = ATTR_UNDER | ATTR_DOUBLYUND,
+  UNDER_MASK      = ATTR_UNDER | ATTR_DOUBLYUND | ATTR_BROKENUND,
+
   ATTR_SHADOW     = 0x0000100000000000u,
   ATTR_OVERSTRIKE = 0x0000200000000000u,
   ATTR_SUBSCR     = 0x0000400000000000u,
   ATTR_SUPERSCR   = 0x0000800000000000u,
 
   ATTR_PROTECTED  = 0x20000000u,
-  ATTR_WIDE       = 0x40000000u,
-  ATTR_NARROW     = 0x80000000u,
-  ATTR_EXPAND     = 0x0000000100000000u,
   ATTR_FRAMED     = 0x0010000000000000u,
-
-  TATTR_EMOJI     = 0x1000000000000000u,
 
   GRAPH_MASK      = 0x00000F0000000000u,
   ATTR_GRAPH_SHIFT = 40,
@@ -139,8 +137,10 @@ enum {
   FONTFAM_MASK    = 0x000F000000000000u,
   ATTR_FONTFAM_SHIFT = 48,
 
-  ATTR_CURLYUND   = ATTR_UNDER | ATTR_DOUBLYUND,
-  UNDER_MASK      = ATTR_UNDER | ATTR_DOUBLYUND | ATTR_BROKENUND,
+  TATTR_WIDE       = 0x40000000u,
+  TATTR_NARROW     = 0x80000000u,
+  TATTR_EXPAND     = 0x0000000100000000u,
+  TATTR_EMOJI     = 0x1000000000000000u,
 
   TATTR_COMBINING = 0x0000000200000000u, /* combining characters */
   TATTR_COMBDOUBL = 0x0000000400000000u, /* combining double characters */
@@ -322,18 +322,26 @@ typedef enum {
 
 /* Searching */
 typedef struct {
-  int x;
-  int y;
+  // Index of a virtual array of scrollback + screen.
+  // y = idx / term.cols
+  // x = idx % term.rows
+  // y starts from the top most line (y = 0, the first line of scrollback or screen).
+  int idx;
+  // The length of a match, maybe larger than term.results.xquery_length because of UCSWIDE.
   int len;
 } result;
 
 typedef struct {
+  // The current active result, for prev/next button.
+  result current;
+  // An idx can be matched against term.results.results iff idx in [range_begin, range_end).
+  int range_begin, range_end;
   result * results;
   wchar * query;
   xchar * xquery;
   int xquery_length;
+  // The capacity and length of results.
   int capacity;
-  int current;
   int length;
   int update_type;
 } termresults;
@@ -354,6 +362,7 @@ typedef struct {
 typedef struct imglist {
   // linked list
   struct imglist * next;
+  struct imglist * prev;
   // image ref for multiple use (currently unused)
   char * id;
   // sixel: rendering data
@@ -406,6 +415,7 @@ typedef struct {
   short x, y;
   bool wrapnext;
   cattr attr;
+  char width;  // handle explicit width attribute in termout.c
   bool origin;
   short gl, gr;
   term_cset csets[4];
@@ -415,6 +425,12 @@ typedef struct {
   bool utf;
   ushort bidimode;
 } term_cursor;
+
+typedef struct {
+  int vol;
+  int last_vol;
+  unsigned long last_bell;
+} term_bell;
 
 struct term {
   // these used to be in term_cursor, thus affected by cursor restore
@@ -472,6 +488,10 @@ struct term {
   bool focus_reported;
   bool in_vbell;
 
+  term_bell bell, marginbell;
+  bool margin_bell;
+  bool ring_enabled;
+
   bool vt220_keys;
   bool shortcut_override;
   bool backspace_sends_bs;
@@ -482,6 +502,7 @@ struct term {
   bool app_cursor_keys;
   bool app_keypad;
   bool auto_repeat;
+  int repeat_rate;
   bool bell_taskbar; // xterm: bellIsUrgent; switchable with CSI ? 1042 h/l
   bool bell_popup;   // xterm: popOnBell;    switchable with CSI ? 1043 h/l
   bool wheel_reporting_xterm; // xterm: alternateScroll
@@ -621,7 +642,7 @@ extern void term_resize(int, int);
 extern void term_scroll(int, int);
 extern void term_reset(bool full);
 extern void term_clear_scrollback(void);
-extern void term_mouse_click(mouse_button, mod_keys, pos, int count);
+extern bool term_mouse_click(mouse_button, mod_keys, pos, int count);
 extern void term_mouse_release(mouse_button, mod_keys, pos);
 extern void term_mouse_move(mod_keys, pos);
 extern void term_mouse_wheel(bool horizontal, int delta, int lines_per_notch, mod_keys, pos);
@@ -650,5 +671,8 @@ extern void term_schedule_search_update(void);
 extern void term_update_search(void);
 extern void term_clear_results(void);
 extern void term_clear_search(void);
+extern void term_search_expand(int idx);
+extern result term_search_prev(void);
+extern result term_search_next(void);
 
 #endif

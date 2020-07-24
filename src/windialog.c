@@ -400,6 +400,35 @@ unhook_windows()
 
 #define dont_debug_messages
 
+#define dont_darken_dialog_elements
+
+#ifdef darken_dialog_elements
+static LRESULT CALLBACK
+tree_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR uid, DWORD_PTR data)
+{
+  (void)uid; (void)data;
+  bool support_dark_mode = true;
+  /// ... determine support_dark_mode as in win_dark_mode
+  colour bg = RGB(22, 22, 22);
+  /// ... retrieve bg from DarkMode_Explorer theme
+  switch (msg) {
+    when WM_ERASEBKGND:      // darken treeview background
+      if (support_dark_mode) {
+        HDC hdc = (HDC)wp;
+        RECT rc;
+        GetClientRect(wnd, &rc);
+        HBRUSH br = CreateSolidBrush(bg);
+        int res = FillRect(hdc, &rc, br);
+        DeleteObject(br);
+        return res;
+      }
+    //when 0x1100 or 0x110A or 0x110B or 0x110C or 0x112A or 0x112D or 0x113E or 0x2100:
+      // these also occur
+  }
+  return DefSubclassProc(hwnd, msg, wp, lp);
+}
+#endif
+
 /*
  * This function is the configuration box.
  * (Being a dialog procedure, in general it returns 0 if the default
@@ -430,6 +459,15 @@ config_dialog_proc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
     printf("[%d] dialog_proc %04X %s (%04X %08X)\n", (int)time(0), msg, wm_name, (unsigned)wParam, (unsigned)lParam);
   }
 #endif
+
+#ifdef darken_dialog_elements
+  bool support_dark_mode = true;
+  /// ... determine support_dark_mode as in win_dark_mode
+  colour fg = RGB(222, 22, 22); // test value
+  colour bg = RGB(22, 22, 22);  // test value
+  /// ... retrieve fg, bg from DarkMode_Explorer theme
+#endif
+
   switch (msg) {
     when WM_INITDIALOG: {
       ctrlbox = ctrl_new_box();
@@ -474,6 +512,15 @@ config_dialog_proc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
       treeview_faff tvfaff;
       tvfaff.treeview = treeview;
       memset(tvfaff.lastat, 0, sizeof(tvfaff.lastat));
+
+#ifdef darken_dialog_elements
+     /*
+      * Apply dark mode to tree menu background and active item
+      */
+      win_dark_mode(treeview); // active item
+      /// ... passive items?
+      SetWindowSubclass(treeview, tree_proc, 0, 0); // background
+#endif
 
      /*
       * Set up the tree view contents.
@@ -531,6 +578,37 @@ config_dialog_proc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
       }
     }
+
+#ifdef darken_dialog_elements
+    when WM_CTLCOLORDLG      // dialog background
+      or WM_CTLCOLORSTATIC   // labels
+      or WM_CTLCOLORBTN      // button borders; for buttons, see doctl
+      or WM_CTLCOLOREDIT     // popup items
+      or WM_CTLCOLORLISTBOX: // popup menu
+      // or WM_CTLCOLORMSGBOX or WM_CTLCOLORSCROLLBAR ?
+        // setting fg fails for WM_CTLCOLORSTATIC
+        if (support_dark_mode) {
+          HDC hdc = (HDC)wParam;
+          SetTextColor(hdc, fg);
+          SetBkColor(hdc, bg);
+          return (INT_PTR)CreateSolidBrush(bg);
+        }
+    //when 0x0090 or 0x00F1 or 0x00F4 or 0x0143 or 0x014B:
+      // these also occur
+
+#ifdef draw_dialog_bg
+    when WM_ERASEBKGND:      // handled via WM_CTLCOLORDLG above
+      if (support_dark_mode) {
+        HDC hdc = (HDC)wParam;
+        RECT rc;
+        GetClientRect(wnd, &rc);
+        HBRUSH br = CreateSolidBrush(bg);
+        int res = FillRect(hdc, &rc, br);
+        DeleteObject(br);
+        return res;
+      }
+#endif
+#endif
 
     when WM_CLOSE:
       DestroyWindow(wnd);
@@ -731,6 +809,9 @@ win_open_config(void)
     display_update(version_available);
   deliver_available_version();
 
+  // Apply dark mode to dialog title
+  win_dark_mode(config_wnd);
+
   ShowWindow(config_wnd, SW_SHOW);
 
   set_dpi_auto_scaling(false);
@@ -812,6 +893,8 @@ message_box(HWND parwnd, char * text, char * caption, int type, wstring ok)
 
   oklabel = ok;
   oktype = type;
+  if (type != MB_OK)
+    type |= MB_SETFOREGROUND;
   hook_windows(set_labels);
   int ret;
   if (nonascii(text) || nonascii(caption)) {
@@ -837,6 +920,8 @@ message_box_w(HWND parwnd, wchar * wtext, wchar * wcaption, int type, wstring ok
 
   oklabel = ok;
   oktype = type;
+  if (type != MB_OK)
+    type |= MB_SETFOREGROUND;
   hook_windows(set_labels);
   int ret;
   ret = MessageBoxW(parwnd, wtext, wcaption, type);
@@ -864,9 +949,11 @@ win_show_about(void)
   char * abouttext = newn(char, strlen(aboutfmt) + strlen(WEBSITE));
   sprintf(abouttext, aboutfmt, WEBSITE);
 #else
+  DWORD win_version = GetVersion();
+  uint build = HIWORD(win_version);
   char * aboutfmt =
-    asform("%s\n%s\n%s\n%s\n\n%s", 
-           VERSION_TEXT, COPYRIGHT, LICENSE_TEXT, _(WARRANTY_TEXT), _(ABOUT_TEXT));
+    asform("%s [Windows %u]\n%s\n%s\n%s\n\n%s", 
+           VERSION_TEXT, build, COPYRIGHT, LICENSE_TEXT, _(WARRANTY_TEXT), _(ABOUT_TEXT));
   char * abouttext = asform(aboutfmt, WEBSITE);
 #endif
   free(aboutfmt);

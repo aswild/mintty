@@ -13,6 +13,9 @@
 #define _WTYPES_H
 #define _OLE2_H
 #include <commdlg.h>
+#ifdef darken_dialog_elements
+#include <commctrl.h>  // Subclass
+#endif
 
 
 /*
@@ -54,6 +57,21 @@ ctrlposinit(ctrlpos * cp, HWND wnd, int leftborder, int rightborder,
   cp->width -= leftborder + rightborder;
 }
 
+#ifdef darken_dialog_elements
+static LRESULT CALLBACK
+ctl_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR uid, DWORD_PTR data)
+{
+  (void)uid; (void)data;
+  switch (msg) {
+    //when WM_ERASEBKGND:
+      // makes things worse (flickering, invisible items)
+    //when 0x0090 or 0x00F1 or 0x00F4 or 0x0143 or 0x014B:
+      // these also occur
+  }
+  return DefSubclassProc(hwnd, msg, wp, lp);
+}
+#endif
+
 static HWND
 doctl(control * ctrl, 
       ctrlpos * cp, RECT r, 
@@ -94,6 +112,12 @@ doctl(control * ctrl,
         CreateWindowExA(exstyle, class, text, wstyle, r.left, r.top, r.right,
                         r.bottom, cp->wnd, (HMENU)(INT_PTR)wid, inst, null);
     }
+#ifdef darken_dialog_elements
+    // apply dark mode to dialog buttons
+    win_dark_mode(ctl);
+    // try to darken further elements
+    SetWindowSubclass(ctl, ctl_proc, 0, 0);
+#endif
 #ifdef debug_widgets
     printf("%8p %s %d '%s'\n", ctl, class, exstyle, text);
 #endif
@@ -1230,6 +1254,8 @@ set_labels(bool font_chooser, int nCode, WPARAM wParam, LPARAM lParam)
       //__ Colour chooser:
       basic_colors = CreateWindowExW(4, W("Static"), lbl ?: _W("B&asic colours:"), 0x50020000, 6, 7, 210, 15, (HWND)wParam, 0, inst, 0);
                          //shortkey disambiguated from original "&Basic colors:"
+      // this does not seem to apply dark mode to anything
+      //win_dark_mode(basic_colors);
       SendMessage(basic_colors, WM_SETFONT, fnt, MAKELPARAM(true, 0));
       if (lbl)
         free(lbl);

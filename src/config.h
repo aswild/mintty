@@ -16,7 +16,8 @@ enum { TR_OFF = 0, TR_LOW = 16, TR_MEDIUM = 32, TR_HIGH = 48, TR_GLASS = -1 };
 enum { FLASH_FRAME = 1, FLASH_BORDER = 2, FLASH_FULL = 4, FLASH_REVERSE = 8 };
 enum { EMOJIS_NONE = 0, EMOJIS_ONE = 1, EMOJIS_NOTO = 2, EMOJIS_APPLE = 3, 
        EMOJIS_GOOGLE = 4, EMOJIS_TWITTER = 5, EMOJIS_FB = 6, 
-       EMOJIS_SAMSUNG = 7, EMOJIS_WINDOWS = 8 };
+       EMOJIS_SAMSUNG = 7, EMOJIS_WINDOWS = 8, EMOJIS_JOYPIXELS = 9, 
+       EMOJIS_OPENMOJI = 10 };
 enum { EMPL_STRETCH = 0, EMPL_ALIGN = 1, EMPL_MIDDLE = 2, EMPL_FULL = 3 };
 
 // Colour values.
@@ -51,6 +52,7 @@ typedef struct {
   // Looks
   colour fg_colour, bold_colour, bg_colour, cursor_colour;
   colour underl_colour, hover_colour;
+  int disp_space, disp_clear, disp_tab;
   bool underl_manual;
   colour sel_fg_colour, sel_bg_colour;
   colour search_fg_colour, search_bg_colour, search_current_colour;
@@ -80,6 +82,7 @@ typedef struct {
   bool backspace_sends_bs;
   bool delete_sends_del;
   bool ctrl_alt_is_altgr;
+  bool altgr_is_alt;
   int ctrl_alt_delay_altgr;
   bool old_altgr_detection;
   bool auto_repeat;
@@ -129,9 +132,8 @@ typedef struct {
   wstring answerback;
   bool old_wrapmodes;
   bool enable_deccolm_init;
-  bool bell_sound;
   int bell_type;
-  wstring bell_file;
+  wstring bell_file[7];
   int bell_freq;
   int bell_len;
   bool bell_flash;   // xterm: visualBell

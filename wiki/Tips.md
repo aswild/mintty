@@ -290,9 +290,12 @@ Secondary Device Attributes report queried from the terminal.
 The script `terminal` in the mintty 
 [utils repository](https://github.com/mintty/utils) provides an implementation.
 
-Using environment variables for this purpose is not reliable and therefore 
-not supported. See [issue #776](https://github.com/mintty/mintty/issues/776) 
-for a discussion.
+In addition, from mintty 3.1.5, an additional escape sequence causes mintty 
+to report its name and version; furthermore, although using 
+environment variables for this purpose is not reliable (see 
+[issue #776](https://github.com/mintty/mintty/issues/776) for a discussion), 
+mintty sets environment variables TERM_PROGRAM and TERM_PROGRAM_VERION 
+as various other terminals do.
 
 
 ## Terminal line settings ##
@@ -454,6 +457,11 @@ timestamp. As a workaround, mintty can detect AltGr also from the
 two key codes arriving with some delay. Setting 
 `CtrlAltDelayAltGr=16` or `CtrlAltDelayAltGr=20` is suggested.
 
+### Handling the clipboard in Hot Keyboard ###
+
+Hot Keyboard needs configuration `CtrlAltIsAltGr=1` and `SupportExternalHotkeys=4` 
+as a workaround for buggy behaviour. Also `ClipShortcuts=true` (default) is advisable.
+
 
 ## Using Ctrl+Tab to switch window pane in terminal multiplexers ##
 
@@ -580,27 +588,32 @@ can be used in different ways:
 * Drag-and-drop a theme file from the Internet (may be embedded in HTML page)
 * Drag-and-drop a colour scheme directly from the Color Scheme Designer (see below)
 
-After drag-and-drop of a colour scheme, you may Apply it for testing;
+(Option 3) 
+A number of colour schemes have been published for mintty, also 
+mintty supports direct drag-and-drop import of itermcolors schemes.
+Look for the following repositories:
+* https://iterm2colorschemes.com/
+* https://github.com/oumu/mintty-color-schemes
+* https://github.com/goreliu/wsl-terminal/tree/master/src/etc/themes
+
+After drag-and-drop of a colour scheme, it is automatically applied 
+to the current terminal session for quick and easy testing;
 to keep the scheme in your popup selection, assign a name to it by typing it 
 into the Theme field, then click the “Store” button. After downloading a 
 theme file, the name will be filled with its basename as a suggestion.
 As long as a colour scheme is loaded but not yet stored, and a name is 
 available in the Theme field, the “Store” button will be enabled.
 
-There is an excellent colour scheme designer available:
+(Option 4) The 
 [4bit Terminal Color Scheme Designer](http://ciembor.github.io/4bit/#) 
-which lets you download a tuned colour scheme (top-right button “Get Scheme”).
+lets you download a tuned colour scheme (top-right button “Get Scheme”).
 Click on the button “Color Scheme Designer” below the Theme field 
 to open the designer page and start your design. You can either download 
 the scheme file (“Get Scheme” – “mintty”) or drag-and-drop the download link 
 directly to the mintty Options menu, to either the Theme field or the 
-Color Scheme Designer button. You can then click Apply to test the design 
-and if you like it, you can enter a theme name in the Theme field and then 
-click the “Store” button to store the colour scheme.
-
-A number of colour schemes have been published for mintty, e.g.
-* https://github.com/oumu/mintty-color-schemes
-* https://github.com/goreliu/wsl-terminal/tree/master/src/etc/themes
+Color Scheme Designer button. If you like the scheme, you can enter a 
+theme name in the Theme field and then click the “Store” button to 
+store the colour scheme.
 
 Mintty also provides the command-line script ```mintheme``` which can 
 display the themes available in the mintty configuration directories or 
@@ -865,8 +878,8 @@ ECMA-48 sub-parameters are supported.
 | 58:2::R:G:B            | 59                | underline RGB colour          |
 | 58:3:F:C:M:Y           | 59                | underline CMY colour (*)      |
 | 58:4:F:C:M:Y:K         | 59                | underline CMYK colour (*)     |
-| 73                     | 75                | superscript (tentative)       |
-| 74                     | 75                | subscript   (tentative)       |
+| 73                     | 75                | superscript                   |
+| 74                     | 75                | subscript                     |
 | _any_                  | 0 _or empty_      |                               |
 
 Note: Alternative fonts are configured with options Font1 ... Font10.
@@ -933,18 +946,24 @@ Mintty does not bundle actual emoji graphics with its package.
 You will have to download and deploy them yourself.
 
 Emoji data can be found at the following sources:
-<img align=right src=https://github.com/mintty/mintty/wiki/mintty-emojis.png>
-* [EmojiOne](https://www.emojione.com/)
-  * Free Download for your own use, PNG Files, download e.g. 128x128px zip
-  * Deploy the preferred subdirectory (e.g. 128) as `emojione`
+* [Unicode.org](http://www.unicode.org/emoji/charts/) Full Emoji List (~50MB)
+  * Use the script [`getemojis`](getemojis) to download the web pages 
+  [Full Emoji List](http://www.unicode.org/emoji/charts/full-emoji-list.html) and 
+  [Full Emoji Modifier Sequences](http://www.unicode.org/emoji/charts/full-emoji-modifiers.html) 
+  (with all emoji data embedded)
+  and extract emoji data (call it without parameters for instructions)
+  * Deploy the desired subdirectories (e.g. `apple`) and subdirectory `common`
+  * Includes apple, emojione, facebook, google, twitter, samsung, windows emojis (and some limited low-resolution sets that we shall ignore)
+* [OpenMoji](https://openmoji.org/)
+  * Under “Get OpenMojis”, download the “[PNG Color 72×72](https://github.com/hfg-gmuend/openmoji/releases/latest/download/openmoji-72x72-color.zip)” archive (or the very large resolution if preferred)
+  * Unpack the archive into `openmoji`
 * [Noto Emoji font](https://github.com/googlefonts/noto-emoji), subdirectory `png/128`
   * “Clone or download” the repository or download a release archive
   * Deploy subdirectory noto-emoji/png/128 as `noto`
-* [Unicode.org](http://www.unicode.org/emoji/charts/) Full Emoji List (~50MB)
-  * Download the [Full Emoji List](http://www.unicode.org/emoji/charts/full-emoji-list.html) (with all emoji data embedded)
-  * Use the [extraction script `getemojis`](getemojis) to extract emoji data (call it without parameters for instructions)
-  * Deploy the desired subdirectories (e.g. `apple`)
-  * Includes apple, emojione, facebook, google, twitter, samsung, windows emojis (and some limited low-resolution sets that we shall ignore)
+* [JoyPixels](https://www.joypixels.com/) (formerly EmojiOne)
+  * Download JoyPixels Free (or Premium)
+  * Deploy the preferred subdirectory (e.g. png/unicode/128) as `joypixels`
+<img align=right src=https://github.com/mintty/mintty/wiki/mintty-emojis.png>
 
 To “Clone” with limited download volume, use the command `git clone --depth 1`.
 To download only the desired subdirectory from `github.com`, use `subversion`, 
@@ -976,7 +995,52 @@ previous/next prompt line if these are marked with scroll marker escape
 sequences, see the [[CtrlSeqs]] wiki page.
 
 
-## Passing arguments from an environment with different character set ##
+## Character encoding ##
+
+Character encoding (or character set) is normally determined via the 
+locale mechanism. To run mintty in a specific locale case-by-case, 
+you would set the LC_CTYPE locale category (using environment variables 
+LC_ALL, LC_CTYPE, LANG in this precedence) to configure both mintty and 
+its child process (shell) consistently, for example:
+
+```
+LC_CTYPE=zh_CN.gbk mintty &
+```
+
+However, as a legacy option, it is also possible to configure mintty with 
+distinct options `Locale` and `Charset`; note that despite the name, the 
+`Locale` parameter must *not* include an encoding suffix in this case.
+Take care to make sure that the child process has the same idea about the 
+character encoding as the terminal in this scenario.
+
+### GB18030 support ###
+
+Mintty has special support for the GB18030 character encoding which is not 
+supported by cygwin and therefore not available for interactive configuration 
+of the `Charset` setting in the Options dialog.
+Setting `Charset=GB18030` in a config file or on the command line invokes 
+this support (setting `Locale` too is necessary).
+Mintty will fallback to the GBK character encoding for the locale 
+setup of its child process in this case, to provide at least 
+consistence with a maximum subset of GB18030. GB18030 is fully 
+supported for terminal output/input. Example:
+
+```
+mintty -o Locale=zh_CN -o Charset=GB18030 &
+```
+Add setting `-o Charwidth=ambig-wide` if desired.
+
+If mintty is used as a WSL terminal, the WSL side can be configured to run 
+a GB18030 locale as well to achieve full GB18030 support.
+Give option `--WSL` first as it implies `Charset=UTF-8` which then needs to 
+be overridden; also add setting `Charwidth=ambig-wide` to run compatible 
+with WSL locales and not derive ambiguous character width from the font:
+
+```
+mintty --WSL[=...] -o Locale=zh_CN -o Charset=GB18030 -o Charwidth=ambig-wide
+```
+
+### Passing arguments from an environment with different character set ###
 
 To pass non-ASCII parameters to a command run from mintty using a specific 
 character encoding, proper conversion must be crafted.
@@ -1113,6 +1177,9 @@ To add a new language, copy `messages.pot` to the desired `.po` file
 (including a region suffix if appropriate, like `fr_CH`) and add the 
 `msgstr` entries which are empty in the template. The tool `poedit` may 
 be used but remember to use UTF-8 encoding.
+Check the translations for strings that may be too long and get clipped 
+by a careful walkthrough of the Options dialog, opening all popups and 
+sub-dialogs (colours and font) and also checking `mintty -o FontMenu=0`.
 
 _Note:_ There is one special pseudo-string in the localization template which 
 facilitates scaling of the Options dialog width. It is labelled 

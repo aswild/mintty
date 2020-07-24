@@ -16,6 +16,7 @@
 static HMENU ctxmenu = NULL;
 static HMENU sysmenu;
 static int sysmenulen;
+//static uint kb_select_key = 0;
 static uint super_key = 0;
 static uint hyper_key = 0;
 static uint newwin_key = 0;
@@ -114,6 +115,16 @@ icon_bitmap(HICON hIcon)
 
 
 /* Menu handling */
+
+static inline void
+show_menu_info(HMENU menu)
+{
+  MENUINFO mi;
+  mi.cbSize = sizeof(MENUINFO);
+  mi.fMask = MIM_STYLE | MIM_BACKGROUND;
+  GetMenuInfo(menu, &mi);
+  printf("menuinfo style %04X brush %p\n", (uint)mi.dwStyle, mi.hbrBack);
+}
 
 static void
 append_commands(HMENU menu, wstring commands, UINT_PTR idm_cmd, bool add_icons, bool sysmenu)
@@ -270,6 +281,7 @@ wnd_enum_tabs(HWND curr_wnd, LPARAM lParam)
 static void
 add_switcher(HMENU menu, bool vsep, bool hsep, bool use_win_icons)
 {
+  //printf("add_switcher vsep %d hsep %d\n", vsep, hsep);
   uint bar = vsep ? MF_MENUBARBREAK : 0;
   if (hsep)
     AppendMenuW(menu, MF_SEPARATOR, 0, 0);
@@ -288,6 +300,7 @@ add_switcher(HMENU menu, bool vsep, bool hsep, bool use_win_icons)
 static bool
 add_launcher(HMENU menu, bool vsep, bool hsep)
 {
+  //printf("add_launcher vsep %d hsep %d\n", vsep, hsep);
   if (*cfg.session_commands) {
     uint bar = vsep ? MF_MENUBARBREAK : 0;
     if (hsep)
@@ -611,6 +624,7 @@ win_update_menus(bool callback)
 static bool
 add_user_commands(HMENU menu, bool vsep, bool hsep, wstring title, wstring commands, UINT_PTR idm_cmd)
 {
+  //printf("add_user_commands vsep %d hsep %d\n", vsep, hsep);
   if (*commands) {
     uint bar = vsep ? MF_MENUBARBREAK : 0;
     if (hsep)
@@ -721,6 +735,7 @@ win_init_menus(void)
 static void
 open_popup_menu(bool use_text_cursor, string menucfg, mod_keys mods)
 {
+  //printf("open_popup_menu txtcur %d <%s> %X\n", use_text_cursor, menucfg, mods);
   /* Create a new context menu structure every time the menu is opened.
      This was a fruitless attempt to achieve its proper DPI scaling.
      It also supports opening different menus (Ctrl+ for extended menu).
@@ -730,6 +745,7 @@ open_popup_menu(bool use_text_cursor, string menucfg, mod_keys mods)
     DestroyMenu(ctxmenu);
 
   ctxmenu = CreatePopupMenu();
+  //show_menu_info(ctxmenu);
 
   if (!menucfg) {
     if (mods & MDK_ALT)
@@ -746,6 +762,8 @@ open_popup_menu(bool use_text_cursor, string menucfg, mod_keys mods)
   bool wicons = strchr(menucfg, 'W');
   while (*menucfg) {
     if (*menucfg == '|')
+      // Windows mangles the menu style if the flag MF_MENUBARBREAK is used 
+      // as triggered by vsep...
       vsep = true;
     else if (!strchr(menucfg + 1, *menucfg)) {
       // suppress duplicates except separators
@@ -787,6 +805,7 @@ open_popup_menu(bool use_text_cursor, string menucfg, mod_keys mods)
     menucfg++;
   }
   win_update_menus(false);  // dispensable; also called via WM_INITMENU
+  //show_menu_info(ctxmenu);
 
   POINT p;
   if (use_text_cursor) {
@@ -833,7 +852,7 @@ static uint alt_code;
 static bool lctrl;  // Is left Ctrl pressed?
 static int lctrl_time;
 
-static mod_keys
+mod_keys
 get_mods(void)
 {
   inline bool is_key_down(uchar vk) { return GetKeyState(vk) & 0x80; }
@@ -926,7 +945,7 @@ get_mouse_pos(LPARAM lp)
   return translate_pos(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
 }
 
-void
+bool
 win_mouse_click(mouse_button b, LPARAM lp)
 {
   mouse_state = true;
@@ -949,6 +968,8 @@ win_mouse_click(mouse_button b, LPARAM lp)
 
   SetFocus(wnd);  // in case focus was in search bar
 
+  bool res = false;
+
 #if 0 // WILD REMOVE START - disable click focus selection
   if (click_focus && b == MBT_LEFT && count == 1
       && // not in application mouse mode
@@ -961,6 +982,7 @@ win_mouse_click(mouse_button b, LPARAM lp)
     last_skipped = true;
     last_skipped_time = t;
     skip_release_token = b;
+    res = true;
   }
   else
 #endif // WILD REMOVE END
@@ -969,7 +991,7 @@ win_mouse_click(mouse_button b, LPARAM lp)
       // recognize double click also in application mouse modes
       term_mouse_click(b, mods, p, 1);
     }
-    term_mouse_click(b, mods, p, count);
+    res = term_mouse_click(b, mods, p, count);
     last_skipped = false;
   }
   last_pos = (pos){INT_MIN, INT_MIN, false};
@@ -991,6 +1013,8 @@ win_mouse_click(mouse_button b, LPARAM lp)
       button_state |= 8;
     otherwise:;
   }
+
+  return res;
 }
 
 void
@@ -1064,12 +1088,25 @@ win_get_locator_info(int *x, int *y, int *buttons, bool by_pixels)
 
   if (GetCursorPos(&p)) {
     if (ScreenToClient(wnd, &p)) {
+      if (p.x < PADDING)
+        p.x = 0;
+      else
+        p.x -= PADDING;
+      if (p.x >= term.cols * cell_width)
+        p.x = term.cols * cell_width - 1;
+      if (p.y < PADDING)
+        p.y = 0;
+      else
+        p.y -= PADDING;
+      if (p.y >= term.rows * cell_height)
+        p.y = term.rows * cell_height - 1;
+
       if (by_pixels) {
-        *x = p.x - PADDING;
-        *y = p.y - PADDING;
+        *x = p.x;
+        *y = p.y;
       } else {
-        *x = floorf((p.x - PADDING) / (float)cell_width);
-        *y = floorf((p.y - PADDING) / (float)cell_height);
+        *x = floorf(p.x / (float)cell_width);
+        *y = floorf(p.y / (float)cell_height);
       }
     }
   }
@@ -1284,6 +1321,29 @@ hyper_down(uint key, mod_keys mods)
   (void)mods;
 }
 
+static void
+kb_select(uint key, mod_keys mods)
+{
+  (void)mods;
+  (void)key;
+  // note kb_select_key for re-anchor handling?
+  //kb_select_key = key;
+
+  // start and anchor keyboard selection
+  term.sel_pos = (pos){.y = term.curs.y, .x = term.curs.x, .r = 0};
+  term.sel_anchor = term.sel_pos;
+  term.sel_start = term.sel_pos;
+  term.sel_end = term.sel_pos;
+  term.sel_rect = mods & MDK_ALT;
+  selection_pending = true;
+}
+
+static uint
+mflags_kb_select()
+{
+  return selection_pending;
+}
+
 static uint
 mflags_lock_title()
 {
@@ -1447,6 +1507,7 @@ static struct function_def cmd_defs[] = {
 
   {"super", {.fct_key = super_down}, 0},
   {"hyper", {.fct_key = hyper_down}, 0},
+  {"kb-select", {.fct_key = kb_select}, mflags_kb_select},
 
   {"scroll_top", {.fct = scroll_HOME}, 0},
   {"scroll_end", {.fct = scroll_END}, 0},
@@ -1496,7 +1557,8 @@ typedef enum {
   COMP_PENDING = 1, COMP_ACTIVE = 2
 } comp_state_t;
 static comp_state_t comp_state = COMP_NONE;
-static uint last_key = 0;
+static uint last_key_down = 0;
+static uint last_key_up = 0;
 
 static struct {
   wchar kc[4];
@@ -1512,7 +1574,8 @@ compose_clear()
 {
   comp_state = COMP_CLEAR;
   compose_buflen = 0;
-  last_key = 0;
+  last_key_down = 0;
+  last_key_up = 0;
 }
 
 void
@@ -1520,6 +1583,14 @@ win_key_reset(void)
 {
   alt_state = ALT_NONE;
   compose_clear();
+}
+
+// notify margin bell ring enabled
+void
+provide_input(wchar c1)
+{
+  if (term.margin_bell && c1 != '\e')
+    term.ring_enabled = true;
 }
 
 #define dont_debug_virtual_key_codes
@@ -1554,7 +1625,7 @@ vk_name(uint key)
 #ifdef debug_key
 #define trace_key(tag)	printf(" <-%s\n", tag)
 #else
-#define trace_key(tag)	
+#define trace_key(tag)	(void)0
 #endif
 
 #ifdef debug_alt
@@ -1699,6 +1770,7 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
       {
         int len = wcslen(fct) - 2;
         if (len > 0) {
+          provide_input(fct[1]);
           child_sendw(&fct[1], wcslen(fct) - 2);
           ret = true;
         }
@@ -1716,8 +1788,10 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
             cc[0] = '\e';
             child_send(cc, 2);
           }
-          else
+          else {
+            provide_input(cc[1]);
             child_send(&cc[1], 1);
+          }
           ret = true;
         }
       }
@@ -1749,7 +1823,10 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
             send_syscommand(fudef->cmd);
           else
             fudef->fct_key(key, mods);
+
           ret = true;
+          // should we trigger ret = false if (fudef->fct_key == kb_select)
+          // so the case can be handled further in win_key_down ?
         }
         else {
           // invalid definition (e.g. "A+Enter:foo;"), shall 
@@ -1791,7 +1868,8 @@ bool
 win_key_down(WPARAM wp, LPARAM lp)
 {
   uint key = wp;
-  last_key = key;
+  last_key_down = key;
+  last_key_up = 0;
 
   if (comp_state == COMP_ACTIVE)
     comp_state = COMP_PENDING;
@@ -1804,17 +1882,30 @@ win_key_down(WPARAM wp, LPARAM lp)
   uint count = LOWORD(lp);
 
 #ifdef debug_virtual_key_codes
-  printf("win_key_down %04X %s scan %d ext %d rpt %d/%d other %02X\n", key, vk_name(key), scancode, extended, repeat, count, HIWORD(lp) >> 8);
+  printf("win_key_down %02X %s scan %d ext %d rpt %d/%d other %02X\n", key, vk_name(key), scancode, extended, repeat, count, HIWORD(lp) >> 8);
 #endif
 
-  if (repeat && !term.auto_repeat) {
+static LONG last_key_time = 0;
+
+  LONG message_time = GetMessageTime();
+  if (repeat) {
 #ifdef auto_repeat_cursor_keys_option
     switch (key) {
       when VK_PRIOR ... VK_DOWN: do not return...;
     }
 #endif
-    return true;
+    if (!term.auto_repeat)
+      return true;
+    if (term.repeat_rate &&
+        message_time - last_key_time < 1000 / term.repeat_rate)
+      return true;
   }
+  if (repeat && term.repeat_rate &&
+      message_time - last_key_time < 2000 / term.repeat_rate)
+    /* Key repeat seems to be continued. */
+    last_key_time += 1000 / term.repeat_rate;
+  else
+    last_key_time = message_time;
 
   if (key == VK_PROCESSKEY) {
     TranslateMessage(
@@ -1827,7 +1918,7 @@ win_key_down(WPARAM wp, LPARAM lp)
   GetKeyboardState(kbd);
   inline bool is_key_down(uchar vk) { return kbd[vk] & 0x80; }
 #ifdef debug_virtual_key_codes
-  printf(" [%d %c%d] Shift %d:%d/%d Ctrl %d:%d/%d Alt %d:%d/%d\n",
+  printf("-- [%u %c%u] Shift %d:%d/%d Ctrl %d:%d/%d Alt %d:%d/%d\n",
          (int)GetMessageTime(), lctrl_time ? '+' : '=', (int)GetMessageTime() - lctrl_time,
          is_key_down(VK_SHIFT), is_key_down(VK_LSHIFT), is_key_down(VK_RSHIFT),
          is_key_down(VK_CONTROL), is_key_down(VK_LCONTROL), is_key_down(VK_RCONTROL),
@@ -1858,14 +1949,17 @@ win_key_down(WPARAM wp, LPARAM lp)
   if (key == VK_CONTROL && !extended) {
     lctrl = true;
     lctrl_time = GetMessageTime();
+    //printf("lctrl (true) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
   }
   else if (lctrl_time) {
     lctrl = !(key == VK_MENU && extended 
               && GetMessageTime() - lctrl_time <= cfg.ctrl_alt_delay_altgr);
     lctrl_time = 0;
+    //printf("lctrl (time) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
   }
   else {
     lctrl = is_key_down(VK_LCONTROL) && (lctrl || !is_key_down(VK_RMENU));
+    //printf("lctrl (else) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
   }
 
   bool numlock = kbd[VK_NUMLOCK] & 1;
@@ -1877,7 +1971,12 @@ win_key_down(WPARAM wp, LPARAM lp)
   bool rctrl = is_key_down(VK_RCONTROL);
   bool ctrl = lctrl | rctrl;
   bool ctrl_lalt_altgr = cfg.ctrl_alt_is_altgr & ctrl & lalt & !ralt;
-  bool altgr0 = ralt | ctrl_lalt_altgr;
+  //bool altgr0 = ralt | ctrl_lalt_altgr;
+  // Alt/AltGr detection and handling could do with a complete revision 
+  // from scratch; on the other hand, no unnecessary risk should be taken, 
+  // so another hack is added.
+  bool lctrl0 = is_key_down(VK_LCONTROL);
+  bool altgr0 = (ralt & lctrl0) | ctrl_lalt_altgr;
 
   bool external_hotkey = false;
   if (ralt && !scancode && cfg.external_hotkeys) {
@@ -1890,6 +1989,11 @@ win_key_down(WPARAM wp, LPARAM lp)
   }
 
   bool altgr = ralt | ctrl_lalt_altgr;
+  // While this should more properly reflect the AltGr modifier state, 
+  // with the current implementation it has the opposite effect;
+  // it spoils Ctrl+AltGr with modify_other_keys mode.
+  //altgr = (ralt & lctrl0) | ctrl_lalt_altgr;
+
   bool win = (is_key_down(VK_LWIN) && key != VK_LWIN)
           || (is_key_down(VK_RWIN) && key != VK_RWIN);
   trace_alt("alt %d lalt %d ralt %d altgr %d\n", alt, lalt, ralt, altgr);
@@ -1950,8 +2054,10 @@ win_key_down(WPARAM wp, LPARAM lp)
     transparency_pending = 2;
     switch (key) {
       when VK_HOME  : set_transparency(previous_transparency);
-      when VK_CLEAR : cfg.transparency = TR_GLASS;
-                      win_update_transparency(false);
+      when VK_CLEAR : if (win_is_glass_available()) {
+                        cfg.transparency = TR_GLASS;
+                        win_update_transparency(false);
+                      }
       when VK_DELETE: set_transparency(0);
       when VK_INSERT: set_transparency(127);
       when VK_END   : set_transparency(TR_HIGH);
@@ -1979,7 +2085,8 @@ win_key_down(WPARAM wp, LPARAM lp)
     int oldisptop = term.disptop;
     //printf("y %d disptop %d sb %d..%d\n", term.sel_pos.y, term.disptop, sbtop, sbbot);
     switch (key) {
-      when VK_CLEAR:  // recalibrate
+      when VK_CLEAR:
+        // re-anchor keyboard selection
         term.sel_anchor = term.sel_pos;
         term.sel_start = term.sel_pos;
         term.sel_end = term.sel_pos;
@@ -2295,6 +2402,7 @@ win_key_down(WPARAM wp, LPARAM lp)
           when VK_LEFT:  scroll = SB_PRIOR;
           when VK_RIGHT: scroll = SB_NEXT;
           when VK_CLEAR:
+            // start and anchor keyboard selection
             term.sel_pos = (pos){.y = term.curs.y, .x = term.curs.x, .r = 0};
             term.sel_anchor = term.sel_pos;
             term.sel_start = term.sel_pos;
@@ -2586,7 +2694,7 @@ static struct {
     wchar wc;
     int len = ToUnicode(key, scancode, kbd, &wc, 1, 0);
 #ifdef debug_key
-    printf("undead %04X scn %d -> %d %04X\n", key, scancode, len, wc);
+    printf("undead %02X scn %d -> %d %04X\n", key, scancode, len, wc);
 #endif
     if (len < 0) {
       // Ugly hack to clear dead key state, a la Michael Kaplan.
@@ -2627,8 +2735,8 @@ static struct {
   }
 
   bool char_key(void) {
-    trace_alt("char_key alt %d -> %d\n", alt, lalt & !ctrl_lalt_altgr);
     alt = lalt & !ctrl_lalt_altgr;
+    trace_alt("char_key alt %d (l %d r %d altgr %d)\n", alt, lalt, ralt, altgr);
 
     // Sync keyboard layout with our idea of AltGr.
     kbd[VK_CONTROL] = altgr ? 0x80 : 0;
@@ -2641,6 +2749,10 @@ static struct {
     // Try the layout.
     if (layout())
       return true;
+
+    // This prevents AltGr from behaving like Alt in modify_other_keys mode.
+    if (!cfg.altgr_is_alt && altgr0)
+      return false;
 
     if (ralt) {
       // Try with RightAlt/AltGr key treated as Alt.
@@ -2880,14 +2992,17 @@ static struct {
       bool check_menu = key == VK_SPACE && !term.shortcut_override
                         && cfg.window_shortcuts && alt && !altgr && !ctrl;
 #ifdef debug_key
-      printf("mods %d (modf %d comp %d)\n", mods, term.modify_other_keys, comp_state);
+      printf("-- mods %d alt %d altgr %d/%d ctrl %d lctrl %d/%d (modf %d comp %d)\n", mods, alt, altgr, altgr0, ctrl, lctrl, lctrl0, term.modify_other_keys, comp_state);
 #endif
-      if (altgr_key())
-        trace_key("altgr");
-      else if (allow_shortcut && check_menu) {
+      if (allow_shortcut && check_menu) {
         send_syscommand(SC_KEYMENU);
         return true;
       }
+      else if (altgr_key())
+        trace_key("altgr");
+      else if (!cfg.altgr_is_alt && altgr0 && !term.modify_other_keys)
+        // prevent AltGr from behaving like Alt
+        trace_key("!altgr");
       else if (key != ' ' && alt_code_key(key - 'A' + 0xA))
         trace_key("alt");
       else if (term.modify_other_keys > 1 && mods == MDK_SHIFT && !comp_state)
@@ -2899,6 +3014,7 @@ static struct {
       else if (term.modify_other_keys > 1 || (term.modify_other_keys && altgr))
         // handle Alt+space after char_key, avoiding undead_ glitch;
         // also handle combinations like Ctrl+AltGr+e
+        trace_key("modf"),
         modify_other_key();
       else if (ctrl_key())
         trace_key("ctrl");
@@ -2938,6 +3054,7 @@ static struct {
 
   if (len) {
     //printf("[%ld] win_key_down %02X\n", mtime(), key); kb_trace = key;
+    provide_input(*buf);
     while (count--)
       child_send(buf, len);
     compose_clear();
@@ -2970,9 +3087,11 @@ win_csi_seq(char * pre, char * suf)
 bool
 win_key_up(WPARAM wp, LPARAM lp)
 {
+  inline bool is_key_down(uchar vk) { return GetKeyState(vk) & 0x80; }
+
   uint key = wp;
 #ifdef debug_virtual_key_codes
-  printf("  win_key_up %04X %s\n", key, vk_name(key));
+  printf("  win_key_up %02X %s\n", key, vk_name(key));
 #endif
 
   if (key == VK_CANCEL) {
@@ -2987,10 +3106,16 @@ win_key_up(WPARAM wp, LPARAM lp)
 
   uint scancode = HIWORD(lp) & (KF_EXTENDED | 0xFF);
   // avoid impact of fake keyboard events (nullifying implicit Lock states)
-  if (!scancode)
+  if (!scancode) {
+    last_key_up = key;
     return false;
+  }
 
-  if (key == last_key) {
+  if (key == last_key_down
+      // guard against cases of hotkey injection (#877)
+      && (!last_key_up || key == last_key_up)
+     )
+  {
     if (
         (cfg.compose_key == MDK_CTRL && key == VK_CONTROL) ||
         (cfg.compose_key == MDK_SHIFT && key == VK_SHIFT) ||
@@ -2998,10 +3123,13 @@ win_key_up(WPARAM wp, LPARAM lp)
        )
       comp_state = COMP_ACTIVE;
   }
+  else
+    comp_state = COMP_NONE;
+
+  last_key_up = key;
 
   if (newwin_pending) {
     if (key == newwin_key) {
-      inline bool is_key_down(uchar vk) { return GetKeyState(vk) & 0x80; }
       if (is_key_down(VK_SHIFT))
         newwin_shifted = true;
       if (newwin_shifted || win_is_fullscreen)
@@ -3066,6 +3194,7 @@ win_key_up(WPARAM wp, LPARAM lp)
       do
         buf[--pos] = alt_code;
       while (alt_code >>= 8);
+      provide_input(buf[pos]);
       child_send(buf + pos, sizeof buf - pos);
       compose_clear();
     }
@@ -3074,11 +3203,13 @@ win_key_up(WPARAM wp, LPARAM lp)
       if (wc < 0x20)
         MultiByteToWideChar(CP_OEMCP, MB_USEGLYPHCHARS,
                             (char[]){wc}, 1, &wc, 1);
+      provide_input(wc);
       child_sendw(&wc, 1);
       compose_clear();
     }
     else {
       xchar xc = alt_code;
+      provide_input(' ');
       child_sendw((wchar[]){high_surrogate(xc), low_surrogate(xc)}, 2);
       compose_clear();
     }
