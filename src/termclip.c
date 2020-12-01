@@ -27,22 +27,40 @@ destroy_clip_workbuf(clip_workbuf * b)
 
 // All b members must be 0 initially, ca may be null if the caller doesn't care
 static void
-clip_addchar(clip_workbuf * b, wchar chr, cattr * ca)
+clip_addchar(clip_workbuf * b, wchar chr, cattr * ca, bool tabs)
 {
+  if (tabs && chr == ' ' && ca && ca->attr & TATTR_CLEAR && ca->attr & ATTR_BOLD) {
+    // collapse TAB
+    int l0 = b->len;
+    while (l0) {
+      l0--;
+      if (b->text[l0] == ' ' && b->cattrs[l0].attr & TATTR_CLEAR && b->cattrs[l0].attr & ATTR_DIM)
+        b->len--;
+      else
+        break;
+    }
+    chr = '\t';
+  }
+
   if (b->len >= b->capacity) {
     b->capacity = b->len ? b->len * 2 : 1024;  // x2 strategy, 1K chars initially
     b->text = renewn(b->text, b->capacity);
     b->cattrs = renewn(b->cattrs, b->capacity);
   }
 
+  cattr copattr = ca ? *ca : CATTR_DEFAULT;
+  if (copattr.attr & TATTR_CLEAR) {
+    copattr.attr &= ~(ATTR_BOLD | ATTR_DIM | TATTR_CLEAR);
+  }
+
   b->text[b->len] = chr;
-  b->cattrs[b->len] = ca ? *ca : CATTR_DEFAULT;
+  b->cattrs[b->len] = copattr;
   b->len++;
 }
 
 // except OOM, guaranteed at least emtpy null terminated wstring and one cattr
 static clip_workbuf *
-get_selection(pos start, pos end, bool rect, bool allinline)
+get_selection(pos start, pos end, bool rect, bool allinline, bool with_tabs)
 {
   int old_top_x = start.x;    /* needed for rect==1 */
   clip_workbuf *buf = newn(clip_workbuf, 1);
@@ -136,7 +154,7 @@ get_selection(pos start, pos end, bool rect, bool allinline)
         cbuf[1] = 0;
 
         for (p = cbuf; *p; p++)
-          clip_addchar(buf, *p, pca);
+          clip_addchar(buf, *p, pca, with_tabs);
 
         if (line->chars[x].cc_next)
           x += line->chars[x].cc_next;
@@ -146,15 +164,15 @@ get_selection(pos start, pos end, bool rect, bool allinline)
       start.x++;
     }
     if (nl) {
-      clip_addchar(buf, '\r', 0);
-      clip_addchar(buf, '\n', 0);
+      clip_addchar(buf, '\r', 0, false);
+      clip_addchar(buf, '\n', 0, false);
     }
     start.y++;
     start.x = rect ? old_top_x : 0;
 
     release_line(line);
   }
-  clip_addchar(buf, 0, 0);
+  clip_addchar(buf, 0, 0, false);
   return buf;
 }
 
@@ -164,7 +182,11 @@ term_copy_as(char what)
   if (!term.selected)
     return;
 
-  clip_workbuf *buf = get_selection(term.sel_start, term.sel_end, term.sel_rect, false);
+  bool with_tabs = what == 'T' || ((!what || what == 't') && cfg.copy_tabs);
+  if (what == 'T' || what == 'p') // map "text with TABs" and "plain" to text
+    what = 't';
+  clip_workbuf *buf = get_selection(term.sel_start, term.sel_end, term.sel_rect,
+                                    false, with_tabs);
   win_copy_as(buf->text, buf->cattrs, buf->len, what);
   destroy_clip_workbuf(buf);
 }
@@ -180,7 +202,7 @@ term_open(void)
 {
   if (!term.selected)
     return;
-  clip_workbuf *buf = get_selection(term.sel_start, term.sel_end, term.sel_rect, false);
+  clip_workbuf *buf = get_selection(term.sel_start, term.sel_end, term.sel_rect, false, false);
 
   // Don't bother opening if it's all whitespace.
   wchar *p = buf->text;
@@ -290,8 +312,8 @@ term_send_paste(void)
 void
 term_select_all(void)
 {
-  term.sel_start = (pos){-sblines(), 0, false};
-  term.sel_end = (pos){term_last_nonempty_line(), term.cols, true};
+  term.sel_start = (pos){-sblines(), 0, 0, 0, false};
+  term.sel_end = (pos){term_last_nonempty_line(), term.cols, 0, 0, true};
   term.selected = true;
   if (cfg.copy_on_select)
     term_copy();
@@ -313,29 +335,29 @@ term_get_text(bool all, bool screen, bool command)
 
     if (y < sbtop) {
       y = sbtop;
-      end = (pos){y, 0, false};
+      end = (pos){y, 0, 0, 0, false};
     }
     else {
       termline * line = fetch_line(y);
       if (line->lattr & LATTR_MARKED) {
         if (y > sbtop) {
           y--;
-          end = (pos){y, term.cols, false};
+          end = (pos){y, term.cols, 0, 0, false};
           termline * line = fetch_line(y);
           if (line->lattr & LATTR_MARKED)
             y++;
         }
         else {
-          end = (pos){y, 0, false};
+          end = (pos){y, 0, 0, 0, false};
         }
       }
       else {
         skipprompt = line->lattr & LATTR_UNMARKED;
-        end = (pos){y, term.cols, false};
+        end = (pos){y, term.cols, 0, 0, false};
       }
 
       if (fetch_line(y)->lattr & LATTR_UNMARKED)
-        end = (pos){y, 0, false};
+        end = (pos){y, 0, 0, 0, false};
     }
 
     int yok = y;
@@ -345,7 +367,7 @@ term_get_text(bool all, bool screen, bool command)
       printf("y %d skip %d marked %X\n", y, skipprompt, line->lattr & (LATTR_UNMARKED | LATTR_MARKED));
 #endif
       if (skipprompt && (line->lattr & LATTR_UNMARKED))
-        end = (pos){y, 0, false};
+        end = (pos){y, 0, 0, 0, false};
       else
         skipprompt = false;
       if (line->lattr & LATTR_MARKED) {
@@ -353,18 +375,18 @@ term_get_text(bool all, bool screen, bool command)
       }
       yok = y;
     }
-    start = (pos){yok, 0, false};
+    start = (pos){yok, 0, 0, 0, false};
 #ifdef debug_user_cmd_clip
     printf("%d:%d...%d:%d\n", start.y, start.x, end.y, end.x);
 #endif
   }
   else if (screen) {
-    start = (pos){term.disptop, 0, false};
-    end = (pos){term_last_nonempty_line(), term.cols, false};
+    start = (pos){term.disptop, 0, 0, 0, false};
+    end = (pos){term_last_nonempty_line(), term.cols, 0, 0, false};
   }
   else if (all) {
-    start = (pos){-sblines(), 0, false};
-    end = (pos){term_last_nonempty_line(), term.cols, false};
+    start = (pos){-sblines(), 0, 0, 0, false};
+    end = (pos){term_last_nonempty_line(), term.cols, 0, 0, false};
   }
   else if (!term.selected) {
     return wcsdup(W(""));
@@ -375,7 +397,7 @@ term_get_text(bool all, bool screen, bool command)
     rect = term.sel_rect;
   }
 
-  clip_workbuf *buf = get_selection(start, end, rect, false);
+  clip_workbuf *buf = get_selection(start, end, rect, false, cfg.copy_tabs);
   wchar * tbuf = wcsdup(buf->text);
   destroy_clip_workbuf(buf);
   return tbuf;
@@ -479,8 +501,8 @@ term_create_html(FILE * hf, int level)
   pos end = term.sel_end;
   bool rect = term.sel_rect;
   if (!term.selected) {
-    start = (pos){term.disptop, 0, false};
-    end = (pos){term.disptop + term.rows - 1, term.cols, false};
+    start = (pos){term.disptop, 0, 0, 0, false};
+    end = (pos){term.disptop + term.rows - 1, term.cols, 0, 0, false};
     rect = false;
   }
 
@@ -642,7 +664,7 @@ term_create_html(FILE * hf, int level)
   hprintf(hf, "  <div class=background id='vt100'>\n");
   hprintf(hf, "   <pre>");
 
-  clip_workbuf * buf = get_selection(start, end, rect, level >= 3);
+  clip_workbuf * buf = get_selection(start, end, rect, level >= 3, false);
   int i0 = 0;
   bool odd = true;
   for (uint i = 0; i < buf->len; i++) {
@@ -953,8 +975,7 @@ term_export_html(bool do_open)
 {
   struct timeval now;
   gettimeofday(& now, 0);
-  char * htmlf = newn(char, MAX_PATH + 1);
-  strftime(htmlf, MAX_PATH, "mintty.%F_%T.html", localtime (& now.tv_sec));
+  char * htmlf = save_filename(".html");
 
   int hfd = open(htmlf, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (hfd < 0) {
@@ -990,10 +1011,10 @@ print_screen(void)
   else
     return;
 
-  pos start = (pos){term.disptop, 0, false};
-  pos end = (pos){term.disptop + term.rows - 1, term.cols, false};
+  pos start = (pos){term.disptop, 0, 0, 0, false};
+  pos end = (pos){term.disptop + term.rows - 1, term.cols, 0, 0, false};
   bool rect = false;
-  clip_workbuf * buf = get_selection(start, end, rect, false);
+  clip_workbuf * buf = get_selection(start, end, rect, false, false);
   printer_wwrite(buf->text, buf->len);
   printer_finish_job();
   destroy_clip_workbuf(buf);

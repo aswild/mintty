@@ -12,6 +12,8 @@
 #define IDM_OPEN            0x0010
 #define IDM_COPY            0x0020
 #define IDM_COPY_TEXT       0x0120
+#define IDM_COPY_TABS       0x0620
+#define IDM_COPY_TXT        0x0720
 #define IDM_COPY_RTF        0x0220
 #define IDM_COPY_HTXT       0x0320
 #define IDM_COPY_HFMT       0x0420
@@ -22,6 +24,10 @@
 #define IDM_SELALL          0x0050
 #define IDM_CLRSCRLBCK      0x0150
 #define IDM_RESET           0x0060
+#define IDM_TEKRESET        0x0160
+#define IDM_TEKPAGE         0x0260
+#define IDM_TEKCOPY         0x0360
+#define IDM_SAVEIMG         0x0460
 #define IDM_DEFSIZE         0x0070
 #define IDM_DEFSIZE_ZOOM    0x0170
 #define IDM_SCROLLBAR       0x0280

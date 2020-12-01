@@ -7,7 +7,7 @@
 typedef enum { MDK_SHIFT = 1, MDK_ALT = 2, MDK_CTRL = 4, 
                MDK_WIN = 8, MDK_SUPER = 16, MDK_HYPER = 32 } mod_keys;
 enum { HOLD_NEVER, HOLD_START, HOLD_ERROR, HOLD_ALWAYS };
-enum { CUR_BLOCK, CUR_UNDERSCORE, CUR_LINE };
+enum { CUR_BLOCK, CUR_UNDERSCORE, CUR_LINE, CUR_BOX };
 enum { FS_DEFAULT, FS_PARTIAL, FS_NONE, FS_FULL };
 enum { FR_TEXTOUT, FR_UNISCRIBE };
 enum { MC_VOID, MC_PASTE, MC_EXTEND, MC_ENTER };
@@ -51,6 +51,10 @@ typedef struct {
 typedef struct {
   // Looks
   colour fg_colour, bold_colour, bg_colour, cursor_colour;
+  colour tek_fg_colour, tek_bg_colour, tek_cursor_colour;
+  colour tek_write_thru_colour, tek_defocused_colour;
+  colour tab_fg_colour, tab_bg_colour;
+  int tek_glow;
   colour underl_colour, hover_colour;
   int disp_space, disp_clear, disp_tab;
   bool underl_manual;
@@ -77,7 +81,10 @@ typedef struct {
   bool allow_blinking;
   string locale;
   string charset;
+  char charwidth;
+  bool old_locale;
   int fontmenu;
+  wstring tek_font;
   // Keys
   bool backspace_sends_bs;
   bool delete_sends_del;
@@ -104,20 +111,27 @@ typedef struct {
   string key_scrlock;	// VK_SCROLL
   wstring key_commands;
   // Mouse
-  bool copy_on_select;
-  bool copy_as_rtf;
-  int copy_as_html;
-  wstring copy_as_rtf_font;
-  int copy_as_rtf_font_size;
   bool clicks_place_cursor;
   char middle_click_action;
   char right_click_action;
   int opening_clicks;
   bool zoom_mouse;
-  bool clicks_target_app;
+  char clicks_target_app;
   char click_target_mod;
   bool hide_mouse;
   bool elastic_mouse;
+  int lines_per_notch;
+  // Selection
+  bool input_clears_selection;
+  bool copy_on_select;
+  bool copy_tabs;
+  bool copy_as_rtf;
+  char copy_as_html;
+  wstring copy_as_rtf_font;
+  int copy_as_rtf_font_size;
+  bool trim_selection;
+  bool allow_set_selection;
+  int selection_show_size;
   // Window
   int cols, rows;
   int scrollback_lines;
@@ -143,7 +157,6 @@ typedef struct {
   int bell_interval;
   wstring printer;
   bool confirm_exit;
-  bool allow_set_selection;
   // Command line
   wstring class;
   char hold;
@@ -169,13 +182,12 @@ typedef struct {
   string suppress_nrc;
   string suppress_wheel;
   string filter_paste;
-  bool input_clears_selection;
   int suspbuf_max;
-  bool trim_selection;
-  char charwidth;
+  int printable_controls;
   int char_narrowing;
   char emojis;
   char emoji_placement;
+  wstring save_filename;
   wstring app_id;
   wstring app_name;
   wstring app_launch_cmd;
@@ -194,6 +206,7 @@ typedef struct {
   string menu_title_ctrl_l;
   string menu_title_ctrl_r;
   int geom_sync;
+  int tabbar;
   int col_spacing, row_spacing;
   int padding;
   int ligatures;
@@ -207,8 +220,8 @@ typedef struct {
   wstring sixel_clip_char;
   bool short_long_opts;
   bool bold_as_special;
-  int selection_show_size;
   bool hover_title;
+  char progress_bar;
   int baud;
   int bloom;
   string old_options;
@@ -218,6 +231,9 @@ typedef struct {
   bool old_bold;
 } config;
 
+
+typedef void (* str_fn)(wchar *);
+
 extern string config_dir;
 extern config cfg, new_cfg, file_cfg;
 
@@ -226,6 +242,7 @@ extern void list_fonts(bool report);
 extern void load_config(string filename, int to_save);
 extern void load_theme(wstring theme);
 extern char * get_resource_file(wstring sub, wstring res, bool towrite);
+extern void handle_file_resources(wstring pattern, str_fn fnh);
 extern void load_scheme(string colour_scheme);
 extern void set_arg_option(string name, string val);
 extern void parse_arg_option(string);
@@ -235,5 +252,6 @@ extern void copy_config(char * tag, config * dst, const config * src);
 extern void apply_config(bool save);
 extern wchar * getregstr(HKEY key, wstring subkey, wstring attribute);
 extern uint getregval(HKEY key, wstring subkey, wstring attribute);
+extern char * save_filename(char * suf);
 
 #endif

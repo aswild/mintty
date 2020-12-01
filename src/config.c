@@ -1,5 +1,5 @@
 // config.c (part of mintty)
-// Copyright 2008-13 Andy Koppe, 2015-2017 Thomas Wolff
+// Copyright 2008-13 Andy Koppe, 2015-2020 Thomas Wolff
 // Based on code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -38,7 +38,15 @@ const config default_cfg = {
   .bold_colour = (colour)-1,
   .bg_colour = 0x000000,
   .cursor_colour = 0xBFBFBF,
+  .tek_fg_colour = (colour)-1,
+  .tek_bg_colour = (colour)-1,
+  .tek_cursor_colour = (colour)-1,
+  .tek_write_thru_colour = (colour)-1,
+  .tek_defocused_colour = (colour)-1,
+  .tek_glow = 1,
   .underl_colour = (colour)-1,
+  .tab_fg_colour = (colour)-1,
+  .tab_bg_colour = (colour)-1,
   .disp_space = 0,
   .disp_clear = 0,
   .disp_tab = 0,
@@ -79,7 +87,10 @@ const config default_cfg = {
   .allow_blinking = false,
   .locale = "",
   .charset = "",
+  .charwidth = 0,
+  .old_locale = false,
   .fontmenu = -1,
+  .tek_font = W(""),
   // Keys
   .backspace_sends_bs = CERASE == '\b',
   .delete_sends_del = false,
@@ -106,11 +117,6 @@ const config default_cfg = {
   .key_scrlock = "",	// VK_SCROLL
   .key_commands = W(""),
   // Mouse
-  .copy_on_select = true,
-  .copy_as_rtf = true,
-  .copy_as_html = 0,
-  .copy_as_rtf_font = W(""),
-  .copy_as_rtf_font_size = 0,
   .clicks_place_cursor = false,
   .middle_click_action = MC_PASTE,
   .right_click_action = RC_MENU,
@@ -120,6 +126,18 @@ const config default_cfg = {
   .click_target_mod = MDK_SHIFT,
   .hide_mouse = true,
   .elastic_mouse = false,
+  .lines_per_notch = 0,
+  // Selection
+  .input_clears_selection = true,
+  .copy_on_select = true,
+  .copy_tabs = false,
+  .copy_as_rtf = true,
+  .copy_as_html = 0,
+  .copy_as_rtf_font = W(""),
+  .copy_as_rtf_font_size = 0,
+  .trim_selection = true,
+  .allow_set_selection = false,
+  .selection_show_size = false,
   // Window
   .cols = 80,
   .rows = 24,
@@ -146,7 +164,6 @@ const config default_cfg = {
   .bell_interval = 100,
   .printer = W(""),
   .confirm_exit = true,
-  .allow_set_selection = false,
   // Command line
   .class = W(""),
   .hold = HOLD_START,
@@ -170,13 +187,12 @@ const config default_cfg = {
   .suppress_nrc = "",  // unused
   .suppress_wheel = "",
   .filter_paste = "",
-  .input_clears_selection = true,
   .suspbuf_max = 8080,
-  .trim_selection = true,
-  .charwidth = 0,
+  .printable_controls = 0,
   .char_narrowing = 75,
   .emojis = 0,
   .emoji_placement = 0,
+  .save_filename = W("mintty.%Y-%m-%d_%H-%M-%S"),
   .app_id = W(""),
   .app_name = W(""),
   .app_launch_cmd = W(""),
@@ -195,6 +211,7 @@ const config default_cfg = {
   .menu_title_ctrl_l = "Ws",
   .menu_title_ctrl_r = "Ws",
   .geom_sync = 0,
+  .tabbar = 0,
   .col_spacing = 0,
   .row_spacing = 0,
   .padding = 1,
@@ -207,8 +224,8 @@ const config default_cfg = {
   .use_system_colours = false,
   .short_long_opts = false,
   .bold_as_special = false,
-  .selection_show_size = false,
   .hover_title = true,
+  .progress_bar = 0,
   .old_bold = false,
   .ime_cursor_colour = DEFAULT_COLOUR,
   .ansi_colours = {
@@ -265,7 +282,15 @@ options[] = {
   // Looks
   {"BoldColour", OPT_COLOUR, offcfg(bold_colour)},
   {"CursorColour", OPT_COLOUR, offcfg(cursor_colour)},
+  {"TekForegroundColour", OPT_COLOUR, offcfg(tek_fg_colour)},
+  {"TekBackgroundColour", OPT_COLOUR, offcfg(tek_bg_colour)},
+  {"TekCursorColour", OPT_COLOUR, offcfg(tek_cursor_colour)},
+  {"TekWriteThruColour", OPT_COLOUR, offcfg(tek_write_thru_colour)},
+  {"TekDefocusedColour", OPT_COLOUR, offcfg(tek_defocused_colour)},
+  {"TekGlow", OPT_INT, offcfg(tek_glow)},
   {"UnderlineColour", OPT_COLOUR, offcfg(underl_colour)},
+  {"TabForegroundColour", OPT_COLOUR, offcfg(tab_fg_colour)},
+  {"TabBackgroundColour", OPT_COLOUR, offcfg(tab_bg_colour)},
   {"DispSpace", OPT_INT, offcfg(disp_space)},
   {"DispClear", OPT_INT, offcfg(disp_clear)},
   {"DispTab", OPT_INT, offcfg(disp_tab)},
@@ -302,6 +327,8 @@ options[] = {
   {"AllowBlinking", OPT_BOOL, offcfg(allow_blinking)},
   {"Locale", OPT_STRING, offcfg(locale)},
   {"Charset", OPT_STRING, offcfg(charset)},
+  {"Charwidth", OPT_CHARWIDTH, offcfg(charwidth)},
+  {"OldLocale", OPT_BOOL, offcfg(old_locale)},
   {"FontRender", OPT_FONTRENDER, offcfg(font_render)},
   {"FontMenu", OPT_INT, offcfg(fontmenu)},
   {"OldFontMenu", OPT_INT | OPT_LEGACY, offcfg(fontmenu)},
@@ -325,6 +352,7 @@ options[] = {
   {"Font9Weight", OPT_INT, offcfg(fontfams[9].weight)},
   {"Font10", OPT_WSTRING, offcfg(fontfams[10].name)},
   {"Font10Weight", OPT_INT, offcfg(fontfams[10].weight)},
+  {"TekFont", OPT_WSTRING, offcfg(tek_font)},
 
   // Keys
   {"BackspaceSendsBS", OPT_BOOL, offcfg(backspace_sends_bs)},
@@ -355,11 +383,6 @@ options[] = {
   {"KeyFunctions", OPT_WSTRING | OPT_KEEPCR, offcfg(key_commands)},
 
   // Mouse
-  {"CopyOnSelect", OPT_BOOL, offcfg(copy_on_select)},
-  {"CopyAsRTF", OPT_BOOL, offcfg(copy_as_rtf)},
-  {"CopyAsHTML", OPT_INT, offcfg(copy_as_html)},
-  {"CopyAsRTFFont", OPT_WSTRING, offcfg(copy_as_rtf_font)},
-  {"CopyAsRTFFontHeight", OPT_INT, offcfg(copy_as_rtf_font_size)},
   {"ClicksPlaceCursor", OPT_BOOL, offcfg(clicks_place_cursor)},
   {"MiddleClickAction", OPT_MIDDLECLICK, offcfg(middle_click_action)},
   {"RightClickAction", OPT_RIGHTCLICK, offcfg(right_click_action)},
@@ -369,6 +392,19 @@ options[] = {
   {"ClickTargetMod", OPT_MOD, offcfg(click_target_mod)},
   {"HideMouse", OPT_BOOL, offcfg(hide_mouse)},
   {"ElasticMouse", OPT_BOOL, offcfg(elastic_mouse)},
+  {"LinesPerMouseWheelNotch", OPT_INT, offcfg(lines_per_notch)},
+
+  // Selection
+  {"ClearSelectionOnInput", OPT_BOOL, offcfg(input_clears_selection)},
+  {"CopyOnSelect", OPT_BOOL, offcfg(copy_on_select)},
+  {"CopyTab", OPT_BOOL, offcfg(copy_tabs)},
+  {"CopyAsRTF", OPT_BOOL, offcfg(copy_as_rtf)},
+  {"CopyAsHTML", OPT_BOOL, offcfg(copy_as_html)},
+  {"CopyAsRTFFont", OPT_WSTRING, offcfg(copy_as_rtf_font)},
+  {"CopyAsRTFFontHeight", OPT_INT, offcfg(copy_as_rtf_font_size)},
+  {"TrimSelection", OPT_BOOL, offcfg(trim_selection)},
+  {"AllowSetSelection", OPT_BOOL, offcfg(allow_set_selection)},
+  {"SelectionShowSize", OPT_INT, offcfg(selection_show_size)},
 
   // Window
   {"Columns", OPT_INT, offcfg(cols)},
@@ -403,7 +439,6 @@ options[] = {
   {"BellInterval", OPT_INT, offcfg(bell_interval)},
   {"Printer", OPT_WSTRING, offcfg(printer)},
   {"ConfirmExit", OPT_BOOL, offcfg(confirm_exit)},
-  {"AllowSetSelection", OPT_BOOL, offcfg(allow_set_selection)},
 
   // Command line
   {"Class", OPT_WSTRING, offcfg(class)},
@@ -432,13 +467,12 @@ options[] = {
   {"SuppressNRC", OPT_STRING, offcfg(suppress_nrc)},  // unused
   {"SuppressMouseWheel", OPT_STRING, offcfg(suppress_wheel)},
   {"FilterPasteControls", OPT_STRING, offcfg(filter_paste)},
-  {"ClearSelectionOnInput", OPT_BOOL, offcfg(input_clears_selection)},
   {"SuspendWhileSelecting", OPT_INT, offcfg(suspbuf_max)},
-  {"TrimSelection", OPT_BOOL, offcfg(trim_selection)},
-  {"Charwidth", OPT_CHARWIDTH, offcfg(charwidth)},
+  {"PrintableControls", OPT_INT, offcfg(printable_controls)},
   {"CharNarrowing", OPT_INT, offcfg(char_narrowing)},
   {"Emojis", OPT_EMOJIS, offcfg(emojis)},
   {"EmojiPlacement", OPT_EMOJI_PLACEMENT, offcfg(emoji_placement)},
+  {"SaveFilename", OPT_WSTRING, offcfg(save_filename)},
   {"AppID", OPT_WSTRING, offcfg(app_id)},
   {"AppName", OPT_WSTRING, offcfg(app_name)},
   {"AppLaunchCmd", OPT_WSTRING, offcfg(app_launch_cmd)},
@@ -459,6 +493,7 @@ options[] = {
   {"MenuTitleCtrlRight", OPT_STRING, offcfg(menu_title_ctrl_r)},
 
   {"SessionGeomSync", OPT_INT, offcfg(geom_sync)},
+  {"TabBar", OPT_BOOL, offcfg(tabbar)},
   {"ColSpacing", OPT_INT, offcfg(col_spacing)},
   {"RowSpacing", OPT_INT, offcfg(row_spacing)},
   {"Padding", OPT_INT, offcfg(padding)},
@@ -473,8 +508,8 @@ options[] = {
   {"OldBold", OPT_BOOL, offcfg(old_bold)},
   {"ShortLongOpts", OPT_BOOL, offcfg(short_long_opts)},
   {"BoldAsRainbowSparkles", OPT_BOOL, offcfg(bold_as_special)},
-  {"SelectionShowSize", OPT_INT, offcfg(selection_show_size)},
   {"HoverTitle", OPT_BOOL, offcfg(hover_title)},
+  {"ProgressBar", OPT_BOOL, offcfg(progress_bar)},
   {"Baud", OPT_INT, offcfg(baud)},
   {"Bloom", OPT_INT, offcfg(bloom)},
   {"OldXButtons", OPT_BOOL, offcfg(old_xbuttons)},
@@ -523,6 +558,7 @@ static opt_val
     {"locale", 0},
     {"unicode", 1},
     {"ambig-wide", 2},
+    {"ambig-narrow", 3},
     {"single", 10},
     {"single-unicode", 11},
     {0, 0}
@@ -573,6 +609,7 @@ static opt_val
   [OPT_CURSOR] = (opt_val[]) {
     {"line", CUR_LINE},
     {"block", CUR_BLOCK},
+    {"box", CUR_BOX},
     {"underscore", CUR_UNDERSCORE},
     {0, 0}
   },
@@ -631,6 +668,22 @@ static opt_val
 #else
 #define trace_theme(params)
 #endif
+
+
+char *
+save_filename(char * suf)
+{
+  char * pat = path_win_w_to_posix(cfg.save_filename);
+  // e.g. "mintty.%Y-%m-%d_%H-%M-%S"
+
+  struct timeval now;
+  gettimeofday(& now, 0);
+  char * fn = newn(char, MAX_PATH + 1 + strlen(suf));
+  strftime(fn, MAX_PATH, pat, localtime(& now.tv_sec));
+  free(pat);
+  strcat(fn, suf);
+  return fn;
+}
 
 
 #define dont_debug_opterror
@@ -835,6 +888,9 @@ set_option(string name, string val_str, bool from_file)
       }
     }
     when OPT_COLOUR:
+#ifdef debug_theme
+      printf("set_option <%s> <%s>\n", name, val_str);
+#endif
       if (parse_colour(val_str, val_p))
         return i;
     otherwise: {
@@ -1400,10 +1456,10 @@ void
 copy_config(char * tag, config * dst_p, const config * src_p)
 {
 #ifdef debug_theme
-  char * cfg(config * p) {
-    return p == new_cfg ? "new" : p == file_cfg ? "file" : p == cfg ? "cfg" : "?";
+  char * _cfg(const config * p) {
+    return p == &new_cfg ? "new" : p == &file_cfg ? "file" : p == &cfg ? "cfg" : "?";
   }
-  printf("[%s] copy_config %s <- %s\n", tag, cfg(dst_p), cfg(src_p));
+  printf("[%s] copy_config %s <- %s\n", tag, _cfg(dst_p), _cfg(src_p));
 #else
   (void)tag;
 #endif
@@ -1593,13 +1649,17 @@ apply_config(bool save)
   if (*cfg.colour_scheme) {
     load_scheme(cfg.colour_scheme);
     win_reset_colours();
+    win_invalidate_all(false);
   }
   else if (*cfg.theme_file) {
     load_theme(cfg.theme_file);
     win_reset_colours();
+    win_invalidate_all(false);
   }
-  else if (had_theme)
+  else if (had_theme) {
     win_reset_colours();
+    win_invalidate_all(false);
+  }
   //printf("apply_config %d bd %d\n", save, cfg.bold_as_font);
 }
 
@@ -1778,35 +1838,42 @@ about_handler(control *unused(ctrl), int event)
 }
 
 
-static void
-add_file_resources(control *ctrl, wstring pattern, bool dirs)
-{
-  wstring suf = wcsrchr(pattern, L'.');
-  int sufl = suf ? wcslen(suf) : 0;
+#if CYGWIN_VERSION_API_MINOR < 74
+#define use_findfile
+#endif
 
+static void
+do_file_resources(control *ctrl, wstring pattern, bool list_dirs, str_fn fnh)
+{
   init_config_dirs();
-  WIN32_FIND_DATAW ffd;
-  HANDLE hFind = NULL;
-  int ok = false;
+  //printf("add_file_resources <%ls> dirs %d\n", pattern, list_dirs);
+
   for (int i = last_config_dir; i >= 0; i--) {
+#ifdef use_findfile
+    wstring suf = wcsrchr(pattern, L'.');
+    int sufl = suf ? wcslen(suf) : 0;
+
     wchar * rcpat = path_posix_to_win_w(config_dirs[i]);
     int len = wcslen(rcpat);
     rcpat = renewn(rcpat, len + wcslen(pattern) + 2);
     rcpat[len++] = L'/';
     wcscpy(&rcpat[len], pattern);
+    //printf("<%s> -> <%ls>\n", config_dirs[i], rcpat);
 
-    hFind = FindFirstFileW(rcpat, &ffd);
-    ok = hFind != INVALID_HANDLE_VALUE;
+    WIN32_FIND_DATAW ffd;
+    HANDLE hFind = FindFirstFileW(rcpat, &ffd);
+    int ok = hFind != INVALID_HANDLE_VALUE;
     free(rcpat);
     if (ok) {
       while (ok) {
-        if (dirs && (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (list_dirs && (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
           if (ffd.cFileName[0] != '.' && !!wcscmp(ffd.cFileName, W("common")))
             // exclude the [0-7] links left over by the `getemojis` script
             if (wcslen(ffd.cFileName) > 1)
-              dlg_listbox_add_w(ctrl, ffd.cFileName);
+              if (ctrl)
+                dlg_listbox_add_w(ctrl, ffd.cFileName);
         }
-        else if (!dirs) {
+        else if (!list_dirs) {
           //LARGE_INTEGER filesize = {.LowPart = ffd.nFileSizeLow, .HighPart = ffd.nFileSizeHigh};
           //long s = filesize.QuadPart;
 
@@ -1814,7 +1881,10 @@ add_file_resources(control *ctrl, wstring pattern, bool dirs)
           int len = wcslen(ffd.cFileName);
           if (ffd.cFileName[0] != '.' && ffd.cFileName[len - 1] != '~') {
             ffd.cFileName[len - sufl] = 0;
-            dlg_listbox_add_w(ctrl, ffd.cFileName);
+            if (ctrl)
+              dlg_listbox_add_w(ctrl, ffd.cFileName);
+            else
+              (void)fnh;  // CYGWIN_VERSION_API_MINOR < 74
           }
         }
         ok = FindNextFileW(hFind, &ffd);
@@ -1827,7 +1897,67 @@ add_file_resources(control *ctrl, wstring pattern, bool dirs)
       // empty valid dir
       //break;
     }
+#else
+#include <dirent.h>
+    char * pat = cs__wcstombs(pattern);
+    char * patsuf = strrchr(pat, '.');
+    int patsuflen = patsuf ? strlen(patsuf) : 0;
+    char * patbase = strrchr(pat, '/');
+    if (patbase)
+      *patbase = 0;
+    char * rcpat = asform("%s/%s", config_dirs[i], pat);
+    //printf("<%s> -> <%s>\n", config_dirs[i], rcpat);
+
+    DIR * dir = opendir(rcpat);
+    if (dir) {
+      struct dirent * direntry;
+      while ((direntry = readdir (dir)) != 0) {
+        if (patsuf && !strstr(direntry->d_name, patsuf))
+          continue;
+
+        if (list_dirs && direntry->d_type == DT_DIR) {
+          if (direntry->d_name[0] != '.' && !!strcmp(direntry->d_name, "common"))
+            // exclude the [0-7] links left over by the `getemojis` script
+            if (strlen(direntry->d_name) > 1) {
+              if (ctrl)
+                dlg_listbox_add(ctrl, direntry->d_name);
+            }
+        }
+        else if (!list_dirs) {
+          // strip suffix
+          int len = strlen(direntry->d_name);
+          if (direntry->d_name[0] != '.' && direntry->d_name[len - 1] != '~') {
+            direntry->d_name[len - patsuflen] = 0;
+            if (ctrl)
+              dlg_listbox_add(ctrl, direntry->d_name);
+            else {
+              char * fn = asform("%s/%s", rcpat, direntry->d_name);
+              wchar * wfn = path_posix_to_win_w(fn);
+              fnh(wfn);
+              free(wfn);
+              free(fn);
+            }
+          }
+        }
+      }
+      closedir(dir);
+    }
+    free(rcpat);
+    free(pat);
+#endif
   }
+}
+
+static void
+add_file_resources(control *ctrl, wstring pattern, bool list_dirs)
+{
+  do_file_resources(ctrl, pattern, list_dirs, 0);
+}
+
+void
+handle_file_resources(wstring pattern, str_fn fn_handler)
+{
+  do_file_resources(0, pattern, false, fn_handler);
 }
 
 
@@ -2450,7 +2580,12 @@ theme_handler(control *ctrl, int event)
   }
   // apply changed theme immediately
   if (strcmp(new_cfg.colour_scheme, cfg.colour_scheme) || wcscmp(new_cfg.theme_file, cfg.theme_file))
+  {
+#ifdef debug_theme
+    printf("theme_handler: apply\n");
+#endif
     apply_config(false);
+  }
 }
 
 #define dont_debug_dragndrop
@@ -3102,12 +3237,16 @@ setup_config_box(controlbox * b)
   //__ Options - Looks: section title
                       _("Cursor"));
   ctrl_radiobuttons(
-    s, null, 4 + with_glass,
+    s, null, 4,
     dlg_stdradiobutton_handler, &new_cfg.cursor_type,
     //__ Options - Looks: cursor type
     _("Li&ne"), CUR_LINE,
     //__ Options - Looks: cursor type
     _("Bloc&k"), CUR_BLOCK,
+#ifdef cursor_type_box
+    //__ Options - Looks: cursor type
+    _("Bo&x"), CUR_BOX,
+#endif
     //__ Options - Looks: cursor type
     _("&Underscore"), CUR_UNDERSCORE,
     null
@@ -3385,11 +3524,18 @@ setup_config_box(controlbox * b)
                       _("Mouse functions"), null);
   ctrl_columns(s, 2, 50, 50);
   if (strstr(cfg.old_options, "sel")) {
+//#define copy_as_html_checkbox
+//#define copy_as_html_right
 #ifdef copy_as_html_checkbox
     ctrl_checkbox(
       //__ Options - Mouse:
       s, _("Cop&y on select"),
       dlg_stdcheckbox_handler, &new_cfg.copy_on_select
+    )->column = 0;
+    ctrl_checkbox(
+      //__ Options - Mouse:
+      s, _("Copy with TABs"),
+      dlg_stdcheckbox_handler, &new_cfg.copy_tabs
     )->column = 0;
     ctrl_checkbox(
       //__ Options - Mouse:
@@ -3421,6 +3567,11 @@ setup_config_box(controlbox * b)
     )->column = 0;
     ctrl_checkbox(
       //__ Options - Mouse:
+      s, _("Copy with TABs"),
+      dlg_stdcheckbox_handler, &new_cfg.copy_tabs
+    )->column = 0;
+    ctrl_checkbox(
+      //__ Options - Mouse:
       s, _("Copy as &rich text"),
       dlg_stdcheckbox_handler, &new_cfg.copy_as_rtf
     )->column = 0;
@@ -3430,6 +3581,7 @@ setup_config_box(controlbox * b)
       s, _("Cop&y on select"),
       dlg_stdcheckbox_handler, &new_cfg.copy_on_select
     )->column = 0;
+    // no space for "Copy with TABs"
     ctrl_checkbox(
       //__ Options - Mouse:
       s, _("Copy as &rich text"),
@@ -3578,6 +3730,11 @@ setup_config_box(controlbox * b)
       //__ Options - Selection:
       s, _("Cop&y on select"),
       dlg_stdcheckbox_handler, &new_cfg.copy_on_select
+    )->column = 0;
+    ctrl_checkbox(
+      //__ Options - Selection:
+      s, _("Copy with TABs"),
+      dlg_stdcheckbox_handler, &new_cfg.copy_tabs
     )->column = 0;
     ctrl_columns(s, 1, 100);  // reset column stuff so we can rearrange them
     ctrl_columns(s, 2, 50, 50);

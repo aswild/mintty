@@ -19,6 +19,25 @@ extern ATOM class_atom;
 
 extern void clear_tabs(void);
 extern void add_tab(uint tabi, HWND wndi);
+// Inter-window actions
+enum {
+  WIN_MINIMIZE = 0,
+  WIN_MAXIMIZE = -1,
+  WIN_FULLSCREEN = -2,
+  WIN_TOP = 1,
+  WIN_TITLE = 4,
+  WIN_INIT_POS = 5
+};
+// support tabbar
+extern void win_to_top(HWND top_wnd);
+extern void win_post_sync_msg(HWND target, int level);
+struct tabinfo {
+  unsigned long tag;
+  HWND wnd;
+  wchar * title;
+};
+extern struct tabinfo * tabinfo;
+extern int ntabinfo;
 
 extern COLORREF colours[COLOUR_NUM];
 extern colour brighten(colour c, colour against, bool monotone);
@@ -30,6 +49,7 @@ extern int cell_width, cell_height;  // includes spacing
 extern bool font_ambig_wide;
 extern int line_scale;
 extern int PADDING;
+extern int OFFSET;
 extern bool show_charinfo;
 extern void toggle_charinfo(void);
 extern void toggle_vt220(void);
@@ -81,6 +101,8 @@ extern void win_set_icon(char * s, int icon_index);
 extern void win_show_tip(int x, int y, int cols, int rows);
 extern void win_destroy_tip(void);
 
+extern void taskbar_progress(int percent);
+
 extern void win_init_menus(void);
 extern void win_update_menus(bool callback);
 extern void user_function(wstring commands, int n);
@@ -110,6 +132,8 @@ extern wstring wslicon(wchar * params);
 extern char * foreground_cwd(void);
 
 extern void win_switch(bool back, bool alternate);
+extern int sync_level(void);
+
 extern int search_monitors(int * minx, int * miny, HMONITOR lookup_mon, int get_primary, MONITORINFO *mip);
 
 extern void win_set_ime_open(bool);
@@ -124,5 +148,7 @@ extern void show_info(char * msg);
 extern void win_close(void);
 
 extern unsigned long mtime(void);
+
+extern void term_save_image(void);
 
 #endif

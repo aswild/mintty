@@ -8,6 +8,7 @@
 #include "charset.h"  // wcscpy, wcsncat, combiningdouble
 #include "config.h"
 #include "winimg.h"  // winimgs_paint
+#include "tek.h"
 
 #include <winnls.h>
 #include <usp10.h>  // Uniscribe
@@ -100,6 +101,7 @@ static int font_height;
 int cell_width, cell_height;
 // border padding:
 int PADDING = 1;
+int OFFSET = 0;
 // width mode
 bool font_ambig_wide;
 
@@ -793,7 +795,7 @@ win_init_fontfamily(HDC dc, int findex)
       printf("bold_mode %d font_size %d size %d bold %d diff %d %s %ls\n",
              ff->bold_mode, font_size,
              fontsize[FONT_NORMAL], fontsize[FONT_BOLD], diffsize,
-             fontsize[FONT_BOLD] != fontsize[FONT_NORMAL] ? "///" : "===",
+             fontsize[FONT_BOLD] != fontsize[FONT_NORMAL] ? "=/=" : "===",
              ff->name);
 #endif
     if (diffsize * 16 > fontsize[FONT_NORMAL]) {
@@ -1225,8 +1227,12 @@ do_update(void)
   win_paint_exclude_search(dc);
   term_update_search();
 
-  term_paint();
-  winimgs_paint();
+  if (tek_mode)
+    tek_paint();
+  else {
+    term_paint();
+    winimgs_paint();
+  }
 
   ReleaseDC(wnd, dc);
 
@@ -1250,7 +1256,7 @@ do_update(void)
   // so we should arrange to have one.)
   if (term.has_focus) {
     int x = term.curs.x * cell_width + PADDING;
-    int y = (term.curs.y - term.disptop) * cell_height + PADDING;
+    int y = (term.curs.y - term.disptop) * cell_height + OFFSET + PADDING;
     SetCaretPos(x, y);
     if (ime_open) {
       COMPOSITIONFORM cf = {.dwStyle = CFS_POINT, .ptCurrentPos = {x, y}};
@@ -1298,7 +1304,7 @@ sel_update(bool update_sel_tip)
     int y = wr.top
           + ((style & WS_THICKFRAME) ? GetSystemMetrics(SM_CYSIZEFRAME) : 0)
           + ((style & WS_CAPTION) ? GetSystemMetrics(SM_CYCAPTION) : 0)
-          + PADDING + last_pos.y * cell_height;
+          + OFFSET + PADDING + last_pos.y * cell_height;
 #ifdef debug_selection_show_size 
     cfg.selection_show_size = cfg.selection_show_size % 12 + 1;
 #endif
@@ -1696,7 +1702,7 @@ load_background_image_brush(HDC dc, wstring fn)
         int sy = win_search_visible() ? SEARCHBAR_HEIGHT : 0;
         printf("%dx%d (%dx%d) -> %dx%d\n", (int)h, (int)w, bh, bw, xh, xw);
         // rescale window to aspect ratio of background image
-        win_set_pixels(xh - 2 * PADDING - sy, xw - 2 * PADDING);
+        win_set_pixels(xh - 2 * PADDING - OFFSET - sy, xw - 2 * PADDING);
         // WARNING: rescaling asynchronously at this point makes 
         // terminal geometry (term.rows, term.cols) inconsistent with 
         // running operations and may crash mintty; 
@@ -1728,7 +1734,7 @@ load_background_image_brush(HDC dc, wstring fn)
         // set half-tone stretch-blit mode for scaling quality
         SetStretchBltMode(dc1, HALFTONE);
         // draw the bitmap scaled into the destination memory DC
-        StretchBlt(dc1, 0, 0, w, h, dc0, 0, 0, bw, bh, SRCCOPY);
+        StretchBlt(dc1, 0, OFFSET, w, h - OFFSET, dc0, 0, 0, bw, bh, SRCCOPY);
 
         DeleteObject(hbm);
         hbm = hbm1;
@@ -1747,7 +1753,7 @@ load_background_image_brush(HDC dc, wstring fn)
 
         BYTE alphafmt = alpha == 255 ? AC_SRC_ALPHA : 0;
         BLENDFUNCTION bf = (BLENDFUNCTION) {AC_SRC_OVER, 0, alpha, alphafmt};
-        if (pAlphaBlend(dc1, 0, 0, w, h, dc0, 0, 0, bw, bh, bf)) {
+        if (pAlphaBlend(dc1, 0, OFFSET, w, h - OFFSET, dc0, 0, 0, bw, bh, bf)) {
           DeleteObject(hbm);
           hbm = hbm1;
         }
@@ -1781,6 +1787,8 @@ load_background_image_brush(HDC dc, wstring fn)
       if (bgbrush_bmp) {
         RECT cr;
         GetClientRect(wnd, &cr);
+        // support tabbar
+        cr.top += OFFSET;
 
         /* By applying this tweak here and (!) in fill_background below,
            we can apply an offset to the origin of a wallpaper background, 
@@ -1949,7 +1957,7 @@ get_bg_filename(void)
       }
       else {
         // need to scale wallpaper later, when loading;
-        /// not implemented, invalidate
+        // not implemented, invalidate
         *wallpfn = 0;
         // possibly, according to docs, but apparently ignored, 
         // also determine origin according to
@@ -2032,6 +2040,9 @@ load_background_brush(HDC dc)
   if (win_search_visible())
     cr.bottom -= SEARCHBAR_HEIGHT;
 
+  // support tabbar (minor need here)
+  cr.top += OFFSET;
+
   wchar * bgfn = get_bg_filename();  // also set tiled and alpha
 
   HBITMAP
@@ -2100,6 +2111,10 @@ fill_background(HDC dc, RECT * boxp)
     offset_bg(dc);
   }
 
+  // support tabbar
+  if (boxp->top < OFFSET)
+    boxp->top = OFFSET;
+
   return
     (bgbrush_bmp && FillRect(dc, boxp, bgbrush_bmp))
 #if CYGWIN_VERSION_API_MINOR >= 74
@@ -2160,7 +2175,7 @@ scale_to_image_ratio()
   printf("  %dx%d (%dx%d) -> %dx%d\n", (int)w, (int)h, bw, bh, xw, xh);
 #endif
   // rescale window to aspect ratio of background image
-  win_set_pixels(xh - 2 * PADDING - sy, xw - 2 * PADDING);
+  win_set_pixels(xh - 2 * PADDING - OFFSET - sy, xw - 2 * PADDING);
 #endif
 }
 
@@ -2699,7 +2714,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
 
  /* Convert to window coordinates */
   int x = tx * char_width + PADDING;
-  int y = ty * cell_height + PADDING;
+  int y = ty * cell_height + OFFSET + PADDING;
 
 #ifdef support_triple_width
 #define TATTR_TRIPLE 0x0080000000000000u
@@ -2754,6 +2769,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
       default_bg = false;
 
     cursor_colour = colours[ime_open ? IME_CURSOR_COLOUR_I : CURSOR_COLOUR_I];
+    //printf("cc (ime_open %d) %06X\n", ime_open, cursor_colour);
 
     //static uint mindist = 32768;
     static uint mindist = 22222;
@@ -2778,7 +2794,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
         fg = bg;
       bg = cursor_colour;
 #ifdef debug_cursor
-      printf("set cursor (colour %06X) @(row %d col %d) cursor_on %d\n", bg, (y - PADDING) / cell_height, (x - PADDING) / char_width, term.cursor_on);
+      printf("set cursor (colour %06X) @(row %d col %d) cursor_on %d\n", bg, (y - PADDING - OFFSET) / cell_height, (x - PADDING) / char_width, term.cursor_on);
 #endif
     }
   }
@@ -3068,6 +3084,8 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
  /* Graphic background: picture or texture */
   if (*cfg.background && default_bg) {
     RECT bgbox = box0;
+
+    // extend into padding area
     if (!tx)
       bgbox.left = 0;
     if (bgbox.right >= PADDING + cell_width * term.cols)
@@ -3084,6 +3102,10 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
 
     if (fill_background(dc, &bgbox))
       underlaid = true;
+#ifdef debug_text_background
+    if (*text != 'x')
+      underlaid = false;
+#endif
   }
 
  /* Coordinate transformation per line */
@@ -3916,6 +3938,11 @@ draw:;
           Rectangle(dc, x, y, x + char_width, y + cell_height);
           SelectObject(dc, oldbrush);
         }
+      when CUR_BOX: {
+        HBRUSH oldbrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, x, y, x + char_width, y + cell_height);
+        SelectObject(dc, oldbrush);
+      }
       when CUR_LINE: {
         int caret_width = 1;
         SystemParametersInfo(SPI_GETCARETWIDTH, 0, &caret_width, 0);
@@ -3925,9 +3952,18 @@ draw:;
         if (attr.attr & TATTR_RIGHTCURS)
           xx += char_width - caret_width;
         if (attr.attr & TATTR_ACTCURS) {
+#ifdef cursor_painted_with_rectangle
+          // this would add an additional line, vanishing again but 
+          // leaving a pixel artefact, under some utterly weird interference 
+          // with output of certain characters (mintty/wsltty#255)
           HBRUSH oldbrush = SelectObject(dc, CreateSolidBrush(_cc));
           Rectangle(dc, xx, y, xx + caret_width, y + cell_height);
           DeleteObject(SelectObject(dc, oldbrush));
+#else
+          HBRUSH br = CreateSolidBrush(_cc);
+          FillRect(dc, &(RECT){xx, y, xx + caret_width, y + cell_height}, br);
+          DeleteObject(br);
+#endif
         }
         else if (attr.attr & TATTR_PASCURS) {
           for (int dy = 0; dy < cell_height; dy += 2)
@@ -4393,8 +4429,7 @@ win_set_colour(colour_i i, colour c)
     if (i == BOLD_COLOUR_I) {
       cc(BOLD_COLOUR_I, cfg.bold_colour);
     }
-    else
-    if (i == BOLD_FG_COLOUR_I) {
+    else if (i == BOLD_FG_COLOUR_I) {
       bold_colour_selected = false;
       if (cfg.bold_colour != (colour)-1)
         cc(BOLD_FG_COLOUR_I, cfg.bold_colour);
@@ -4407,12 +4442,20 @@ win_set_colour(colour_i i, colour c)
       cc(i, cfg.bg_colour);
     else if (i == CURSOR_COLOUR_I) {
       cc(i, cfg.cursor_colour);
-      cc(IME_CURSOR_COLOUR_I, cfg.ime_cursor_colour);
+      if (cfg.ime_cursor_colour != DEFAULT_COLOUR)
+        cc(IME_CURSOR_COLOUR_I, cfg.ime_cursor_colour);
+      //printf("ime_cc set -1 %06X\n", cfg.ime_cursor_colour);
     }
     else if (i == SEL_COLOUR_I)
       cc(i, cfg.sel_bg_colour);
     else if (i == SEL_TEXT_COLOUR_I)
       cc(i, cfg.sel_fg_colour);
+    else if (i == TEK_FG_COLOUR_I)
+      cc(i, cfg.tek_fg_colour);
+    else if (i == TEK_BG_COLOUR_I)
+      cc(i, cfg.tek_bg_colour);
+    else if (i == TEK_CURSOR_COLOUR_I)
+      cc(i, cfg.tek_cursor_colour);
   }
   else {
     cc(i, c);
@@ -4474,6 +4517,7 @@ win_set_colour(colour_i i, colour c)
           c = RGB(r, g, b);
         }
         cc(IME_CURSOR_COLOUR_I, c);
+        //printf("ime_cc set c %06X\n", c);
       }
       otherwise:
         break;
@@ -4520,8 +4564,10 @@ win_reset_colours(void)
   win_set_colour(FG_COLOUR_I, cfg.fg_colour);
   win_set_colour(BG_COLOUR_I, cfg.bg_colour);
   win_set_colour(CURSOR_COLOUR_I, cfg.cursor_colour);
-  if (cfg.ime_cursor_colour != DEFAULT_COLOUR)
+  if (cfg.ime_cursor_colour != DEFAULT_COLOUR) {
     win_set_colour(IME_CURSOR_COLOUR_I, cfg.ime_cursor_colour);
+    //printf("ime_cc reset %06X\n", cfg.ime_cursor_colour);
+  }
   win_set_colour(SEL_COLOUR_I, cfg.sel_bg_colour);
   win_set_colour(SEL_TEXT_COLOUR_I, cfg.sel_fg_colour);
   // Bold colour
@@ -4534,8 +4580,13 @@ win_reset_colours(void)
     else
       printf("colour %d %06X [%s]\n", i, (int)colours[i], ci[i - FG_COLOUR_I]);
 #endif
+  win_set_colour(TEK_FG_COLOUR_I, cfg.tek_fg_colour);
+  win_set_colour(TEK_BG_COLOUR_I, cfg.tek_bg_colour);
+  win_set_colour(TEK_CURSOR_COLOUR_I, cfg.tek_cursor_colour);
 }
 
+
+#define dont_debug_padding_background
 
 void
 win_paint(void)
@@ -4543,31 +4594,35 @@ win_paint(void)
   PAINTSTRUCT p;
   dc = BeginPaint(wnd, &p);
 
+  // better invalidate more than less; limited to text area in term_invalidate
   term_invalidate(
     (p.rcPaint.left - PADDING) / cell_width,
-    (p.rcPaint.top - PADDING) / cell_height,
+    (p.rcPaint.top - PADDING - OFFSET) / cell_height,
     (p.rcPaint.right - PADDING - 1) / cell_width,
-    (p.rcPaint.bottom - PADDING - 1) / cell_height
+    (p.rcPaint.bottom - PADDING - OFFSET - 1) / cell_height
   );
 
   //if (kb_trace) printf("[%ld] win_paint state %d (idl/blk/pnd)\n", mtime(), update_state);
   if (update_state != UPDATE_PENDING) {
-    term_paint();
-    winimgs_paint();
+    if (tek_mode)
+      tek_paint();
+    else {
+      term_paint();
+      winimgs_paint();
+    }
   }
 
-  if (// do not just check whether a background was configured
-      //!*cfg.background &&
-      // check whether a configured background was successfully loaded
+  if (// check whether no background was configured and successfully loaded
       !bgbrush_bmp &&
 #if CYGWIN_VERSION_API_MINOR >= 74
       !bgbrush_img &&
 #endif
+      // check whether we need to refresh padding background
       (p.fErase
        || p.rcPaint.left < PADDING
-       || p.rcPaint.top < PADDING
+       || p.rcPaint.top < OFFSET + PADDING
        || p.rcPaint.right >= PADDING + cell_width * term.cols
-       || p.rcPaint.bottom >= PADDING + cell_height * term.rows
+       || p.rcPaint.bottom >= OFFSET + PADDING + cell_height * term.rows
       )
      )
   {
@@ -4582,21 +4637,34 @@ win_paint(void)
          but not modify the established behaviour if there is no background.
      */
     colour bg_colour = colours[term.rvideo ? FG_COLOUR_I : BG_COLOUR_I];
+#ifdef debug_padding_background
+    // visualize background for testing
+    bg_colour = RGB(222, 0, 0);
+#endif
     HBRUSH oldbrush = SelectObject(dc, CreateSolidBrush(bg_colour));
     HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, 0, bg_colour));
 
-    IntersectClipRect(dc, p.rcPaint.left, p.rcPaint.top, p.rcPaint.right,
-                      p.rcPaint.bottom);
+    // unclear purpose
+    IntersectClipRect(dc, p.rcPaint.left, p.rcPaint.top,
+                          p.rcPaint.right, p.rcPaint.bottom);
 
-    ExcludeClipRect(dc, PADDING, PADDING,
-                    PADDING + cell_width * term.cols,
-                    PADDING + cell_height * term.rows);
+    // mask inner area not to pad with background
+    ExcludeClipRect(dc, PADDING,
+                        OFFSET + PADDING,
+                        PADDING + cell_width * term.cols,
+                        OFFSET + PADDING + cell_height * term.rows);
 
-    Rectangle(dc, p.rcPaint.left, p.rcPaint.top,
-                  p.rcPaint.right, p.rcPaint.bottom);
+    // fill outer padding area with background
+    int sy = win_search_visible() ? SEARCHBAR_HEIGHT : 0;
+    Rectangle(dc, p.rcPaint.left, max(p.rcPaint.top, OFFSET),
+                  p.rcPaint.right, p.rcPaint.bottom - sy);
 
     DeleteObject(SelectObject(dc, oldbrush));
     DeleteObject(SelectObject(dc, oldpen));
+#ifdef debug_padding_background
+    // show visualized background for testing
+    usleep(900000);
+#endif
   }
 
   EndPaint(wnd, &p);

@@ -182,14 +182,16 @@ position, and receive scrollbar events as control sequences.
 This mode is up to future revision. It is currently enabled or disabled 
 implicitly, there is no explicit mode setting sequence.
 
-The application scrollbar indicates a scrollbar view ("scroll offset") 
-within an assumed span of a virtual document ("document height", as 
-maintained by the application). The height of the view ("viewport height") 
+The application scrollbar indicates a scrollbar view (scroll offset _position_) 
+within an assumed span of a virtual document (document _size_, as 
+maintained by the application). The height of the view (viewport _height_) 
 defaults to the actual terminal size (rows); its difference to the 
-terminal size is kept when resizing the terminal. Control sequences 
-can set up the current view position ("scroll offset" from 1 to total size) 
-as well as the total virtual document size ("document height" in assumed lines) 
-and optionally the "viewport height".
+terminal size is kept when resizing the terminal.
+
+Control sequences can set the current view position (scroll offset _position_ 
+of the top end of the marked area in the scrollbar, 
+from 1 to _size_ − _height_ + 1) as well as the total virtual document _size_ 
+(in assumed lines) and optionally the viewport _height_.
 
 | **sequence**                       | **scrollbar**                                        |
 |:-----------------------------------|:-----------------------------------------------------|
@@ -201,6 +203,40 @@ and optionally the "viewport height".
 Relative scrollbar movement and absolute positioning are reported with 
 special sequences; for details see 
 [Keycodes – Application scrollbar events](https://github.com/mintty/mintty/wiki/Keycodes#application-scrollbar-events).
+See there also for an illustrated explanation of the meaning of _pos_ vs _size_ values.
+
+
+## Progress bar ##
+
+— EXPERIMENTAL —
+
+A progress indication on the taskbar icon can be switched or controlled with 
+this escape sequence.
+With a second parameter, the progress value can be controlled explicitly.
+With only one parameter, automatic progress detection is enabled, 
+scanning the current cursor line for a final percentage indication.
+Note that automatic progress bar can also be configured.
+
+| **sequence**                 | **comment**                                 |
+|:-----------------------------|:--------------------------------------------|
+| `^[[0%q`                     | disable progress indication                 |
+| `^[[1%q`                     | enable progress indication level 1 (green)  |
+| `^[[2%q`                     | enable progress indication level 2 (yellow) |
+| `^[[3%q`                     | enable progress indication level 3 (red)    |
+| `^[[`_level_`;`_percent_`%q` | set progress level (1..3) and value         |
+| `^[[8%q`                     | enable continuous "busy" indication         |
+
+An _OSC 9;4_ sequence (compatible with ConEmu or Windows Terminal) 
+is available too, alternatively supporting mnemonic parameters:
+
+| **sequence**                            | **comment**                       |
+|:----------------------------------------|:----------------------------------|
+| `^[]9;progress;off^G`                   | disable progress indication       |
+| `^[]9;progress;green^G`                 | enable green progress indication  |
+| `^[]9;progress;yellow^G`                | enable yellow progress indication |
+| `^[]9;progress;red^G`                   | enable red progress indication    |
+| `^[]9;progress;`_level_`;`_percent_`^G` | set progress level and value      |
+| `^[]9;progress;busy^G`                  | enable busy indication            |
 
 
 ## Mousewheel reporting ##
@@ -338,7 +374,7 @@ The following _OSC_ ("operating system command") sequences can be used to change
 | `^[]7770;^G`           | default             |
 
 As usual, OSC sequences can also be terminated with `^[\` (_ST_, the string terminator) instead of `^G`.
-When the font size is queried, a sequence that would restore the current size is sent, terminated with _ST_: `^[]7770;`_num_`^[\`.
+When the font size is queried, a sequence that would restore the current font size is sent.
 
 
 ## Font and window size ##
@@ -355,7 +391,7 @@ The following _OSC_ ("operating system command") sequences can be used to change
 
 The window size is adapted to zoom with the font size, so the terminal character geometry is kept if possible.
 As usual, OSC sequences can also be terminated with `^[\` (_ST_, the string terminator) instead of `^G`.
-When the font size is queried, a sequence that would restore the current size is sent, terminated with _ST_: `^[]7777;`_num_`^[\`.
+When the font size is queried, a sequence that would restore the current font and window size is sent.
 
 
 ## Locale ##
@@ -425,11 +461,11 @@ The _file-URL_ liberally follows a `file:` URL scheme; examples are
 The following _OSC_ ("operating system command") sequence can be used to 
 set a hyperlink attribute which is opened on Ctrl-click.
 
-| **link control**         | **function**           |
-|:-------------------------|:------------------|
-| `^[]8;;`_URL_`^G`        | underlay text with the hyperlink |
+| **link control**         | **function**                                    |
+|:-------------------------|:------------------------------------------------|
+| `^[]8;;`_URL_`^G`        | underlay text with the hyperlink                |
 | `^[]8;;^G`               | clear hyperlink attribute (terminate hyperlink) |
-| `^[]8;id=`ID`;`_URL_`^G` | associate instances of hyperlink |
+| `^[]8;id=`ID`;`_URL_`^G` | associate instances of hyperlink                |
 
 A typical hyperlinked text would be written like
 > `^[]8;;`_URL_`^G`text`^[]8;;^G`
@@ -448,8 +484,10 @@ two features:
   * Shift+cursor-left/right navigates to the previous/next prompt line and scrolls in the scrollback buffer accordingly
   * user-defined commands can refer to environment variable MINED_OUTPUT which contains terminal output as limited by previous marker
 
+| **marker**    | **function**                                              |
+|:--------------|:----------------------------------------------------------|
 | `^[[?7711h`   | mark prompt line (last line in case of multi-line prompt) |
-| `^[[?7711l`   | mark secondary prompt line (upper lines) |
+| `^[[?7711l`   | mark secondary prompt line (upper lines)                  |
 
 
 ## Image support ##
@@ -518,6 +556,8 @@ blinking interval in milliseconds.
 | **4**   | underscore   | no        |
 | **5**   | line         | yes       |
 | **6**   | line         | no        |
+| **7**   | box          | yes       |
+| **8**   | box          | no        |
 
 Furthermore, the following Linux console sequence can be used to set the 
 size of the active underscore cursor.
@@ -535,3 +575,19 @@ supported; cursor colour can be set with the OSC 12 sequence.)
 | **4**   | lower_half   |
 | **5**   | two_thirds   |
 | **6**   | full block   |
+
+
+## Printing and screen dump ##
+
+Mintty supports the following DEC, xterm and mintty Media Copy sequences:
+
+| **sequence** | **effect**                      |
+|:-------------|:--------------------------------|
+| `^[[0i`      | print screen to default printer |
+| `^[[5i`      | redirect output to printer      |
+| `^[[4i`      | end output to printer           |
+| `^[[?5i`     | copy output to printer          |
+| `^[[?4i`     | end output to printer           |
+| `^[[10i`     | save screen as HTML             |
+| `^[[12i`     | save screen as PNG image        |
+

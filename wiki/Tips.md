@@ -11,8 +11,9 @@ For its configuration, it reads configuration files in this order:
 * `~/.minttyrc`
 
 For resource files to configure a colour scheme, 
-wave file for the bell character, localization files, emoji graphics,
-it looks for subfolders `themes`, `sounds`, `lang`, `emojis`, respectively, 
+wave file for the bell character, localization files, emoji graphics, 
+dynamic fonts, it looks for subfolders 
+`themes`, `sounds`, `lang`, `emojis`, `fonts`, respectively, 
 in the directories
 * `~/.mintty`
 * `~/.config/mintty`
@@ -38,17 +39,29 @@ For example, shortcuts for access to remote machines can be created by
 invoking **[ssh](http://www.openssh.com)**. The command simply needs 
 to be appended to the target field of the shortcut’s properties:
 
-> Target: `C:\Cygwin\bin\mintty.exe /bin/ssh server`
+> Target: `C:\Cygwin64\bin\mintty.exe /bin/ssh server`
 
 The **[cygutils](http://www.cygwin.com/cygwin-ug-net/using-effectively.html#using-cygutils)** package 
 provides the **mkshortcut** utility for creating shortcuts from the command line. 
 See its manual page for details.
 
-A Windows shortcut can be associated with a **Shortcut key** so an instance 
-of mintty can be started using a hotkey. By default, an already running 
-instance would be focussed again with the associated hotkey. To have a 
-new instance started with every usage of the hotkey, use the command-line 
-option ```-D``` for mintty in the shortcut target.
+### Hotkey / Windows Shortcut key ###
+
+In a Windows shortcut (desktop or Start menu), a "Shortcut key" with 
+modifiers can be defined as a system hotkey to start an application or 
+bring it to the front.
+
+To have a new instance started with every usage of the hotkey, use the 
+command-line option ```-D``` for mintty in the shortcut target.
+
+### Hotkey / "quake mode" ###
+
+Mintty detects if activated via hotkey and will use the same hotkey to 
+minimize itself in turn, unless inhibited by shortcut override mode. 
+The preferred appearance of the hotkey-activated terminal window can 
+further be customized with options in the shortcut, e.g.
+
+> `C:\Cygwin64\bin\mintty.exe --pos top --size maxwidth -`
 
 ### Taskbar icons ###
 
@@ -100,8 +113,8 @@ anymore in this case.
 ## Window session grouping ##
 
 For grouping of window icons in the taskbar, Windows uses the intricate 
-AppID concept as explained above. For grouping of desktop windows, as 
-used by the mintty session switcher or external window manipulation tools, 
+AppID concept as explained above. For grouping of desktop windows, as used by 
+the mintty session switcher or tabbar, or external window manipulation tools, 
 Windows uses the distinct but likewise intricate Class concept.
 Mintty provides flexible configuration to set up either of them, see manual.
 
@@ -134,7 +147,7 @@ or using Powershell commands as described in
 If you have any Linux distribution for the Windows Subsystem for Linux (WSL) 
 installed, mintty can be called from cygwin to run a WSL terminal session:
 * `mintty --WSL=Ubuntu`
-* `mintty --WSL` (for the Default distribution as set with `wslconfig /s`)
+* `mintty --WSL` (for the Default distribution as set with `wslconfig /s` or `wsl -s`)
 
 Note, the `wslbridge2` gateways need to be installed in `/bin` for this purpose 
 (see below for details).
@@ -625,7 +638,7 @@ As an alternative to a background colour, mintty also supports graphic
 background. This can be configured with the option `Background` or 
 set dynamically using special syntax of the colour background OSC sequence.
 The respective parameter addresses an image file, preceded by a mode 
-prefix and optionally followed by a transparancy value.
+prefix and optionally followed by a transparency value.
 Prefixes are:
 * `*` use image file as tiled background
 * `_` (optional with option Background) use image as picture background, scaled to window
@@ -638,8 +651,8 @@ with a value of 255, the alpha transparency values of the image will be used.
 
 Examples:
 ```
-Background=C:\cygwin\usr\share\backgrounds\tiles\rough_paper.png
--o Background='C:\cygwin\usr\share\backgrounds\tiles\rough_paper.png'
+Background=C:\cygwin64\usr\share\backgrounds\tiles\rough_paper.png
+-o Background='C:\cygwin64\usr\share\backgrounds\tiles\rough_paper.png'
 echo -ne '\e]11;*/usr/share/backgrounds/tiles/rough_paper.png\a'
 echo -ne '\e]11;_pontneuf.png,99\a'
 echo -ne '\e]11;=,99\a'
@@ -651,6 +664,7 @@ Note that absolute pathnames within the cygwin file system are likely
 not to work among different cygwin installations. 
 To configure a background in `$APPDATA/mintty/config` (or 
 `%APPDATA%/wsltty/config`), Windows pathname syntax should be used.
+
 
 ## Providing and selecting fonts ##
 
@@ -743,17 +757,43 @@ FontChoice=Private:3
 Font3=MesloLGS NF
 ```
 
+### Dynamic fonts ###
+
+Mintty supports on-the-fly temporary font installation, especially for use 
+in a portable terminal application.
+Place font files into the subdirectory `fonts` of the mintty configuration 
+directory. All will be made available for mintty usage, there is currently 
+no mechanism to configure dynamic fonts explicitly. The number of font files 
+should be limited to avoid significant startup delay.
+To avoid having to set up an explicit `--configdir` invocation parameter, 
+fonts can be placed in the /usr/share/mintty/fonts folder of the portable 
+installation.
+
 
 ## Character width ##
 
 By default, mintty adjusts character width to the width assumption of the 
 locale mechanism (function `wcwidth`).
-If it is desired to use more up-to-date Unicode width properties, this can 
-be chosen with option `Charwidth=unicode`. Note that actual width 
-properties as rendered on the screen and width assumptions of the 
-`wcwidth` function will be inconsistent then for the impacted characters, 
-which may confuse screen applications (such as editors) that rely on 
-`wcwidth` information.
+Character width can be modified by a number of configuration or dynamic settings:
+* `Locale`: change locale, stays consistent with system locales
+* `Charwidth=unicode`: use built-in rather than system-provided Unicode data
+* `Charwidth`: further options to handle double-width characters
+* `Charset`: may affect CJK ambiguous-width handling if used with `Locale`
+* `Font`: may affect CJK ambiguous-width handling if locale support fails
+* `PrintableControls`: makes C1 or C0 control characters visible (width 1)
+* [OSC 701](https://github.com/mintty/mintty/wiki/CtrlSeqs#locale): changes locale/charset, may affect ambiguous width handling
+* OSC 50: changes font, may affect ambiguous width handling (with `Locale`)
+* [OSC 77119](https://github.com/mintty/mintty/wiki/CtrlSeqs#wide-characters): turns some character ranges to wide characters
+* [PEC](https://github.com/mintty/mintty/wiki/CtrlSeqs#explicit-character-width): explicit character width attribute
+
+See the [mintty manual](http://mintty.github.io/mintty.1.html) and
+[Control Sequences](https://github.com/mintty/mintty/wiki/CtrlSeqs)
+for more details.
+
+Note that with any of these settings, actual width properties as 
+rendered on the screen and width assumptions of the `wcwidth` function 
+will be inconsistent then for the impacted characters, which may confuse 
+screen applications (such as editors) that rely on `wcwidth` information.
 
 ### Ambiguous width setting ###
 
@@ -939,6 +979,7 @@ Note that up to cygwin 2.10.0, it may be useful to set `Charwidth=unicode` in ad
 Emojis are displayed in the rectangular character cell group determined 
 by the cumulated width of the emoji sequence characters. The option 
 `EmojiPlacement` can adjust the location of emoji graphics within that area.
+You can use the escape sequence PEC to tune emoji width.
 
 ### Installing emoji resources ###
 
@@ -1032,12 +1073,9 @@ Add setting `-o Charwidth=ambig-wide` if desired.
 
 If mintty is used as a WSL terminal, the WSL side can be configured to run 
 a GB18030 locale as well to achieve full GB18030 support.
-Give option `--WSL` first as it implies `Charset=UTF-8` which then needs to 
-be overridden; also add setting `Charwidth=ambig-wide` to run compatible 
-with WSL locales and not derive ambiguous character width from the font:
 
 ```
-mintty --WSL[=...] -o Locale=zh_CN -o Charset=GB18030 -o Charwidth=ambig-wide
+mintty --WSL[=...] -o Locale=zh_CN -o Charset=GB18030
 ```
 
 ### Passing arguments from an environment with different character set ###
@@ -1051,7 +1089,7 @@ starting in a specific directory with a non-ASCII name,
 use this command line as a shortcut target:
 
 ```
-C:\cygwin\bin\mintty.exe -o Locale=C -o Charset=GBK /bin/bash -l -c "cd `echo D:/桌面 | iconv -f UTF-8`; exec bash"
+C:\cygwin64\bin\mintty.exe -o Locale=C -o Charset=GBK /bin/bash -l -c "cd `echo D:/桌面 | iconv -f UTF-8`; exec bash"
 ```
 
 So the initial shell, interpreting its ```cd``` parameters already in GBK 
@@ -1084,7 +1122,7 @@ a login shell), Alt+F2 starts again a login terminal, whose login shell
 is likely to reset the working directory to the home directory.
 
 
-## Virtual Tabs ##
+## Virtual Tabs and Tabbar ##
 
 The Virtual Tabs feature provides a list of all running mintty sessions 
 as well as configurable launch parameters for new sessions.
@@ -1099,6 +1137,11 @@ and `SessionGeomSync`.
 Distinct sets of sessions can be set up with the setting `-o Class=...`.
 For flexible window grouping, this setting supports the same placeholders 
 as the `AppID` option.
+
+### Tabbar ###
+
+Tabs can also be switched from a tabbar, activated with setting `Tabbar` to 
+a recommended value of 2 or more (use 4 or 9 for maximal tab synchronization).
 
 
 ## Multi-monitor support ##
@@ -1142,6 +1185,20 @@ PNG, JPEG, GIF, TIFF, BMP, Exif.
 The script `showimg` in the 
 mintty [utils repository](https://github.com/mintty/utils) supports 
 interactive image display.
+
+
+## Tektronix 4014 vector graphics ##
+
+Mintty can emulate the Tektronix 4014 vector graphics terminal. 
+It switches to Tek emulation on the xterm sequence DECSET 38 (`\e[?38h`). 
+It is suggested to adjust the window size to the Tektronix 4010 resolution and aspect ratio before:
+* `echo -en "\e[4;780;1024t"`
+
+The script `tek` in the mintty 
+[utils repository](https://github.com/mintty/utils) supports switching 
+to Tek mode and optionally output of Tek or plot files.
+It also sets the environment variables **TERM** and **GNUTERM** properly.
+When leaving the sub-shell, it restores DEC/ANSI terminal mode.
 
 
 ## Localization ##
@@ -1238,15 +1295,16 @@ To install mintty outside a cygwin environment, follow a few rules:
 ### Bundling mintty with dedicated software ###
 
 To bundle an application which is not natively compiled on cygwin with mintty,
-some way of bridging the terminal interworking incompatiblity problems 
+cygwin 3.1.0 provides the ConPTY support to bridge the terminal interworking incompatiblity problems 
 ([pty incompatibility problem](https://github.com/mintty/mintty/issues/56) and
-[character encoding incompatibility problem](https://github.com/mintty/mintty/issues/376))
-needs to be integrated. A generic solution is [winpty](https://github.com/rprichard/winpty).
-To run WSL, use ʻwslbridge2’ instead (see above).
+[character encoding incompatibility problem](https://github.com/mintty/mintty/issues/376)).
+
 For software that is aware of Posix terminal conventions, it may be a feasible 
 solution if the software detects a terminal and its character encoding by 
 checking environment variable `TERM` and the locale variables and invokes 
 `stty raw -echo` to enable direct character-based I/O and disable 
 non-compatible signal handling. For this purpose, stty and its library 
 dependencies need to be bundled with the installation as well.
+
+To run WSL, use `wslbridge2` as a gateway (see above).
 

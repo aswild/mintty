@@ -7,6 +7,7 @@
 
 #include "charset.h"
 #include "child.h"
+#include "tek.h"
 
 #include <math.h>
 #include <windowsx.h>  // GET_X_LPARAM, GET_Y_LPARAM
@@ -476,6 +477,8 @@ win_update_menus(bool callback)
   // enable/disable predefined extended context menu entries
   // (user-definable ones are handled via fct_status())
   EnableMenuItem(ctxmenu, IDM_COPY_TEXT, sel_enabled);
+  EnableMenuItem(ctxmenu, IDM_COPY_TABS, sel_enabled);
+  EnableMenuItem(ctxmenu, IDM_COPY_TXT, sel_enabled);
   EnableMenuItem(ctxmenu, IDM_COPY_RTF, sel_enabled);
   EnableMenuItem(ctxmenu, IDM_COPY_HTXT, sel_enabled);
   EnableMenuItem(ctxmenu, IDM_COPY_HFMT, sel_enabled);
@@ -655,6 +658,8 @@ win_init_ctxmenu(bool extended_menu, bool with_user_commands)
     //__ Context menu:
     AppendMenuW(ctxmenu, MF_ENABLED, IDM_COPY_TEXT, _W("Copy as text"));
     //__ Context menu:
+    AppendMenuW(ctxmenu, MF_ENABLED, IDM_COPY_TABS, _W("Copy with TABs"));
+    //__ Context menu:
     AppendMenuW(ctxmenu, MF_ENABLED, IDM_COPY_RTF, _W("Copy as RTF"));
     //__ Context menu:
     AppendMenuW(ctxmenu, MF_ENABLED, IDM_COPY_HTXT, _W("Copy as HTML text"));
@@ -669,6 +674,15 @@ win_init_ctxmenu(bool extended_menu, bool with_user_commands)
   }
   //__ Context menu:
   AppendMenuW(ctxmenu, MF_ENABLED, IDM_SELALL, _W("Select &All"));
+  //__ Context menu:
+  AppendMenuW(ctxmenu, MF_ENABLED, IDM_SAVEIMG, _W("Save as &Image"));
+  if (tek_mode) {
+    AppendMenuW(ctxmenu, MF_SEPARATOR, 0, 0);
+    AppendMenuW(ctxmenu, MF_ENABLED, IDM_TEKRESET, W("Tektronix RESET"));
+    AppendMenuW(ctxmenu, MF_ENABLED, IDM_TEKPAGE, W("Tektronix PAGE"));
+    AppendMenuW(ctxmenu, MF_ENABLED, IDM_TEKCOPY, W("Tektronix COPY"));
+
+  }
   AppendMenuW(ctxmenu, MF_SEPARATOR, 0, 0);
   AppendMenuW(ctxmenu, MF_ENABLED, IDM_SEARCH, 0);
   if (extended_menu) {
@@ -918,14 +932,16 @@ translate_pos(int x, int y)
 {
   return (pos){
     .x = floorf((x - PADDING) / (float)cell_width),
-    .y = floorf((y - PADDING) / (float)cell_height),
+    .y = floorf((y - PADDING - OFFSET) / (float)cell_height),
+    .pix = min(max(0, x - PADDING), term.rows * cell_height - 1),
+    .piy = min(max(0, y - PADDING - OFFSET), term.cols * cell_width - 1),
     .r = (cfg.elastic_mouse && !term.mouse_mode)
          ? (x - PADDING) % cell_width > cell_width / 2
          : 0
   };
 }
 
-pos last_pos = {-1, -1, false};
+pos last_pos = {-1, -1, -1, -1, false};
 static LPARAM last_lp = -1;
 static int button_state = 0;
 
@@ -994,7 +1010,7 @@ win_mouse_click(mouse_button b, LPARAM lp)
     res = term_mouse_click(b, mods, p, count);
     last_skipped = false;
   }
-  last_pos = (pos){INT_MIN, INT_MIN, false};
+  last_pos = (pos){INT_MIN, INT_MIN, INT_MIN, INT_MIN, false};
   last_click_pos = p;
   last_time = t;
   last_button = b;
@@ -1045,6 +1061,13 @@ win_mouse_release(mouse_button b, LPARAM lp)
 void
 win_mouse_move(bool nc, LPARAM lp)
 {
+  if (tek_mode == TEKMODE_GIN) {
+    int y = GET_Y_LPARAM(lp) - PADDING - OFFSET;
+    int x = GET_X_LPARAM(lp) - PADDING;
+    tek_move_to(y, x);
+    return;
+  }
+
   if (lp == last_lp)
     return;
 
@@ -1094,10 +1117,10 @@ win_get_locator_info(int *x, int *y, int *buttons, bool by_pixels)
         p.x -= PADDING;
       if (p.x >= term.cols * cell_width)
         p.x = term.cols * cell_width - 1;
-      if (p.y < PADDING)
+      if (p.y < OFFSET + PADDING)
         p.y = 0;
       else
-        p.y -= PADDING;
+        p.y -= OFFSET + PADDING;
       if (p.y >= term.rows * cell_height)
         p.y = term.rows * cell_height - 1;
 
@@ -1308,6 +1331,18 @@ lock_title()
 }
 
 static void
+clear_title()
+{
+  win_set_title("");
+}
+
+static void
+refresh()
+{
+  win_invalidate_all(false);
+}
+
+static void
 super_down(uint key, mod_keys mods)
 {
   super_key = key;
@@ -1442,6 +1477,12 @@ mflags_options()
   return config_wnd ? MF_GRAYED : MF_ENABLED;
 }
 
+static uint
+mflags_tek_mode()
+{
+  return tek_mode ? MF_ENABLED : MF_GRAYED;
+}
+
 // user-definable functions
 static struct function_def cmd_defs[] = {
 #ifdef support_sc_defs
@@ -1482,6 +1523,8 @@ static struct function_def cmd_defs[] = {
 
   {"copy", {IDM_COPY}, mflags_copy},
   {"copy-text", {IDM_COPY_TEXT}, mflags_copy},
+  {"copy-tabs", {IDM_COPY_TABS}, mflags_copy},
+  {"copy-plain", {IDM_COPY_TXT}, mflags_copy},
   {"copy-rtf", {IDM_COPY_RTF}, mflags_copy},
   {"copy-html-text", {IDM_COPY_HTXT}, mflags_copy},
   {"copy-html-format", {IDM_COPY_HFMT}, mflags_copy},
@@ -1493,7 +1536,12 @@ static struct function_def cmd_defs[] = {
   {"clear-scrollback", {IDM_CLRSCRLBCK}, 0},
   {"copy-title", {IDM_COPYTITLE}, 0},
   {"lock-title", {.fct = lock_title}, mflags_lock_title},
+  {"clear-title", {.fct = clear_title}, 0},
   {"reset", {IDM_RESET}, 0},
+  {"tek-reset", {IDM_TEKRESET}, mflags_tek_mode},
+  {"tek-page", {IDM_TEKPAGE}, mflags_tek_mode},
+  {"tek-copy", {IDM_TEKCOPY}, mflags_tek_mode},
+  {"save-image", {IDM_SAVEIMG}, 0},
   {"break", {IDM_BREAK}, 0},
   {"flipscreen", {IDM_FLIPSCREEN}, mflags_flipscreen},
   {"open", {IDM_OPEN}, mflags_open},
@@ -1504,6 +1552,7 @@ static struct function_def cmd_defs[] = {
   {"toggle-vt220", {.fct = toggle_vt220}, mflags_vt220},
   {"toggle-auto-repeat", {.fct = toggle_auto_repeat}, mflags_auto_repeat},
   {"toggle-bidi", {.fct = toggle_bidi}, mflags_bidi},
+  {"refresh", {.fct = refresh}, 0},
 
   {"super", {.fct_key = super_down}, 0},
   {"hyper", {.fct_key = hyper_down}, 0},
@@ -1569,8 +1618,8 @@ static struct {
 static wchar compose_buf[lengthof(composed->kc) + 4];
 static int compose_buflen = 0;
 
-static void
-compose_clear()
+void
+compose_clear(void)
 {
   comp_state = COMP_CLEAR;
   compose_buflen = 0;
@@ -1623,7 +1672,7 @@ vk_name(uint key)
 #endif
 
 #ifdef debug_key
-#define trace_key(tag)	printf(" <-%s\n", tag)
+#define trace_key(tag)	printf(" key(%s)\n", tag)
 #else
 #define trace_key(tag)	(void)0
 #endif
@@ -1706,7 +1755,7 @@ win_key_nullify(uchar vk)
 #define dont_debug_def_keys 1
 
 static int
-pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mods, uint scancode)
+pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mods, mod_keys mod0, uint scancode)
 {
   char * ukey_commands = cs__wcstoutf(key_commands);
   char * cmdp = ukey_commands;
@@ -1717,11 +1766,40 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
   printf("pick_key_function (%s) <%s> %d\n", ukey_commands, tag, n);
 #endif
 
+  // derive modifiers from specification prefix, module their order;
+  // in order to abstract from the order and support flexible configuration,
+  // the modifiers could have been collected separately already instead of 
+  // prefixing them to the tag (before calling pick_key_function) but 
+  // that would have been more substantial redesign; or the prefix could 
+  // be normalized here by sorting; better solution: collect info here
+  mod_keys tagmods(char * k)
+  {
+    mod_keys m = mod0;
+    char * sep = strrchr(k, '+');
+    if (sep)
+      for (; *k && k < sep; k++)
+        switch (*k) {
+          when 'S': m |= MDK_SHIFT;
+          when 'A': m |= MDK_ALT;
+          when 'C': m |= MDK_CTRL;
+          when 'W': m |= MDK_WIN;
+          when 'U': m |= MDK_SUPER;
+          when 'Y': m |= MDK_HYPER;
+        }
+    return m;
+  }
+
+  mod_keys mod_tag = tagmods(tag ?: "");
   char * tag0 = tag ? strchr(tag, '+') : 0;
   if (tag0)
     tag0++;
   else
     tag0 = tag;
+
+#if defined(debug_def_keys) && debug_def_keys > 0
+  printf("key_fun tag <%s> tag0 <%s> mod %X\n", tag ?: "(null)", tag0 ?: "(null)", mod_tag);
+#endif
+
   char * paramp;
   while ((tag || n >= 0) && (paramp = strchr(cmdp, ':'))) {
     *paramp = '\0';
@@ -1730,16 +1808,26 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
     if (sepp)
       *sepp = '\0';
 
+    mod_keys mod_cmd = tagmods(cmdp);
+    char * cmd0 = strrchr(cmdp, '+');
+    if (cmd0)
+      cmd0++;
+    else
+      cmd0 = cmdp;
+
+    if (*cmdp == '*') {
+      mod_cmd = mod_tag;
+      cmd0 = cmdp;
+      cmd0++;
+      if (*cmd0 == '+')
+        cmd0++;
+    }
+
 #if defined(debug_def_keys) && debug_def_keys > 1
-    printf("tag <%s>: cmd <%s> fct <%s>\n", tag, cmdp, paramp);
+    printf("tag <%s>: cmd <%s> cmd0 <%s> mod %X fct <%s>\n", tag, cmdp, cmd0, mod_cmd, paramp);
 #endif
 
-    if (tag ? (*cmdp == '*' ? !strcmp(&cmdp[1], tag0)
-                            : !strcmp(cmdp, tag)
-              )
-            : n == 0
-       )
-    {
+    if (tag ? (mod_cmd == mod_tag && !strcmp(cmd0, tag0)) : n == 0) {
 #if defined(debug_def_keys) && debug_def_keys == 1
       printf("tag <%s>: cmd <%s> fct <%s>\n", tag, cmdp, paramp);
 #endif
@@ -1861,25 +1949,25 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
 void
 user_function(wstring commands, int n)
 {
-  pick_key_function(commands, 0, n, 0, 0, 0);
+  pick_key_function(commands, 0, n, 0, 0, 0, 0);
 }
 
 bool
 win_key_down(WPARAM wp, LPARAM lp)
 {
+  uint scancode = HIWORD(lp) & (KF_EXTENDED | 0xFF);
+  bool extended = HIWORD(lp) & KF_EXTENDED;
+  bool repeat = HIWORD(lp) & KF_REPEAT;
+  uint count = LOWORD(lp);
+
   uint key = wp;
   last_key_down = key;
   last_key_up = 0;
 
   if (comp_state == COMP_ACTIVE)
     comp_state = COMP_PENDING;
-  else if (comp_state == COMP_CLEAR)
+  else if (comp_state == COMP_CLEAR && !repeat)
     comp_state = COMP_NONE;
-
-  uint scancode = HIWORD(lp) & (KF_EXTENDED | 0xFF);
-  bool extended = HIWORD(lp) & KF_EXTENDED;
-  bool repeat = HIWORD(lp) & KF_REPEAT;
-  uint count = LOWORD(lp);
 
 #ifdef debug_virtual_key_codes
   printf("win_key_down %02X %s scan %d ext %d rpt %d/%d other %02X\n", key, vk_name(key), scancode, extended, repeat, count, HIWORD(lp) >> 8);
@@ -2185,6 +2273,23 @@ static LONG last_key_time = 0;
       term.selected = false;
     return true;
   }
+  if (tek_mode == TEKMODE_GIN) {
+    int step = (mods & MDK_SHIFT) ? 40 : (mods & MDK_CTRL) ? 1 : 4;
+    switch (key) {
+      when VK_HOME : tek_move_by(step, -step);
+      when VK_UP   : tek_move_by(step, 0);
+      when VK_PRIOR: tek_move_by(step, step);
+      when VK_LEFT : tek_move_by(0, -step);
+      when VK_CLEAR: tek_move_by(0, 0);
+      when VK_RIGHT: tek_move_by(0, step);
+      when VK_END  : tek_move_by(-step, -step);
+      when VK_DOWN : tek_move_by(-step, 0);
+      when VK_NEXT : tek_move_by(-step, step);
+      otherwise: step = 0;
+    }
+    if (step)
+      return true;
+  }
 
   bool allow_shortcut = true;
 
@@ -2202,6 +2307,7 @@ static LONG last_key_time = 0;
          priority over modifyOtherKeys mode.
        */
       char * tag = 0;
+      mod_keys mod0 = 0;
       int vki = -1;
       for (uint i = 0; i < lengthof(vktab); i++)
         if (key == vktab[i].vkey) {
@@ -2285,17 +2391,26 @@ static LONG last_key_time = 0;
                          win ? "W" : "",
                          super ? "U" : "",
                          hyper ? "Y" : "",
-                         (alt | win) ? "+" : "",
+                         (alt | win | super | hyper) ? "+" : "",
                          keytag);
+            mod0 |= MDK_CTRL | MDK_SHIFT;
             free(keytag);
           }
         }
 #ifdef debug_def_keys
         printf("key %04X <%s>\n", *wbuf, tag);
 #endif
+
+        if (wlen < 0) {
+          // Ugly hack to clear dead key state, a la Michael Kaplan.
+          memset(kbd0, 0, sizeof kbd0);
+          uint scancode = MapVirtualKey(VK_DECIMAL, 0);
+          wchar dummy;
+          while (ToUnicode(VK_DECIMAL, scancode, kbd0, &dummy, 1, 0) < 0);
+        }
       }
       if (tag) {
-        int ret = pick_key_function(cfg.key_commands, tag, 0, key, mods, scancode);
+        int ret = pick_key_function(cfg.key_commands, tag, 0, key, mods, mod0, scancode);
         free(tag);
         if (ret == true)
           return true;
@@ -2623,7 +2738,7 @@ static struct {
         }
 
     // Compose characters
-    if (comp_state) {
+    if (comp_state > 0) {
 #ifdef debug_compose
       printf("comp (%d)", wlen);
       for (int i = 0; i < compose_buflen; i++) printf(" %04X", compose_buf[i]);
@@ -2712,7 +2827,7 @@ static struct {
     wchar wc = undead_keycode();
     if (!wc) {
 #ifdef debug_key
-      printf("modf !wc mods %d shft %d\n", mods, mods & MDK_SHIFT);
+      printf("modf !wc mods %X shft %d\n", mods, mods & MDK_SHIFT);
 #endif
       if (mods & MDK_SHIFT) {
         kbd[VK_SHIFT] = 0;
@@ -2887,11 +3002,13 @@ static struct {
         app_pad_code('M' - '@');
       else if (!extended && term.modify_other_keys && (shift || ctrl))
         other_code('\r');
-      else if (!ctrl)
+#ifdef support_special_key_Enter
+      else if (ctrl)
+        ctrl_ch(CTRL('^'));
+#endif
+      else
         esc_if(alt),
         term.newline_mode ? ch('\r'), ch('\n') : ch(shift ? '\n' : '\r');
-      else
-        ctrl_ch(CTRL('^'));
     when VK_BACK:
       if (!ctrl)
         esc_if(alt), ch(term.backspace_sends_bs ? '\b' : CDEL);
@@ -2927,6 +3044,7 @@ static struct {
       : ctrl_ch(term.escape_sends_fs ? CTRL('\\') : CTRL('['));
     when VK_PAUSE:
       if (!vk_special(ctrl & !extended ? cfg.key_break : cfg.key_pause))
+        // default cfg.key_pause is CTRL(']')
         return false;
     when VK_CANCEL:
       if (!strcmp(cfg.key_break, "_BRK_")) {
@@ -2934,6 +3052,7 @@ static struct {
         return false;
       }
       if (!vk_special(cfg.key_break))
+        // default cfg.key_break is CTRL('\\')
         return false;
     when VK_SNAPSHOT:
       if (!vk_special(cfg.key_prtscreen))
@@ -2991,8 +3110,12 @@ static struct {
     when 'A' ... 'Z' or ' ': {
       bool check_menu = key == VK_SPACE && !term.shortcut_override
                         && cfg.window_shortcuts && alt && !altgr && !ctrl;
+      //// support Ctrl+Shift+AltGr combinations (esp. Ctrl+Shift+@)
+      //bool modaltgr = (mods & ~MDK_ALT) == (cfg.ctrl_exchange_shift ? MDK_CTRL : (MDK_CTRL | MDK_SHIFT));
+      // support Ctrl+AltGr combinations (esp. Ctrl+@ and Ctrl+Shift+@)
+      bool modaltgr = ctrl;
 #ifdef debug_key
-      printf("-- mods %d alt %d altgr %d/%d ctrl %d lctrl %d/%d (modf %d comp %d)\n", mods, alt, altgr, altgr0, ctrl, lctrl, lctrl0, term.modify_other_keys, comp_state);
+      printf("-- mods %X alt %d altgr %d/%d ctrl %d lctrl %d/%d (modf %d comp %d)\n", mods, alt, altgr, altgr0, ctrl, lctrl, lctrl0, term.modify_other_keys, comp_state);
 #endif
       if (allow_shortcut && check_menu) {
         send_syscommand(SC_KEYMENU);
@@ -3000,7 +3123,7 @@ static struct {
       }
       else if (altgr_key())
         trace_key("altgr");
-      else if (!cfg.altgr_is_alt && altgr0 && !term.modify_other_keys)
+      else if (!modaltgr && !cfg.altgr_is_alt && altgr0 && !term.modify_other_keys)
         // prevent AltGr from behaving like Alt
         trace_key("!altgr");
       else if (key != ' ' && alt_code_key(key - 'A' + 0xA))
@@ -3062,6 +3185,8 @@ static struct {
     // we cannot win_update_now here; need to wait for the echo (child_proc)
     kb_input = true;
     //printf("[%ld] win_key sent %02X\n", mtime(), key); kb_trace = key;
+    if (tek_mode == TEKMODE_GIN)
+      tek_send_address();
   }
   else if (comp_state == COMP_PENDING)
     comp_state = COMP_ACTIVE;
@@ -3121,7 +3246,10 @@ win_key_up(WPARAM wp, LPARAM lp)
         (cfg.compose_key == MDK_SHIFT && key == VK_SHIFT) ||
         (cfg.compose_key == MDK_ALT && key == VK_MENU)
        )
-      comp_state = COMP_ACTIVE;
+    {
+      if (comp_state >= 0)
+        comp_state = COMP_ACTIVE;
+    }
   }
   else
     comp_state = COMP_NONE;
@@ -3132,8 +3260,10 @@ win_key_up(WPARAM wp, LPARAM lp)
     if (key == newwin_key) {
       if (is_key_down(VK_SHIFT))
         newwin_shifted = true;
-      if (newwin_shifted || win_is_fullscreen)
+#ifdef control_AltF2_size_via_token
+      if (newwin_shifted /*|| win_is_fullscreen*/)
         clone_size_token = false;
+#endif
 
       newwin_pending = false;
 

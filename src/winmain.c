@@ -1,5 +1,5 @@
 // winmain.c (part of mintty)
-// Copyright 2008-13 Andy Koppe, 2015-2018 Thomas Wolff
+// Copyright 2008-13 Andy Koppe, 2015-2020 Thomas Wolff
 // Based on code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -16,16 +16,19 @@ char * mintty_debug;
 #include "winsearch.h"
 #include "winimg.h"
 #include "jumplist.h"
+#include "wintab.h"
 
 #include "term.h"
 #include "appinfo.h"
 #include "child.h"
 #include "charset.h"
+#include "tek.h"
 
 #include <locale.h>
 #include <getopt.h>
 #if CYGWIN_VERSION_API_MINOR < 74
 #define getopt_long_only getopt_long
+typedef UINT_PTR uintptr_t;
 #endif
 #include <pwd.h>
 
@@ -69,6 +72,9 @@ static int main_argc;
 static bool invoked_from_shortcut = false;
 wstring shortcut = 0;
 static bool invoked_with_appid = false;
+static uint hotkey = 0;
+static mod_keys hotkey_mods = 0;
+static HHOOK kb_hook = 0;
 
 
 //filled by win_adjust_borders:
@@ -89,14 +95,6 @@ static bool disable_poschange = true;
 static int zoom_token = 0;  // for heuristic handling of Shift zoom (#467, #476)
 static bool default_size_token = false;
 bool clipboard_token = false;
-
-// Inter-window actions
-enum {
-  WIN_MINIMIZE = 0,
-  WIN_MAXIMIZE = -1,
-  WIN_TOP = 1,
-  WIN_TITLE = 4,
-};
 
 // Options
 bool title_settable = true;
@@ -145,6 +143,8 @@ typedef struct {
 #include <uxtheme.h>
 
 #endif
+
+#include <shlobj.h>
 
 
 unsigned long
@@ -297,7 +297,10 @@ static HRESULT (WINAPI * pGetProcessDpiAwareness)(HANDLE hprocess, int * value) 
 static HRESULT (WINAPI * pSetProcessDpiAwareness)(int value) = 0;
 static HRESULT (WINAPI * pGetDpiForMonitor)(HMONITOR mon, int type, uint * x, uint * y) = 0;
 
-DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
+//DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
+#ifndef _DPI_AWARENESS_CONTEXTS_
+typedef HANDLE DPI_AWARENESS_CONTEXT;
+#endif
 #define DPI_AWARENESS_CONTEXT_UNAWARE           ((DPI_AWARENESS_CONTEXT)-1)
 #define DPI_AWARENESS_CONTEXT_SYSTEM_AWARE      ((DPI_AWARENESS_CONTEXT)-2)
 #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE ((DPI_AWARENESS_CONTEXT)-3)
@@ -398,11 +401,7 @@ win_set_timer(void (*cb)(void), uint ticks)
 
 #define dont_debug_tabbar
 
-static struct tabinfo {
-  unsigned long tag;
-  HWND wnd;
-  wchar * title;
-} * tabinfo = 0;
+struct tabinfo * tabinfo = 0;
 int ntabinfo = 0;
 
 static HWND
@@ -570,9 +569,11 @@ update_tab_titles()
     }
     return true;
   }
-  if (cfg.geom_sync) {
+  if (sync_level() || win_tabbar_visible()) {
     // update my own list
     refresh_tab_titles(true);
+    // support tabbar
+    win_update_tabbar();
     // tell the others to update their's
     EnumWindows(wnd_enum_tabs, 0);
   }
@@ -613,7 +614,7 @@ win_sys_style(bool focus)
   else
     SetSysColors(lengthof(elements), elements, save);
 #else
-(void)focus;
+  (void)focus;
 #endif
 }
 
@@ -695,6 +696,7 @@ win_set_icon(char * s, int icon_index)
 void
 win_set_title(char *title)
 {
+  //printf("win_set_title settable %d <%s>\n", title_settable, title);
   if (title_settable) {
     wchar wtitle[strlen(title) + 1];
     if (cs_mbstowcs(wtitle, title, lengthof(wtitle)) >= 0) {
@@ -809,7 +811,63 @@ win_restore_title(void)
  *  Switch to next or previous application window in z-order
  */
 
+// support tabbar
+int
+sync_level(void)
+{
+  return max(cfg.geom_sync, cfg.tabbar);
+}
+
+void
+win_post_sync_msg(HWND target, int level)
+{
+  if (sync_level()) {
+    if (win_is_fullscreen)
+      PostMessage(target, WM_USER, 0, WIN_FULLSCREEN);
+    else if (IsZoomed(wnd))
+      PostMessage(target, WM_USER, 0, WIN_MAXIMIZE);
+    else if (level >= 3 && IsIconic(wnd))
+      PostMessage(target, WM_USER, 0, WIN_MINIMIZE);
+    else {
+      RECT r;
+      GetWindowRect(wnd, &r);
+#ifdef debug_tabs
+      printf("switcher %d,%d %d,%d\n", (int)r.left, (int)r.top, (int)(r.right - r.left), (int)(r.bottom - r.top));
+#endif
+      PostMessage(target, WM_USER,
+                  MAKEWPARAM(r.right - r.left, r.bottom - r.top),
+                  MAKELPARAM(r.left, r.top));
+    }
+  }
+}
+
+#ifdef use_init_position
 static void
+win_init_position()
+{
+  BOOL CALLBACK wnd_call_sync(HWND curr_wnd, LPARAM lp)
+  {
+    (void)lp;
+    WINDOWINFO curr_wnd_info;
+    curr_wnd_info.cbSize = sizeof(WINDOWINFO);
+    GetWindowInfo(curr_wnd, &curr_wnd_info);
+    if (class_atom == curr_wnd_info.atomWindowType) {
+      if (curr_wnd != wnd && !IsIconic(curr_wnd)) {
+        PostMessage(curr_wnd, WM_USER, 0, WIN_INIT_POS);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (EnumWindows(wnd_call_sync, (LPARAM)4)) {
+    // all callbacks succeeded
+    win_synctabs(4);
+  }
+}
+#endif
+
+void
 win_to_top(HWND top_wnd)
 {
   // this would block if target window is blocked:
@@ -915,6 +973,10 @@ win_switch(bool back, bool alternate)
 #else
   refresh_tab_titles(false);
   win_to_top(back ? get_prev_tab(alternate) : get_next_tab(alternate));
+  // support tabbar
+  if (sync_level())
+    win_post_sync_msg(back ? get_prev_tab(alternate) : get_next_tab(alternate), sync_level());
+  win_update_tabbar();
 #endif
 }
 
@@ -967,19 +1029,8 @@ win_gotab(uint n)
   win_to_top(tab);
 
   // reposition / resize
-  if (cfg.geom_sync) {
-    if (win_is_fullscreen)
-      PostMessage(tab, WM_USER, 0, WIN_MAXIMIZE);
-    else {
-      RECT r;
-      GetWindowRect(wnd, &r);
-#ifdef debug_tabs
-      printf("[%8p] switcher %d,%d %d,%d\n", wnd, (int)r.left, (int)r.top, (int)(r.right - r.left), (int)(r.bottom - r.top));
-#endif
-      PostMessage(tab, WM_USER,
-                  MAKEWPARAM(r.right - r.left, r.bottom - r.top),
-                  MAKELPARAM(r.left, r.top));
-    }
+  if (sync_level()) {
+    win_post_sync_msg(tab, 0);  // 0: don't minimize
   }
 
   if (tab == wnd)
@@ -1011,20 +1062,7 @@ win_synctabs(int level)
     GetWindowInfo(curr_wnd, &curr_wnd_info);
     if (class_atom == curr_wnd_info.atomWindowType) {
       if (curr_wnd != wnd) {
-        if (win_is_fullscreen)
-          PostMessage(curr_wnd, WM_USER, 0, WIN_MAXIMIZE);
-        else if (level == 3) // minimize
-          PostMessage(curr_wnd, WM_USER, 0, WIN_MINIMIZE);
-        else {
-          RECT r;
-          GetWindowRect(wnd, &r);
-#ifdef debug_tabs
-          printf("[%8p] sync all %d,%d %d,%d\n", wnd, (int)r.left, (int)r.top, (int)(r.right - r.left), (int)(r.bottom - r.top));
-#endif
-          PostMessage(curr_wnd, WM_USER,
-                      MAKEWPARAM(r.right - r.left, r.bottom - r.top),
-                      MAKELPARAM(r.left, r.top));
-        }
+        win_post_sync_msg(curr_wnd, level);
       }
     }
     return true;
@@ -1035,7 +1073,7 @@ win_synctabs(int level)
 #endif
   if (wm_user)
     return;
-  if (cfg.geom_sync >= level)
+  if (sync_level() >= level)
     EnumWindows(wnd_enum_tabs, (LPARAM)level);
 #ifdef debug_tabs
   printf("[%8p] win_synctabs end\n", wnd);
@@ -1350,7 +1388,7 @@ win_get_scrpos(int *xp, int *yp, bool with_borders)
   *yp += fr.top - vy;
   if (with_borders) {
     *xp += GetSystemMetrics(SM_CXSIZEFRAME) + PADDING;
-    *yp += GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CYCAPTION) + PADDING;
+    *yp += GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CYCAPTION) + OFFSET + PADDING;
   }
 }
 
@@ -1383,7 +1421,7 @@ win_get_pixels(int *height_p, int *width_p, bool with_borders)
   else {
     GetClientRect(wnd, &r);
     int sy = win_search_visible() ? SEARCHBAR_HEIGHT : 0;
-    *height_p = r.bottom - r.top - 2 * PADDING - sy
+    *height_p = r.bottom - r.top - 2 * PADDING - OFFSET - sy
               //- extra_height
               ;
     *width_p = r.right - r.left - 2 * PADDING
@@ -1395,12 +1433,34 @@ win_get_pixels(int *height_p, int *width_p, bool with_borders)
 }
 
 void
+term_save_image(void)
+{
+  struct timeval now;
+  gettimeofday(& now, 0);
+  char * copf = save_filename(".png");
+  wchar * copyfn = path_posix_to_win_w(copf);
+  free(copf);
+
+  if (tek_mode)
+    tek_copy(copyfn);  // stored; free'd later
+  else {
+    HDC dc = GetDC(wnd);
+    int height, width;
+    win_get_pixels(&height, &width, false);
+    save_img(dc, 0, OFFSET, 
+                 width + 2 * PADDING, height + 2 * PADDING, copyfn);
+    free(copyfn);
+    ReleaseDC(wnd, dc);
+  }
+}
+
+void
 win_get_screen_chars(int *rows_p, int *cols_p)
 {
   MONITORINFO mi;
   get_my_monitor_info(&mi);
   RECT fr = mi.rcMonitor;
-  *rows_p = (fr.bottom - fr.top - 2 * PADDING) / cell_height;
+  *rows_p = (fr.bottom - fr.top - 2 * PADDING - OFFSET) / cell_height;
   *cols_p = (fr.right - fr.left - 2 * PADDING) / cell_width;
 }
 
@@ -1415,7 +1475,7 @@ win_set_pixels(int height, int width)
   int sy = win_search_visible() ? SEARCHBAR_HEIGHT : 0;
   SetWindowPos(wnd, null, 0, 0,
                width + extra_width + 2 * PADDING,
-               height + extra_height + 2 * PADDING + sy,
+               height + extra_height + OFFSET + 2 * PADDING + sy,
                SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOMOVE | SWP_NOZORDER);
 }
 
@@ -1682,6 +1742,44 @@ win_set_chars(int rows, int cols)
 }
 
 
+void
+taskbar_progress(int i)
+{
+#if CYGWIN_VERSION_API_MINOR >= 74
+static int last_i = 0;
+  if (i == last_i)
+    return;
+  //printf("taskbar_progress %d detect %d\n", i, term.detect_progress);
+
+  ITaskbarList3 * tbl;
+  HRESULT hres = CoCreateInstance(&CLSID_TaskbarList, NULL,
+                                  CLSCTX_INPROC_SERVER,
+                                  &IID_ITaskbarList, (void **) &tbl);
+  if (!SUCCEEDED(hres))
+    return;
+
+  if (i >= 0)
+    hres = tbl->lpVtbl->SetProgressValue(tbl, wnd, i, 100);
+  else if (i == -1)
+    hres = tbl->lpVtbl->SetProgressState(tbl, wnd, TBPF_NORMAL);
+  else if (i == -2)
+    hres = tbl->lpVtbl->SetProgressState(tbl, wnd, TBPF_PAUSED);
+  else if (i == -3)
+    hres = tbl->lpVtbl->SetProgressState(tbl, wnd, TBPF_ERROR);
+  else if (i == -8)
+    hres = tbl->lpVtbl->SetProgressState(tbl, wnd, TBPF_INDETERMINATE);
+  else if (i == -9)
+    hres = tbl->lpVtbl->SetProgressState(tbl, wnd, TBPF_NOPROGRESS);
+
+  last_i = i;
+
+  tbl->lpVtbl->Release(tbl);
+#else
+  (void)i;
+#endif
+}
+
+
 // Clockwork
 int get_tick_count(void) { return GetTickCount(); }
 int cursor_blink_ticks(void) { return GetCaretBlinkTime(); }
@@ -1880,7 +1978,7 @@ win_adjust_borders(int t_width, int t_height)
 {
   term_width = t_width;
   term_height = t_height;
-  RECT cr = {0, 0, term_width + 2 * PADDING, term_height + 2 * PADDING};
+  RECT cr = {0, 0, term_width + 2 * PADDING, term_height + OFFSET + 2 * PADDING};
   RECT wr = cr;
   window_style = WS_OVERLAPPEDWINDOW;
   if (border_style) {
@@ -1976,7 +2074,10 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
   }
   int term_width = client_width - 2 * PADDING;
   int term_height = client_height - 2 * PADDING;
-
+  if (!sync_size_with_font /*&& win_tabbar_visible()*/) {
+    // apparently insignificant if sync_size_with_font && win_is_fullscreen
+    term_height -= OFFSET;
+  }
   if (!sync_size_with_font && win_search_visible()) {
     term_height -= SEARCHBAR_HEIGHT;
   }
@@ -2026,6 +2127,9 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
   win_invalidate_all(false);
 
   win_update_search();
+  // support tabbar
+  win_update_tabbar();
+
   term_schedule_search_update();
   win_schedule_update();
 }
@@ -2175,8 +2279,11 @@ win_font_cs_reconfig(bool font_changed)
 static void
 font_cs_reconfig(bool font_changed)
 {
+  //printf("font_cs_reconfig font_changed %d\n", font_changed);
   if (font_changed) {
     win_init_fonts(cfg.font.size);
+    if (tek_mode)
+      tek_init(false, cfg.tek_glow);
     trace_resize((" (font_cs_reconfig -> win_adapt_term_size)\n"));
     win_adapt_term_size(true, false);
   }
@@ -2456,9 +2563,13 @@ show_iconwarn(wchar * winmsg)
  */
 
 #define dont_debug_messages
+#define dont_debug_only_input_messages
 #define dont_debug_only_focus_messages
 #define dont_debug_only_sizepos_messages
 #define dont_debug_mouse_messages
+#define dont_debug_hook
+
+static void win_global_keyboard_hook(bool on);
 
 static LPARAM
 screentoclient(HWND wnd, LPARAM lp)
@@ -2475,7 +2586,7 @@ in_client_area(HWND wnd, LPARAM lp)
   ScreenToClient(wnd, &wpos);
   int height, width;
   win_get_pixels(&height, &width, false);
-  height += 2 * PADDING;
+  height += OFFSET + 2 * PADDING;
   width += 2 * PADDING;
   return wpos.y >= 0 && wpos.y < height && wpos.x >= 0 && wpos.x < width;
 }
@@ -2505,12 +2616,14 @@ static struct {
      )
 # ifdef debug_only_sizepos_messages
     if (strstr(wm_name, "POSCH") || strstr(wm_name, "SIZ"))
-# else
+# endif
 # ifdef debug_only_focus_messages
     if (strstr(wm_name, "ACTIVATE") || strstr(wm_name, "FOCUS"))
 # endif
+# ifdef debug_only_input_messages
+    if (strstr(wm_name, "MOUSE") || strstr(wm_name, "BUTTON") || strstr(wm_name, "CURSOR") || strstr(wm_name, "KEY"))
 # endif
-    printf("[%d]->%8p %04X %s (%04X %08X)\n", (int)time(0), wnd, message, wm_name, (unsigned)wp, (unsigned)lp);
+    printf("[%d]->%8p %04X %s (%08X %08X)\n", (int)time(0), wnd, message, wm_name, (unsigned)wp, (unsigned)lp);
 #endif
 
   switch (message) {
@@ -2596,22 +2709,48 @@ static struct {
         ShowWindow(wnd, SW_RESTORE);
       }
       else if (!wp && lp == WIN_TITLE) {
-        if (cfg.geom_sync)
+        if (sync_level() || win_tabbar_visible()) {
           refresh_tab_titles(false);
+          // support tabbar
+          win_update_tabbar();
+        }
       }
-      else if (cfg.geom_sync) {
+      else if (sync_level()) {
 #ifdef debug_tabs
         printf("[%8p] switched %d,%d %d,%d\n", wnd, (INT16)LOWORD(lp), (INT16)HIWORD(lp), LOWORD(wp), HIWORD(wp));
 #endif
-        if (!wp) {
-          if (lp == WIN_MINIMIZE && cfg.geom_sync >= 3)
-            ShowWindow(wnd, SW_MINIMIZE);
-          else if (lp == WIN_MAXIMIZE && cfg.geom_sync)
-            win_maximise(2);
+#ifdef use_init_position
+        if (win_tabbar_visible()) {
+          // support tabbar; however, the purpose of this handling is unclear
+          if (!wp && lp == WIN_INIT_POS)
+            win_synctabs(4);
+          else
+            win_handle_sync_msg(wp, lp);
         }
-        else if (cfg.geom_sync) {
+        else
+#endif
+        if (!wp) {
+          if (lp == WIN_MINIMIZE && sync_level() >= 3)
+            ShowWindow(wnd, SW_MINIMIZE);
+          else if (lp == WIN_FULLSCREEN && sync_level())
+            win_maximise(2);
+          else if (lp == WIN_MAXIMIZE && sync_level())
+            win_maximise(1);
+        }
+        else if (sync_level()) {
           if (win_is_fullscreen)
             clear_fullscreen();
+          if (IsZoomed(wnd))
+            win_maximise(0);
+#ifdef attempt_to_restore_tabset_consistently
+          // if a set of synchronized windows (tab set) is minimized, 
+          // one window restored and closed, the others remain minimized;
+          // this is a failed attempt to fix that inconsistency
+          //printf("WM_USER sync iconic %d\n", IsIconic(wnd));
+          if (IsIconic(wnd))
+            ShowWindow(wnd, SW_RESTORE);
+#endif
+
           // (INT16) to handle multi-monitor negative coordinates properly
           SetWindowPos(wnd, null,
                        //GET_X_LPARAM(lp), GET_Y_LPARAM(lp),
@@ -2659,6 +2798,8 @@ static struct {
         when IDM_OPEN: term_open();
         when IDM_COPY: term_copy();
         when IDM_COPY_TEXT: term_copy_as('t');
+        when IDM_COPY_TABS: term_copy_as('T');
+        when IDM_COPY_TXT: term_copy_as('p');
         when IDM_COPY_RTF: term_copy_as('r');
         when IDM_COPY_HTXT: term_copy_as('h');
         when IDM_COPY_HFMT: term_copy_as('f');
@@ -2672,6 +2813,19 @@ static struct {
         when IDM_PASTE: win_paste();
         when IDM_SELALL: term_select_all(); win_update(false);
         when IDM_RESET: winimgs_clear(); term_reset(true); win_update(false);
+          if (tek_mode)
+            tek_reset();
+        when IDM_TEKRESET:
+          if (tek_mode)
+            tek_reset();
+        when IDM_TEKPAGE:
+          if (tek_mode)
+            tek_page();
+        when IDM_TEKCOPY:
+          if (tek_mode)
+            term_save_image();
+        when IDM_SAVEIMG:
+          term_save_image();
         when IDM_DEFSIZE:
           default_size_token = true;
           default_size();
@@ -2704,6 +2858,8 @@ static struct {
 
           term_schedule_search_update();
           win_update_search();
+          // support tabbar
+          win_update_tabbar();
         }
         when IDM_SCROLLBAR:
           term.show_scrollbar = !term.show_scrollbar;
@@ -2715,11 +2871,11 @@ static struct {
           HMONITOR mon = MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST);
           int x, y;
           int moni = search_monitors(&x, &y, mon, true, 0);
-          child_fork(main_argc, main_argv, moni);
+          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT);
         }
         when IDM_NEW_MONI: {
           int moni = lp;
-          child_fork(main_argc, main_argv, moni);
+          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT);
         }
         when IDM_COPYTITLE: win_copy_title();
         when IDM_KEY_DOWN_UP: {
@@ -2782,9 +2938,13 @@ static struct {
             child_printf("\e[%u#d", info.nTrackPos);
           }
         }
-        // flush notification to handle auto-repeat click on scrollbar,
-        // as messages are not dispatched to the application while 
-        // holding the mouse button on the scrollbar
+        // while holding the mouse button on the scrollbar (e.g. dragging), 
+        // messages are not dispatched to the application;
+        // so in order to make any response effective on the screen, 
+        // we need to call the child_proc function here;
+        // additional delay avoids incomplete delivery of such echo (#1033),
+        // 1ms is not sufficient
+        usleep(5555);
         child_proc();
       }
 
@@ -2799,7 +2959,7 @@ static struct {
       ScreenToClient(wnd, &wpos);
       int height, width;
       win_get_pixels(&height, &width, false);
-      height += 2 * PADDING;
+      height += OFFSET + 2 * PADDING;
       width += 2 * PADDING;
       int delta = GET_WHEEL_DELTA_WPARAM(wp);  // positive means up or right
       //printf("%d %d %d %d %d\n", wpos.y, wpos.x, height, width, delta);
@@ -2864,7 +3024,7 @@ static struct {
           return 0;
       }
       else
-      if (wp == HTCAPTION && (cfg.geom_sync > 0 || get_mods() == MDK_CTRL)) {
+      if (wp == HTCAPTION && (sync_level() > 0 || get_mods() == MDK_CTRL)) {
         if (win_title_menu(false))
           return 0;
       }
@@ -3001,6 +3161,8 @@ static struct {
                    RDW_FRAME | RDW_INVALIDATE |
                    RDW_UPDATENOW | RDW_ALLCHILDREN);
       win_update_search();
+      // support tabbar
+      win_update_tabbar();
 
     when WM_FONTCHANGE:
       font_cs_reconfig(true);
@@ -3039,6 +3201,12 @@ static struct {
       }
       win_update_transparency(cfg.opaque_when_focused);
       win_key_reset();
+#ifdef adapt_term_size_on_activate
+      // support tabbar?
+      // this was included in the original patch but its purpose is unclear
+      // and it causes some flickering
+      win_adapt_term_size(false, false);
+#endif
 
     when WM_SETFOCUS:
       trace_resize(("# WM_SETFOCUS VK_SHIFT %02X\n", (uchar)GetKeyState(VK_SHIFT)));
@@ -3086,7 +3254,7 @@ static struct {
       */
       LPRECT r = (LPRECT) lp;
       int width = r->right - r->left - extra_width - 2 * PADDING;
-      int height = r->bottom - r->top - extra_height - 2 * PADDING;
+      int height = r->bottom - r->top - extra_height - 2 * PADDING - OFFSET;
       int cols = max(1, (float)width / cell_width + 0.5);
       int rows = max(1, (float)height / cell_height + 0.5);
 
@@ -3139,11 +3307,21 @@ static struct {
           if (zoom_token < 1)  // accept overriding zoom_token 4
             zoom_token = 1;
 #endif
+        bool ctrl = GetKeyState(VK_CONTROL) & 0x80;
         bool scale_font = (cfg.zoom_font_with_window || zoom_token > 2)
                        && (zoom_token > 0) && (GetKeyState(VK_SHIFT) & 0x80)
-                       && !default_size_token;
+                       && !default_size_token
+                       // override font zooming to support FancyZones
+                       // (#487, microsoft/PowerToys#1050)
+                       && !ctrl
+                       ;
         //printf("WM_SIZE scale_font %d zoom_token %d\n", scale_font, zoom_token);
+        int rows0 = term.rows0, cols0 = term.cols0;
         win_adapt_term_size(false, scale_font);
+        if (wp == SIZE_MAXIMIZED) {
+          term.rows0 = rows0;
+          term.cols0 = cols0;
+        }
         if (zoom_token > 0)
           zoom_token = zoom_token >> 1;
         default_size_token = false;
@@ -3156,6 +3334,7 @@ static struct {
       trace_resize(("# WM_EXITSIZEMOVE (resizing %d) VK_SHIFT %02X\n", resizing, (uchar)GetKeyState(VK_SHIFT)));
       bool shift = GetKeyState(VK_SHIFT) & 0x80;
 
+      //printf("WM_EXITSIZEMOVE resizing %d shift %d\n", resizing, shift);
       if (resizing) {
         resizing = false;
         win_destroy_tip();
@@ -3169,18 +3348,30 @@ static struct {
     when WM_MOVE:
       // enable coupled moving of window tabs on Win+Shift moving;
       // (#600#issuecomment-366643426, if SessionGeomSync ≥ 2);
-      // avoid mutual repositioning (endless flickering)
-      if (!moving)
+      // avoid mutual repositioning (endless flickering);
+      // as an additional condition, position synchronization shall 
+      // only be done if the window has the focus; otherwise this 
+      // has bad impact when a window is (tried to be) restored 
+      // after the window set was minimized; the taskbar icons 
+      // would inconsistently be disabled except one, and after closing 
+      // windows, remaining ones would not be restored at all anymore, 
+      // also the window title sometimes appeared mysteriously corrupted
+      //printf("WM_MOVE moving %d focus %d\n", moving, GetFocus() == wnd);
+      if (!moving && GetFocus() == wnd)
         win_synctabs(2);
       moving = false;
+
+#define WP ((WINDOWPOS *) lp)
+
+    when WM_WINDOWPOSCHANGING:
+      trace_resize(("# WM_WINDOWPOSCHANGING %3X (resizing %d) %d %d @ %d %d\n", WP->flags, resizing, WP->cy, WP->cx, WP->y, WP->x));
 
     when WM_WINDOWPOSCHANGED: {
       if (disable_poschange)
         // avoid premature Window size adaptation (#649?)
         break;
 
-#     define WP ((WINDOWPOS *) lp)
-      trace_resize(("# WM_WINDOWPOSCHANGED (resizing %d) %d %d @ %d %d\n", resizing, WP->cy, WP->cx, WP->y, WP->x));
+      trace_resize(("# WM_WINDOWPOSCHANGED %3X (resizing %d) %d %d @ %d %d\n", WP->flags, resizing, WP->cy, WP->cx, WP->y, WP->x));
       if (per_monitor_dpi_aware == DPI_AWAREV1) {
         // not necessary for DPI handling V2
         bool dpi_changed = true;
@@ -3319,6 +3510,25 @@ static struct {
       else
         return result;
     }
+
+    when WM_SETHOTKEY:
+#ifdef debug_hook
+      show_info(asform("WM_SETHOTKEY %X %02X", wp >> 8, wp & 0xFF));
+#endif
+      if (wp & 0xFF) {
+        // Set up implicit startup hotkey as defined via Windows shortcut
+        if (!hotkey)
+          win_global_keyboard_hook(true);
+        hotkey = wp & 0xFF;
+        ushort mods = wp >> 8;
+        hotkey_mods = !!(mods & HOTKEYF_SHIFT) * MDK_SHIFT
+                    | !!(mods & HOTKEYF_ALT) * MDK_ALT
+                    | !!(mods & HOTKEYF_CONTROL) * MDK_CTRL;
+      }
+      else {
+        hotkey = 0;
+        win_global_keyboard_hook(false);
+      }
   }
 
  /*
@@ -3328,11 +3538,12 @@ static struct {
   return DefWindowProcW(wnd, message, wp, lp);
 }
 
-#ifdef hook_keyboard
-
 static LRESULT CALLBACK
 hookprockbll(int nCode, WPARAM wParam, LPARAM lParam)
 {
+  if (term.shortcut_override)
+    return CallNextHookEx(0, nCode, wParam, lParam);
+
   LPKBDLLHOOKSTRUCT kbdll = (LPKBDLLHOOKSTRUCT)lParam;
   uint key = kbdll->vkCode;
 #ifdef debug_hook
@@ -3340,6 +3551,39 @@ hookprockbll(int nCode, WPARAM wParam, LPARAM lParam)
          nCode, (long)wParam, 
          key, (uint)kbdll->scanCode, (uint)kbdll->flags, (ulong)kbdll->dwExtraInfo);
 #endif
+
+  bool is_hooked_hotkey(WPARAM wParam, uint key, mod_keys mods)
+  {
+#ifdef debug_hook
+    show_info(asform("key %02X mods %02X hooked %02X mods %02X", key, mods, hotkey, hotkey_mods));
+#endif
+    return wParam == WM_KEYDOWN &&
+      // hotkey/modifiers could be
+      // * derived from invocation shortcut (implemented)
+      // * configurable explicitly (not implemented)
+      (key == hotkey && mods == hotkey_mods);
+  }
+  if (is_hooked_hotkey(wParam, key, get_mods())) {
+    if (GetFocus() == wnd && IsWindowVisible(wnd)) {
+      ShowWindow(wnd, SW_SHOW);  // in case it was started with -w hide
+      // put the window away
+      //ShowWindow(wnd, SW_HIDE);
+      // rather minimize and keep icon in taskbar (#1035)
+      ShowWindow(wnd, SW_MINIMIZE);
+    }
+    else {
+      // These do not work:
+      //win_to_top(wnd);
+      //win_set_zorder(true);
+      // Need to minimize first:
+      ShowWindow(wnd, SW_MINIMIZE);
+      ShowWindow(wnd, SW_RESTORE);
+    }
+    // Return to prevent multiple mintty windows from flickering
+    // Return 1 to swallow hotkey
+    return 1;
+  }
+
   bool hook = false;
 #ifdef check_swallow
   // this should be factored out to wininput.c, if ever to be used
@@ -3366,16 +3610,24 @@ hookprockbll(int nCode, WPARAM wParam, LPARAM lParam)
       return 1;
     }
   }
+
   return CallNextHookEx(0, nCode, wParam, lParam);
 }
 
-void
+static void
 hook_windows(int id, HOOKPROC hookproc, bool global)
 {
-  SetWindowsHookExW(id, hookproc, 0, global ? 0 : GetCurrentThreadId());
+  kb_hook = SetWindowsHookExW(id, hookproc, 0, global ? 0 : GetCurrentThreadId());
 }
 
-#endif
+static void
+win_global_keyboard_hook(bool on)
+{
+  if (on)
+    hook_windows(WH_KEYBOARD_LL, hookprockbll, true);
+  else if (kb_hook)
+    UnhookWindowsHookEx(kb_hook);
+}
 
 bool
 win_get_ime(void)
@@ -3405,7 +3657,7 @@ report_pos(void)
     int cols = term.cols;
     int rows = term.rows;
     cols = (placement.rcNormalPosition.right - placement.rcNormalPosition.left - norm_extra_width - 2 * PADDING) / cell_width;
-    rows = (placement.rcNormalPosition.bottom - placement.rcNormalPosition.top - norm_extra_height - 2 * PADDING) / cell_height;
+    rows = (placement.rcNormalPosition.bottom - placement.rcNormalPosition.top - norm_extra_height - 2 * PADDING - OFFSET) / cell_height;
 
     printf("%s", main_argv[0]);
     printf(*report_geom == 'o' ? " -o Columns=%d -o Rows=%d" : " -s %d,%d", cols, rows);
@@ -3427,6 +3679,14 @@ void
 exit_mintty(void)
 {
   report_pos();
+
+  // bring next window to top
+  if (sync_level()) {
+    HWND wnd_other = FindWindowExW(NULL, wnd,
+        (LPCWSTR)(uintptr_t)class_atom, NULL);
+    if (wnd_other)
+      win_to_top(wnd_other);
+  }
 
   // could there be a lag until the window is actually destroyed?
   // so we'd have to add a safeguard here...
@@ -3450,8 +3710,6 @@ typedef void * voidrefref;
 #define STARTF_TITLEISLINKNAME 0x00000800
 #define STARTF_TITLEISAPPID 0x00001000
 #endif
-
-#include <shlobj.h>
 
 static wchar *
 get_shortcut_icon_location(wchar * iconfile, bool * wdpresent)
@@ -3711,7 +3969,22 @@ getlxssinfo(bool list, wstring wslname, uint * wsl_ver,
       }
     }
     else {  // legacy
-      rootfs = wcsdup(bp);
+      rootfs = newn(wchar, wcslen(bp) + 8);
+      wcscpy(rootfs, bp);
+      wcscat(rootfs, W("\\rootfs"));
+
+      char * rootdir = path_win_w_to_posix(rootfs);
+      struct stat fstat_buf;
+      if (stat (rootdir, & fstat_buf) == 0 && S_ISDIR (fstat_buf.st_mode)) {
+        // non-app or imported deployment
+      }
+      else {
+        // legacy Bash on Windows
+        free(rootfs);
+        rootfs = wcsdup(bp);
+      }
+      free(rootdir);
+
       icon = legacy_icon();
     }
 
@@ -3743,10 +4016,22 @@ getlxssinfo(bool list, wstring wslname, uint * wsl_ver,
       printf("-- icon %ls\n", icon);
     }
 
+    *wsl_icon = icon;
     *wsl_ver = 1 + ((getregval(lxss, guid, W("Flags")) >> 3) & 1);
     *wsl_guid = cs__wcstoutf(guid);
-    *wsl_rootfs = rootfs;
-    *wsl_icon = icon;
+    char * rootdir = path_win_w_to_posix(rootfs);
+    struct stat fstat_buf;
+    if (stat (rootdir, & fstat_buf) == 0 && S_ISDIR (fstat_buf.st_mode)) {
+      *wsl_rootfs = rootfs;
+    }
+    else {
+      free(rootfs);
+      rootfs = newn(wchar, wcslen(wslname) + 8);
+      wcscpy(rootfs, W("\\\\wsl$\\"));
+      wcscat(rootfs, wslname);
+      *wsl_rootfs = rootfs;
+    }
+    free(rootdir);
     return 0;
   }
 
@@ -3818,6 +4103,7 @@ getlxssinfo(bool list, wstring wslname, uint * wsl_ver,
   }
 }
 
+#ifdef not_used
 bool
 wexists(wstring fn)
 {
@@ -3827,6 +4113,7 @@ wexists(wstring fn)
   FindClose(hFind);
   return ok;
 }
+#endif
 
 bool
 waccess(wstring fn, int amode)
@@ -3855,10 +4142,14 @@ select_WSL(char * wsl)
       else
         delete(wsl_icon);
     }
-    // set implicit options --wsl -o Locale=C -o Charset=UTF-8
+    // set implicit option --wsl
     support_wsl = true;
-    set_arg_option("Locale", strdup("C"));
-    set_arg_option("Charset", strdup("UTF-8"));
+    if (cfg.old_locale) {
+      // enforce UTF-8 for WSL:
+      // also set implicit options -o Locale=C -o Charset=UTF-8
+      set_arg_option("Locale", strdup("C"));
+      set_arg_option("Charset", strdup("UTF-8"));
+    }
     if (0 == wcscmp(cfg.app_id, W("@")))
       // setting an implicit AppID fixes mintty/wsltty#96 but causes #784
       // so an explicit config value derives AppID from wsl distro name
@@ -4202,6 +4493,7 @@ opts[] = {
   {"size",       required_argument, 0, 's'},
   {"title",      required_argument, 0, 't'},
   {"Title",      required_argument, 0, 'T'},
+  {"tabbar",     optional_argument, 0, ''},
   {"Border",     required_argument, 0, 'B'},
   {"Report",     required_argument, 0, 'R'},
   {"Reportpos",  required_argument, 0, 'R'},  // compatibility variant
@@ -4501,6 +4793,9 @@ main(int argc, char *argv[])
       when 'T':
         set_arg_option("Title", optarg);
         title_settable = false;
+      when '':
+        set_arg_option("TabBar", strdup("1"));
+        set_arg_option("SessionGeomSync", optarg ?: strdup("2"));
       when 'B':
         border_style = strdup(optarg);
       when 'R':
@@ -4697,6 +4992,9 @@ main(int argc, char *argv[])
     run_max = atoi(getenv("MINTTY_MAXIMIZE"));
     unsetenv("MINTTY_MAXIMIZE");
   }
+  if (getenv("MINTTY_TABBAR")) {
+    cfg.tabbar = max(cfg.tabbar, atoi(getenv("MINTTY_TABBAR")));
+  }
 
   // if started from console, try to detach from caller's terminal (~daemonizing)
   // in order to not suppress signals
@@ -4755,6 +5053,7 @@ main(int argc, char *argv[])
 #ifdef wslbridge2
     argc += start_home;
 #endif
+    argc += 6;  // LANG, LC_CTYPE, LC_ALL
 
     char ** new_argv = newn(char *, argc + 8 + start_home + (wsltty_appx ? 2 : 0));
     char ** pargv = new_argv;
@@ -4792,6 +5091,14 @@ main(int argc, char *argv[])
 #endif
     *pargv++ = "-e";
     *pargv++ = "APPDATA";
+    if (!cfg.old_locale) {
+      *pargv++ = "-e";
+      *pargv++ = "LANG";
+      *pargv++ = "-e";
+      *pargv++ = "LC_CTYPE";
+      *pargv++ = "-e";
+      *pargv++ = "LC_ALL";
+    }
     if (start_home) {
 #ifdef wslbridge2
       *pargv++ = "--wsldir";
@@ -5017,6 +5324,19 @@ main(int argc, char *argv[])
   });
 
 
+  // Provide temporary fonts
+static int dynfonts = 0;
+  void add_font(wchar * fn)
+  {
+    int n = AddFontResourceExW(fn, FR_PRIVATE, 0);
+    if (n)
+      dynfonts += n;
+    else
+      printf("Failed to add font %ls\n", fn);
+  }
+  handle_file_resources(W("fonts/*"), add_font);
+  //printf("Added %d fonts\n", dynfonts);
+
   // Initialise the fonts, thus also determining their width and height.
   win_init_fonts(cfg.font.size);
 
@@ -5033,6 +5353,7 @@ main(int argc, char *argv[])
     pGetDpiForMonitor(mon, 0, &x, &dpi);  // MDT_EFFECTIVE_DPI
   }
 #endif
+  win_prepare_tabbar();
   win_adjust_borders(cell_width * term_cols, cell_height * term_rows);
 
   // Having x == CW_USEDEFAULT but not y still triggers default positioning,
@@ -5179,6 +5500,7 @@ main(int argc, char *argv[])
       */
       if (dpi != 96) {
         font_cs_reconfig(true);
+        win_prepare_tabbar();
         trace_winsize("dpi > font_cs_reconfig");
         if (maxwidth || maxheight) {
           // changed terminal size not yet recorded, 
@@ -5201,7 +5523,8 @@ main(int argc, char *argv[])
           }
         }
         else {
-          win_set_chars(cfg.rows, cfg.cols);
+          // consider preset size (term_)
+          win_set_chars(term_rows ?: cfg.rows, term_cols ?: cfg.cols);
           trace_winsize("dpi > win_set_chars");
         }
       }
@@ -5221,6 +5544,30 @@ main(int argc, char *argv[])
     SetWindowPos(wnd, null, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     trace_winsize("border_style");
+  }
+
+  if (cfg.tabbar && !getenv("MINTTY_DX") && !getenv("MINTTY_DY")) {
+    HWND wnd_other = FindWindowExW(NULL, wnd,
+        (LPCWSTR)(uintptr_t)class_atom, NULL);
+    if (wnd_other && FindWindowExA(wnd_other, NULL, TABBARCLASS, NULL)) {
+      if (IsZoomed(wnd_other)) {
+        if ((GetWindowLong(wnd_other, GWL_STYLE) & WS_THICKFRAME) == 0) {
+          setenvi("MINTTY_DX", 0);
+          setenvi("MINTTY_DY", 0);
+        }
+        else {
+          run_max = 1;
+        }
+      }
+      else {
+        RECT r;
+        GetWindowRect(wnd_other, &r);
+        setenvi("MINTTY_X", r.left);
+        setenvi("MINTTY_Y", r.top);
+        setenvi("MINTTY_DX", r.right - r.left);
+        setenvi("MINTTY_DY", r.bottom - r.top);
+      }
+    }
   }
 
   {
@@ -5247,7 +5594,7 @@ main(int argc, char *argv[])
       unsetenv("MINTTY_DY");
       si++;
     }
-    if (cfg.geom_sync) {
+    if (sync_level()) {
 #ifdef debug_tabs
       printf("[%8p] launched %d,%d %d,%d\n", wnd, sx, sy, sdx, sdy);
 #endif
@@ -5328,13 +5675,6 @@ main(int argc, char *argv[])
     argv, &(struct winsize){term_rows, term_cols, term_width, term_height}
   );
 
-  // Finally show the window.
-  ShowWindow(wnd, show_cmd);
-  SetFocus(wnd);
-  // Cloning fullscreen window
-  if (run_max == 2)
-    win_maximise(2);
-
   // Set up clipboard notifications.
   HRESULT (WINAPI * pAddClipboardFormatListener)(HWND) =
     load_library_func("user32.dll", "AddClipboardFormatListener");
@@ -5344,12 +5684,39 @@ main(int argc, char *argv[])
       pAddClipboardFormatListener(wnd);
   }
 
+  // Set up tabbar
+  if (cfg.tabbar) {
+    win_open_tabbar();
+  }
+
+  // Finally show the window.
+  ShowWindow(wnd, show_cmd);
+  SetFocus(wnd);
+  // Cloning fullscreen window
+  if (run_max == 2)
+    win_maximise(2);
+
+  // Save the non-maximised window size
+  term.rows0 = term_rows;
+  term.cols0 = term_cols;
+
+#ifdef use_init_position
+  if (cfg.tabbar)
+    // support tabbar; however, the purpose of this handling is unclear
+    win_init_position();
+  else
+    win_synctabs(4);
+#else
   win_synctabs(4);
+#endif
+
   update_tab_titles();
 
-#ifdef hook_keyboard
-  // Install keyboard hook.
-  hook_windows(WH_KEYBOARD_LL, hookprockbll, true);
+#ifdef always_hook_keyboard
+  // Install keyboard hook if we configure an explicit startup hotkey...
+  // not implemented
+  if (hotkey_configured ...)
+    win_global_keyboard_hook(true);
 #endif
 
   if (report_winpid) {

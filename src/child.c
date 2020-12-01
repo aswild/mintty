@@ -40,8 +40,6 @@ int forkpty(int *, char *, struct termios *, struct winsize *);
 // http://www.tldp.org/LDP/abs/html/exitcodes.html
 #define mexit 126
 
-bool clone_size_token = true;
-
 string child_dir = null;
 
 static pid_t pid;
@@ -221,7 +219,6 @@ void
 child_create(char *argv[], struct winsize *winp)
 {
   trace_dir(asform("child_create: %s", getcwd(malloc(MAX_PATH), MAX_PATH)));
-  string lang = cs_lang();
 
   // xterm and urxvt ignore SIGHUP, so let's do the same.
   signal(SIGHUP, SIG_IGN);
@@ -288,15 +285,24 @@ child_create(char *argv[], struct winsize *winp)
     setenv("TERM_PROGRAM", APPNAME, true);
     setenv("TERM_PROGRAM_VERSION", VERSION, true);
 
-    if (lang) {
-      unsetenv("LC_ALL");
-      unsetenv("LC_COLLATE");
-      unsetenv("LC_CTYPE");
-      unsetenv("LC_MONETARY");
-      unsetenv("LC_NUMERIC");
-      unsetenv("LC_TIME");
-      unsetenv("LC_MESSAGES");
-      setenv("LANG", lang, true);
+    // If option Locale is used, set locale variables?
+    // https://github.com/mintty/mintty/issues/116#issuecomment-108888265
+    // Variables are now set in update_locale() which sets one of 
+    // LC_ALL or LC_CTYPE depending on previous setting of 
+    // LC_ALL or LC_CTYPE or LANG, stripping @cjk modifiers for WSL.
+    if (cfg.old_locale) {
+      //string lang = cs_lang();
+      string lang = cs_lang() ? cs_get_locale() : 0;
+      if (lang) {
+        unsetenv("LC_ALL");
+        unsetenv("LC_COLLATE");
+        unsetenv("LC_CTYPE");
+        unsetenv("LC_MONETARY");
+        unsetenv("LC_NUMERIC");
+        unsetenv("LC_TIME");
+        unsetenv("LC_MESSAGES");
+        setenv("LANG", lang, true);
+      }
     }
 
     // Terminal line settings
@@ -1012,12 +1018,12 @@ setenvi(char * env, int val)
 static void
 setup_sync()
 {
-  if (cfg.geom_sync) {
+  if (sync_level()) {
     if (win_is_fullscreen) {
       setenvi("MINTTY_DX", 0);
       setenvi("MINTTY_DY", 0);
     }
-    else {
+    else if (!IsZoomed(wnd)) {
       RECT r;
       GetWindowRect(wnd, &r);
       setenvi("MINTTY_X", r.left);
@@ -1025,6 +1031,8 @@ setup_sync()
       setenvi("MINTTY_DX", r.right - r.left);
       setenvi("MINTTY_DY", r.bottom - r.top);
     }
+    if (cfg.tabbar)
+      setenvi("MINTTY_TABBAR", cfg.tabbar);
   }
 }
 
@@ -1032,28 +1040,30 @@ setup_sync()
   Called from Alt+F2 (or session launcher via child_launch).
  */
 static void
-do_child_fork(int argc, char *argv[], int moni, bool launch)
+do_child_fork(int argc, char *argv[], int moni, bool launch, bool config_size)
 {
   trace_dir(asform("do_child_fork: %s", getcwd(malloc(MAX_PATH), MAX_PATH)));
   setup_sync();
 
+#ifdef control_AltF2_size_via_token
   void reset_fork_mode()
   {
     clone_size_token = true;
   }
+#endif
 
   pid_t clone = fork();
 
   if (cfg.daemonize) {
     if (clone < 0) {
       childerror(_("Error: Could not fork child daemon"), true, errno, 0);
-      reset_fork_mode();
+      //reset_fork_mode();
       return;  // assume next fork will fail too
     }
     if (clone > 0) {  // parent waits for intermediate child
       int status;
       waitpid(clone, &status, 0);
-      reset_fork_mode();
+      //reset_fork_mode();
       return;
     }
 
@@ -1137,9 +1147,14 @@ do_child_fork(int argc, char *argv[], int moni, bool launch)
 #endif
 
     // provide environment to clone size
-    if (clone_size_token) {
-      setenvi("MINTTY_ROWS", term.rows);
-      setenvi("MINTTY_COLS", term.cols);
+    if (!config_size) {
+      setenvi("MINTTY_ROWS", term.rows0);
+      setenvi("MINTTY_COLS", term.cols0);
+      // provide environment to maximise window
+      if (win_is_fullscreen)
+        setenvi("MINTTY_MAXIMIZE", 2);
+      else if (IsZoomed(wnd))
+        setenvi("MINTTY_MAXIMIZE", 1);
     }
     // provide environment to select monitor
     if (moni > 0)
@@ -1147,11 +1162,6 @@ do_child_fork(int argc, char *argv[], int moni, bool launch)
     // propagate shortcut-inherited icon
     if (icon_is_from_shortcut)
       setenv("MINTTY_ICON", cs__wcstoutf(cfg.icon), true);
-    // provide environment to maximise window
-    if (win_is_fullscreen)
-      setenvi("MINTTY_MAXIMIZE", 2);
-    else if (IsZoomed(wnd))
-      setenvi("MINTTY_MAXIMIZE", 1);
 
     //setenv("MINTTY_CHILD", "1", true);
 
@@ -1179,16 +1189,16 @@ do_child_fork(int argc, char *argv[], int moni, bool launch)
 #endif
     exit(mexit);
   }
-  reset_fork_mode();
+  //reset_fork_mode();
 }
 
 /*
   Called from Alt+F2.
  */
 void
-child_fork(int argc, char *argv[], int moni)
+child_fork(int argc, char *argv[], int moni, bool config_size)
 {
-  do_child_fork(argc, argv, moni, false);
+  do_child_fork(argc, argv, moni, false, config_size);
 }
 
 /*
@@ -1231,7 +1241,7 @@ child_launch(int n, int argc, char * argv[], int moni)
           }
         }
         new_argv[argc] = 0;
-        do_child_fork(argc, new_argv, moni, true);
+        do_child_fork(argc, new_argv, moni, true, true);
         free(new_argv);
         break;
       }

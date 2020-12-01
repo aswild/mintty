@@ -1,5 +1,5 @@
 // term.c (part of mintty)
-// Copyright 2008-12 Andy Koppe, 2016-2018 Thomas Wolff
+// Copyright 2008-12 Andy Koppe, 2016-2020 Thomas Wolff
 // Adapted from code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -396,6 +396,9 @@ term_reset(bool full)
   term_schedule_tblink2();
   term_schedule_cblink();
   term_clear_scrollback();
+
+  term.detect_progress = cfg.progress_bar;
+
   term_schedule_search_update();
 
   win_reset_colours();
@@ -1275,6 +1278,8 @@ term_check_boundary(int x, int y)
 
 /*
    Scroll the actual display (window contents and its cache).
+   NOTE: This was an incomplete and initially unsuccessful attempt 
+   to implement smooth scrolling (DECSCLM, DECSET 4).
  */
 static int dispscroll_top, dispscroll_bot, dispscroll_lines = 0;
 
@@ -2199,6 +2204,22 @@ term_paint(void)
       if (tchar == 0x2010)
         tchar = '-';
 
+      if (cfg.printable_controls) {
+        if (tchar >= 0x80 && tchar < 0xA0)
+          tchar = 0x2592;  // ⌷⎕░▒▓
+        else if (tchar < ' ' && cfg.printable_controls > 1)
+          tchar = 0x2591;  // ⌷⎕░▒▓
+        if (tchar >= 0x2580 && tchar <= 0x259F) {
+          // Block Elements (U+2580-U+259F)
+          // ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔▕▖▗▘▙▚▛▜▝▞▟
+          tattr.attr |= ((cattrflags)(tchar & 0xF)) << ATTR_GRAPH_SHIFT;
+          uchar gcode = 14 + ((tchar >> 4) & 1);
+          // extend graph encoding with unused font numbers
+          tattr.attr &= ~FONTFAM_MASK;
+          tattr.attr |= (cattrflags)gcode << ATTR_FONTFAM_SHIFT;
+        }
+      }
+
       if (j < term.cols - 1 && d[1].chr == UCSWIDE)
         tattr.attr |= TATTR_WIDE;
 
@@ -2475,6 +2496,35 @@ term_paint(void)
         printf("INVALID c %d\n", curs_x),
 #endif
         dispchars[curs_x].attr.attr |= ATTR_INVALID;
+
+      if (term.detect_progress) {
+        int j = term.cols;
+        while (--j > 0) {
+          if (chars[j].chr == '%' ||
+              (!(chars[j].attr.attr & TATTR_CLEAR)
+               // note: TATTR_CLEAR is already cleared in newchars
+               && !wcschr(W(")"), chars[j].chr)
+              )
+             )
+            break;
+        }
+        int p = 0;
+        if (chars[j].chr == '%') {
+          int f = 1;
+          while (--j >= 0) {
+            if (chars[j].chr >= '0' && chars[j].chr <= '9') {
+              p += f * (chars[j].chr - '0');
+              f *= 10;
+            }
+            else {
+              j++;
+              break;
+            }
+          }
+        }
+        if (p <= 100)
+          taskbar_progress(p);
+      }
     }
 
     //trace_line("loopn", newchars);

@@ -1,9 +1,133 @@
+### 3.4.3 (11 November 2020) ###
+
+Character encoding
+  * Fixed locale setup interworking with bash startup profile (~#1050).
+  * Handling empty startup locale to be consistent with system-derived shell locale (~#1050).
+
+### 3.4.2 (4 November 2020) ###
+
+Terminal features
+  * Progress bar control sequences CSI %q or OSC 9;4 (experimental).
+  * Optional automatic progress detection (mintty/wsltty#202).
+  * Media Copy sequence CSI 12 i to dump screen as image (#1051).
+  * HTML screen dumps do not visualize Space and TAB.
+  * New DECSCUSR (CSI SP q) values 7, 8 to set cursor style box (mintty/wsltty#204).
+  * Fixed horizontal position of emojis in double-width lines.
+
+Window handling / Tabbar (thanks to K. Takata)
+  * Bring other tab to top when closing (#1054).
+
+Character encoding
+  * Fixed locale setup in case of empty locale (#1050, thanks to K. Takata).
+  * Always set LANG if option Locale is used (#1050).
+
+Configuration
+  * New option ProgressBar (mintty/wsltty#202).
+  * New option value CursorType=box (config file/command line only, mintty/wsltty#204).
+
+### 3.4.1 (24 October 2020) ###
+
+Terminal features
+  * Fixed injected false visual tab indication (#1036).
+  * Escape sequences for stack of colours (XTPUSH/POP/REPORTCOLORS, xterm 357).
+  * Support multiple controls in OSC 4, 5, 10..19, 104, 105 (#1038, xterm).
+
+Window handling / Tabbar (thanks to K. Takata)
+  * Align position of new tabbar-enabled window with previous one (#1044).
+  * Tweaked tabbar handling for speed-up of title changes (#1043).
+  * Fixed startup position of maximised window (#1045).
+  * Fixed Alt+Shift+F2 and Alt+F2 behaviour on a maximised window (#1045).
+
+Font installation / Portable application
+  * Support dynamic installation of temporary fonts (#901, #1004).
+
+Window handling
+  * Clipboard selection can optionally contain TAB characters (#1037).
+  * Click-open link still after moving the mouse over the link area (#1039).
+  * Keep hotkey-started window in taskbar (#1035).
+  * Override font zooming also with Ctrl, to support FancyZones (#487).
+  * Fixed CopyAsHTML config glitch (#1042).
+
+Character encoding
+  * Revised locale handling and setting, especially with option Locale.
+  * Revised character width determination and setting, especially with option Locale.
+  * Revised setup of GB18030 encoding support.
+  * New option to enforce narrow ambiguous-width.
+  * Do not clear/overwrite all locale categories anymore by option Locale.
+  * Do not enforce UTF-8 encoding with WSL anymore.
+  * Propagate locale settings with option --WSL (mintty/wsltty#259).
+  * Do not enforce UTF-8 for WSL anymore.
+
+Configuration
+  * New option CopyTab (#1037).
+  * New option value Charwidth=ambig-narrow.
+  * New option OldLocale.
+
+### 3.4.0 (19 September 2020) ###
+
+Window handling / Tabs
+  * Optional tabbar for interactive virtual tabs session switching (#944).
+  * Fixed maximised/fullscreen synchronisation among sessions/tabs.
+  * Fixed state inconsistencies after minimizing synchronized windows (#699, ~#944).
+
+Window handling
+  * Fixed offset of saved image.
+  * Fixed themes list and interactive theme switching feedback (mintty/wsltty#251).
+  * Support system hotkey for activation in "Quake mode" (#1029).
+
+Mouse handling
+  * If ZoomMouse=false, Ctrl+mouse-wheel scrolls by 1 line per notch (#1032).
+  * Configurable number of scroll lines per mouse wheel notch (#1032).
+  * Support mousewheel reporting (e.g. for shell history scrolling) in normal screen mode (~#1032).
+  * Nudge complete delivery of application scrollbar sequences by delay (#1033).
+
+Terminal features
+  * Mouse mode 1016 with pixel coordinates (xterm 360).
+  * XTPUSHSGR foreground/background changed to 30/31 (xterm 357).
+  * Align OSC response terminator (ST or BEL) with request terminator (#1028, xterm).
+  * Fixed invalid IME cursor colour after OSC 112 "Reset cursor colour" (#942).
+
+Configuration
+  * New option TabBar and command-line option --tabbar (#944).
+  * New user-definable functions clear-title, refresh.
+  * New option LinesPerMouseWheelNotch (#1032).
+  * Option KeyFunctions: flexible specification of modifiers (in any order) (#851).
+
+### 3.3.0 (6 August 2020) ###
+
+Vector graphics
+  * Tektronix 4014 terminal vector graphics terminal emulation (#896).
+
+Keyboard handling
+  * Cancel compose key on mouse actions, to prevent surprising character composition.
+  * Fixed special key assignment (Ctrl+Shift+^) spoiled by KeyFunctions (since 2.9.1).
+  * Fixed special key assignment (Ctrl+Shift+@ with AltGr) spoiled by AltGrIsAlsoAlt prevention (since 3.1.5).
+  * Fixed Ctrl+AltGr+letter combinations.
+  * Fixed key modifier matching for KeyFunctions in some cases of Super/Hyper.
+  * Dropped Ctrl+Enter special key assignments.
+  * Deprecated Shift+Escape/Break/Pause.
+
+Window handling
+  * Prevent mouse wheel double interpretation, also fixing speed issues (mintty/wsltty#238).
+  * Handle proper link attributes when screen is scrolled (#1021).
+  * Image saving feature for terminal contents (png format), DEC and Tek.
+  * Fixed Shift+Alt+F2 size control on maximised/fullscreen windows (#633).
+  * Fixed Alt+F2 on normal window to clone current size (broken since 2.4.3).
+  * Tweak click-opening WSL files (mintty/wsltty#115).
+
+Configuration
+  * Support resource configuration directories via links (#1016).
+  * New option PrintableControls to make controls visible (#1019).
+  * New options Tek*.
+  * New user-definable functions save-image, tek-copy, tek-page, tek-reset.
+  * New option SaveFilename.
+
 ### 3.2.0 (20 June 2020) ###
 
 Sixel and image display
   * For overlapping images, fixed background and clipping borders (~#1010).
   * Avoid image flickering by revised image list rendering strategy (#1010).
-  * New strategy to detect and collect overlayed images (~#1010).
+  * New strategy to detect and collect overlaid images (~#1010).
 
 ### 3.1.8 (7 June 2020) ###
 

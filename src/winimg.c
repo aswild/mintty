@@ -556,7 +556,7 @@ draw_img(HDC dc, imglist * img)
     int width = img->pixelwidth;
     int height = img->pixelheight;
     left += PADDING;
-    top += PADDING;
+    top += OFFSET + PADDING;
 
     int coord_transformed = 0;
     XFORM old_xform;
@@ -654,9 +654,9 @@ winimgs_paint(void)
   // clip off padding area, avoiding image artefacts when scrolling
   RECT rc;
   GetClientRect(wnd, &rc);
-  IntersectClipRect(dc, rc.left + PADDING, rc.top + PADDING,
+  IntersectClipRect(dc, rc.left + PADDING, rc.top + OFFSET + PADDING,
                     rc.left + PADDING + term.cols * cell_width,
-                    rc.top + PADDING + term.rows * cell_height);
+                    rc.top + OFFSET + PADDING + term.rows * cell_height);
 
   // prepare detection of overwritten images for garbage collection
   bool drawn[term.rows * term.cols];
@@ -731,7 +731,7 @@ winimgs_paint(void)
             if (dchar->attr.attr & (TATTR_RESULT | TATTR_CURRESULT | TATTR_MARKED | TATTR_CURMARKED))
               clip_flag = true;
             if (term.selected && !clip_flag) {
-              pos scrpos = {y + term.disptop, x, false};
+              pos scrpos = {y + term.disptop, x, 0, 0, false};
               clip_flag = term.sel_rect
                   ? posPle(term.sel_start, scrpos) && posPlt(scrpos, term.sel_end)
                   : posle(term.sel_start, scrpos) && poslt(scrpos, term.sel_end);
@@ -739,19 +739,30 @@ winimgs_paint(void)
             if (clip_flag)
               ExcludeClipRect(dc,
                               x * wide_factor * cell_width + PADDING,
-                              y * cell_height + PADDING,
+                              y * cell_height + OFFSET + PADDING,
                               (x + 1) * wide_factor * cell_width + PADDING,
-                              (y + 1) * cell_height + PADDING);
+                              (y + 1) * cell_height + OFFSET + PADDING);
           }
         }
 #ifdef debug_img_over
         printf("@%d:%d disp [%sm%d[m [%d]\n", top, left, disp_flag ? "" : "41", disp_flag, img->imgi);
 #endif
 
+#ifdef scale_graphics_in_double_width_lines
+#warning no working implementation yet; not done in xterm either
+        termline * line = fetch_line(top);
+        ushort lattr = line->lattr;
+        release_line(line);
+        if ((lattr & LATTR_MODE) != LATTR_NORM) {
+          // fix position in double-width line:
+          // adjust below: left, xlft, ...width, xrgt, iwidth, iheight
+        }
+#endif
+
         // fill image area background (in case it's smaller or transparent)
         // calculate area for padding
-        int ytop = max(0, top) * cell_height + PADDING;
-        int ybot = min(top + img->height, term.rows) * cell_height + PADDING;
+        int ytop = max(0, top) * cell_height + OFFSET + PADDING;
+        int ybot = min(top + img->height, term.rows) * cell_height + OFFSET + PADDING;
         int xlft = left * cell_width + PADDING;
         int xrgt = min(left + img->width, term.cols) * cell_width + PADDING;
         if (img->len) {
@@ -775,7 +786,7 @@ winimgs_paint(void)
             iwidth = img->cwidth * cell_width * img->width / img->pixelwidth;
             iheight = img->cheight * cell_height * img->height / img->pixelheight;
           }
-          int ibot = max(0, top * cell_height + iheight) + PADDING;
+          int ibot = max(0, top * cell_height + iheight) + OFFSET + PADDING;
           // fill either background image or colour
           if (*cfg.background) {
             fill_background(dc, &(RECT){xlft + iwidth, ytop, xrgt, ibot});
@@ -826,14 +837,14 @@ winimgs_paint(void)
           }
           else {
             StretchBlt(dc,
-                       left * cell_width + PADDING, top * cell_height + PADDING,
+                       left * cell_width + PADDING, top * cell_height + OFFSET + PADDING,
                        img->width * cell_width, img->height * cell_height,
                        img->hdc,
                        0, 0, img->pixelwidth, img->pixelheight, SRCCOPY);
             ExcludeClipRect(dc,
-                       left * cell_width + PADDING, top * cell_height + PADDING,
+                       left * cell_width + PADDING, top * cell_height + OFFSET + PADDING,
                        left * cell_width + PADDING + img->width * cell_width,
-                       top * cell_height + PADDING + img->height * cell_height
+                       top * cell_height + OFFSET + PADDING + img->height * cell_height
                        );
           }
           if (!backward_img_traversal) {
@@ -937,15 +948,19 @@ win_emoji_show(int x, int y, wchar * efn, void * * bufpoi, int * buflen, int ele
   }
 
   int col = PADDING + x * cell_width;
-  int row = PADDING + y * cell_height;
+  int row = OFFSET + PADDING + y * cell_height;
   if ((lattr & LATTR_MODE) >= LATTR_BOT)
     row -= cell_height;
   int w = elen * cell_width;
-  if ((lattr & LATTR_MODE) != LATTR_NORM)
+  if ((lattr & LATTR_MODE) != LATTR_NORM) {
     w *= 2;
+    // fix position in double-width line
+    col += x * cell_width;
+  }
   int h = cell_height;
   if ((lattr & LATTR_MODE) >= LATTR_TOP)
     h *= 2;
+  // glitch: missing clipping for inconsistent double-height lines
 
   if (cfg.emoji_placement) {
     uint iw, ih;
@@ -999,6 +1014,47 @@ win_emoji_show(int x, int y, wchar * efn, void * * bufpoi, int * buflen, int ele
   }
 }
 
+void
+save_img(HDC dc, int x, int y, int w, int h, wstring fn)
+{
+  gdiplus_init();
+  GpStatus s;
+
+  if (!w || !h) {
+    // determine size
+    BITMAP bitmap;
+    HGDIOBJ hbitmap = GetCurrentObject(dc, OBJ_BITMAP);
+    GetObject(hbitmap, sizeof(BITMAP), &bitmap);
+    //printf("%d %d\n", bitmap.bmHeight, bitmap.bmWidth);
+    if (!w)
+      w = bitmap.bmWidth - x;
+    if (!h)
+      h = bitmap.bmHeight - y;
+  }
+
+  // provide paintable bitmap of matching size
+  HBITMAP copbm = CreateCompatibleBitmap(dc, w, h);
+  HDC copdc = CreateCompatibleDC(dc);
+
+  // copy contents into GDI+ bitmap
+  (void)SelectObject(copdc, copbm);
+  BitBlt(copdc, 0, 0, w, h, dc, x, y, SRCCOPY);
+  GpImage* gimg;
+  s = GdipCreateBitmapFromHBITMAP(copbm, 0, &gimg);
+  gpcheck("create", s);
+  DeleteDC(copdc);
+  DeleteObject(copbm);
+
+  // save as png
+  CLSID png;
+  CLSIDFromString(W("{557CF406-1A04-11D3-9A73-0000F81EF32E}"), &png);
+  s = GdipSaveImageToFile(gimg, fn, &png, 0);
+  gpcheck("save", s);
+
+  s = GdipDisposeImage(gimg);
+  gpcheck("dispose image", s);
+}
+
 #else
 
 void
@@ -1007,6 +1063,14 @@ win_emoji_show(int x, int y, wchar * efn, void * * bufpoi, int * buflen, int ele
   (void)x; (void)y;
   (void)efn; (void)bufpoi; (void)buflen;
   (void)elen; (void)lattr;
+}
+
+void
+save_img(HDC dc, int x, int y, int w, int h, wstring fn)
+{
+  (void)dc;
+  (void)x; (void)y; (void)w; (void)h;
+  (void)fn;
 }
 
 #endif

@@ -1,5 +1,5 @@
 <!-- Creator     : groff version 1.22.4 -->
-<!-- CreationDate: Mon Jun  8 15:39:58 2020 -->
+<!-- CreationDate: Wed Nov 11 10:41:01 2020 -->
 <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
 "http://www.w3.org/TR/html4/loose.dtd">
 <html>
@@ -27,7 +27,7 @@
 <a href="#OPTIONS">OPTIONS</a><br>
 <a href="#USAGE">USAGE</a><br>
 <a href="#CONFIGURATION">CONFIGURATION</a><br>
-<a href="#LIMITATIONS">LIMITATIONS</a><br>
+<a href="#SCOPE AND LIMITATIONS">SCOPE AND LIMITATIONS</a><br>
 <a href="#SEE ALSO">SEE ALSO</a><br>
 <a href="#LICENSE">LICENSE</a><br>
 <a href="#CONTACT">CONTACT</a><br>
@@ -116,18 +116,19 @@ specified configuration file, in addition to the default
 config files. The file is not taken into account for saving
 configuration changes. This is useful to mix-in partial
 configuration variants, particularly colour schemes.
-However, <b>-o ThemeFile=</b><i>FILENAME</i> <b>may be
-preferable.</b></p>
+However, <b>-o ThemeFile=</b><i>FILENAME</i> may be
+preferable.</p>
 
 <p style="margin-left:11%;"><b>--configdir</b>
 <i>DIRNAME</i></p>
 
 <p style="margin-left:22%;">Use the given directory to
 check for resource subdirectories (<i>themes</i>,
-<i>sounds</i>, <i>lang</i>, <i>emojis</i>, <i>icon</i>);
-also read settings from the configuration file
-<i>DIRNAME</i>/<b>config</b>, in addition to the default
-config files, and save configuration changes here.</p>
+<i>sounds</i>, <i>lang</i>, <i>emojis</i>, <i>icon</i>,
+<i>fonts</i>); also read settings from the configuration
+file <i>DIRNAME</i>/<b>config</b>, in addition to the
+default config files, and save configuration changes
+here.</p>
 
 <p style="margin-left:11%;"><b>--dir</b>
 <i>directory</i></p>
@@ -170,7 +171,7 @@ with an error, i.e. with a non-zero exit status or due to a
 signal indicating a runtime error.</p>
 
 <p style="margin-left:11%;"><b>-i</b>, <b>--icon</b>
-<i>FILE</i>[<b>,</b><i>INDEX</i><b>]</b></p>
+<i>FILE</i>[<b>,</b><i>INDEX</i>]</p>
 
 <p style="margin-left:22%;">Load the window icon from an
 executable, DLL, or icon file. The optional comma-separated
@@ -214,8 +215,8 @@ context menu. (Equivalent to combining <b>--log</b> with
 <i>NAME</i>=<i>VALUE</i></p>
 
 <p style="margin-left:22%;">Override the named config file
-option with the given value, e.g. <tt>-o
-ScrollbackLines=1000</tt>.</p>
+option with the given value, e.g. <b>-o
+ScrollbackLines=1000</b>.</p>
 
 <p style="margin-left:11%;"><b>-p</b>, <b>--position</b>
 <i>X</i><b>,</b><i>Y</i></p>
@@ -255,16 +256,18 @@ window, see the description of Alt+F2.</p>
 
 <p style="margin-left:22%;">Set the default size of the
 window in character columns and rows. (The xterm-like syntax
-<i>COLS</i><b>x</b><i>ROWS</i> <b>is accepted too.) Instead
-of coordinates, &quot;maxwidth&quot; or
-&quot;maxheight&quot; can be specified; this can be combined
-with another parameter -s for the other dimension. The
-dimension for which &quot;max&quot; is applied is ignored in
-further -s or -p parameters. For example, mintty -s maxwidth
--p 0,0 -s 0,10 will start a window at full screen width,
-positioned at the top of the screen, with 10 lines.</b></p>
+<i>COLS</i><b>x</b><i>ROWS</i> is accepted too.) Instead of
+coordinates, &quot;maxwidth&quot; or &quot;maxheight&quot;
+can be specified; this can be combined with another
+parameter <b>-s</b> for the other dimension. The dimension
+for which &quot;max&quot; is applied is ignored in further
+<b>-s</b> or <b>-p</b> parameters. For example, <b>mintty -s
+maxwidth -p 0,0 -s 0,10</b> will start a window at full
+screen width, positioned at the top of the screen, with 10
+lines.</p>
 
-<p style="margin-left:11%;"><b>--nobidi, --nortl</b></p>
+<p style="margin-left:11%;"><b>--nobidi</b>,
+<b>--nortl</b></p>
 
 <p style="margin-left:22%;">Disable bidi display
 (right-to-left support). Same as <b>-o Bidi=0</b>.</p>
@@ -293,6 +296,15 @@ the command line. Note that frame border operations are also
 disabled. However, a window move can also be done with
 Ctrl+Alt+click-drag.</p>
 
+
+<p style="margin-left:11%;"><b>--tabbar</b>[<b>=</b><i>level</i>]</p>
+
+<p style="margin-left:22%;">Activate tabbar for tab-based
+session switching among virtual tabs. This sets
+<b>TabBar=1</b> and <b>SessionGeomSync=</b><i>level</i>.
+Without given value the default window synchronization level
+is 2.</p>
+
 <p style="margin-left:11%;"><b>-u</b>, <b>--utmp</b></p>
 
 <p style="margin-left:22%;">Create a utmp entry.</p>
@@ -306,9 +318,10 @@ normal, minimized, maximized, full screen, or hidden.</p>
 <p style="margin-left:11%;"><b>--class</b> <i>CLASS</i></p>
 
 <p style="margin-left:22%;">Use <i>CLASS</i> as the window
-class name of the main window. This allows scripting tools
-to distinguish different mintty instances. The default is
-&quot;mintty&quot;.</p>
+class name of the main window. This allows window grouping
+or setup of different tab sets, and it allows scripting
+tools to distinguish different mintty instances. The default
+is &quot;mintty&quot;.</p>
 
 <p style="margin-left:11%;"><b>-d</b>,
 <b>--nodaemon</b></p>
@@ -400,7 +413,8 @@ UserCommands are disabled. <br>
 &ndash; The working directory of the current foreground
 process (for click-opening pathnames) cannot be detected.
 <br>
-&ndash; Locale modification (@cjk...) is disabled.</p>
+&ndash; Locale modification (@cjk...) is not set to the
+environment variables.</p>
 
 <p style="margin-left:11%;"><b>--WSL</b> <i>WSL
 DISTRIBUTION NAME</i></p>
@@ -411,10 +425,12 @@ other parameters as appropriate and involving the
 installed in /bin for this purpose). If the distribution
 name is empty, the default WSL installation is run;
 otherwise, it refers to the installed WSL packages as listed
-by the Windows tool <b>wslconfig /l</b>. Implies <b>--wsl -o
-Locale=C -o Charset=UTF-8</b>, <b>--rootfs=</b>..., and
+by the Windows tool <b>wslconfig /l</b> or <b>wsl -l</b>.
+Implies <b>--wsl</b>, <b>--rootfs=</b>..., and
 <b>--icon=</b>... if a respective icon file exists for the
-distribution.</p>
+distribution. Also sets up the gateway to propagate locale
+settings LANG, LC_CTYPE, LC_ALL and environment variable
+APPDATA to the WSL session.</p>
 
 <p style="margin-left:11%;"><b>--WSLmode</b> <i>WSL
 DISTRIBUTION NAME</i></p>
@@ -539,7 +555,7 @@ HighlightBackgroundColour.</p>
 </table>
 
 <p style="margin-left:11%;"><b>--geometry</b>
-<i>COLS</i><b>x</b><i>ROWS</i><b>[[-+]</b><i>X</i><b>[-+]</b><i>Y</i><b>][</b><i>@</i><b>MONITOR]</b></p>
+<i>COLS</i><b>x</b><i>ROWS</i>[[-+]<i>X</i>[-+]<i>Y</i>][<b>@</b><i>MONITOR</i>]</p>
 
 <p style="margin-left:22%;">Sets size and position,
 extending xterm syntax by an optional monitor number.</p>
@@ -598,7 +614,14 @@ customised.</p>
 rendering</b> <br>
 Mintty uses Windows Uniscribe font rendering to display a
 wider range of characters; the TextOut API is automatically
-used instead if suitable.</p>
+used instead if suitable. <b><br>
+Font integration</b></p>
+
+<p style="margin-left:22%;">Fonts in the resource
+subdirectory <i>fonts</i> of the config directory are
+installed dynamically and can be used for configured or
+interactively changed font selection. This is especially
+useful for a portable installation.</p>
 
 
 <p style="margin-left:11%; margin-top: 1em"><b>Bidirectional
@@ -820,6 +843,32 @@ the scrollbar, the mouse wheel, or the keyboard. Hold the
 page-by-page. With option <b>KeyFunctions</b>, user-defined
 keys can be used for scrolling.</p>
 
+<p style="margin-left:11%; margin-top: 1em">If the
+alternate screen is active, instead of scrolling in the
+scrollback buffer, the mouse wheel sends virtual cursor key
+escape sequences (&quot;mousewheel reporting&quot;, roughly
+corresponds to xterm alternateScroll mode). This causes many
+applications, for example <i>less</i>, to scroll in an
+application-specific way (e.g. in the shell history). In
+both cases (scrollback and application scrolling), the
+number of lines per mouse notch is taken from Windows system
+settings, typically 3; this can be overriden by setting
+<b>LinesPerMouseWheelNotch</b>. With setting
+<b>ZoomMouse=false</b>, holding the <b>Control</b> key while
+moving the mouse wheel scrolls by 1 line.</p>
+
+<p style="margin-left:11%; margin-top: 1em">Scrollback
+scrolling can be overridden dynamically to enforce
+mousewheel reporting in normal screen mode (i.e. not
+alternate screen) by holding the <b>Alt</b> key
+additionally. So for example shell history can be scrolled
+with Control+Alt+mouse-wheel.</p>
+
+<p style="margin-left:11%; margin-top: 1em">Note that all
+modes of mouse operation are overridden by various
+&quot;mouse tracking&quot; modes enabled by escape
+sequences.</p>
+
 <p style="margin-left:11%; margin-top: 1em"><b>Searching in
 the text and scrollback buffer</b> <br>
 The <b>Search</b> menu command and <b>Alt+F3</b> shorcut
@@ -884,6 +933,26 @@ Class=...</b>.</p>
 can be switched quickly with user-defined key assignments,
 using user-definable functions
 switch-[visible-](prev|next).</p>
+
+<table width="100%" border="0" rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="11%"></td>
+<td width="9%">
+
+
+<p><b>Tabbar</b></p></td>
+<td width="2%"></td>
+<td width="78%">
+
+
+<p>With setting <b>TabBar</b>, an interactive tabbar
+complements the virtual tabs mechanism. (It works like the
+session switcher available via extended context menu or
+title bar menu.) It is recommended to also set
+<b>SessionGeomSync=3</b> or higher to achieve a tabbed
+window behaviour.</p></td></tr>
+</table>
 
 <p style="margin-left:11%; margin-top: 1em"><b>Closing a
 session</b> <br>
@@ -1124,6 +1193,16 @@ and Ctrl+Shift+key combinations can be redefined to generate
 user-defined input or invoke functions. See option
 <b>KeyFunctions</b> for details.</p>
 
+<p style="margin-left:11%;"><b>Startup hotkey (&quot;quake
+mode&quot;)</b></p>
+
+<p style="margin-left:22%;">In a Windows shortcut (desktop
+or Start menu), a &quot;Shortcut key&quot; with modifiers
+can be defined as a system hotkey to start an application or
+bring it to the front. Mintty detects if activated via
+hotkey and will use the same hotkey to minimize itself in
+turn, unless inhibited by shortcut override mode.</p>
+
 <p style="margin-left:11%; margin-top: 1em"><b>Embedding
 graphics in terminal output</b> <br>
 The Sixel graphics support feature facilitates a range of
@@ -1147,6 +1226,24 @@ Image support</b></p>
 feature, mintty supports graphic image display (using iTerm2
 controls). Image formats supported comprise PNG, JPEG, GIF,
 TIFF, BMP, Exif.</p>
+
+<p style="margin-left:11%; margin-top: 1em"><b>Vector
+graphics terminal emulation</b> <br>
+Mintty supports Tektronix 4014 mode. It switches to Tek
+emulation on the xterm sequence DECSET 38
+(&lsquo;\e[?38h&lsquo;). It is suggested to adjust the
+window size to the Tektronix 4010 resolution and aspect
+ratio before (&lsquo;echo -en
+&quot;\e[4;780;1024t&quot;&lsquo;). The <b>tek</b> utility
+available in the mintty utils repository
+<i><a href="https://github.com/mintty/utils">https://github.com/mintty/utils</a></i>
+helps to enter Tek mode and set up some environment
+information properly.</p>
+
+<p style="margin-left:11%; margin-top: 1em">While in Tek
+mode, the context menu provides the Tektronix mode functions
+RESET (like xterm), PAGE (minor reset), and COPY
+(&quot;hard&quot; copy to image file).</p>
 
 <p style="margin-left:11%; margin-top: 1em"><b>Emoji
 display support</b> <br>
@@ -1174,6 +1271,24 @@ path name using POSIX syntax (forward slashes).</p>
 
 <p style="margin-left:11%; margin-top: 1em">If Shift is
 held, the function also opens the HTML page.</p>
+
+<p style="margin-left:11%; margin-top: 1em">Filename
+pattern and location are configurable (setting
+<b>SaveFilename</b>).</p>
+
+<p style="margin-left:11%; margin-top: 1em"><b>Image dump
+of terminal contents</b> <br>
+Mintty can save the visual contents of the terminal screen
+in an image file <b>mintty.date_time.png</b>. This is
+supported from the context menu or via user-definable key
+functions. The current terminal dimensions are used for the
+image size except in Tek mode, where one of the original Tek
+sizes is used (depending on whether 12-bit pixel addresses
+are in effect).</p>
+
+<p style="margin-left:11%; margin-top: 1em">Filename
+pattern and location are configurable (setting
+<b>SaveFilename</b>).</p>
 
 <p style="margin-left:11%; margin-top: 1em"><b>Diagnostic
 support <br>
@@ -1256,9 +1371,10 @@ encoding the terminal runs in; as a fallback, if the
 configuration value is not valid UTF-8, it is interpreted in
 the system ANSI encoding. (This does not apply to the same
 configuration settings when given on the command-line.) <br>
-Unicode-enabled settings: BellFile, ThemeFile, Background,
-Title, ExitTitle, Icon, Log, Language, Font, Font1...,
-FontSample, FontChoice, SearchBar, Printer, Answerback,
+Unicode-enabled settings: BellFile, BellFile2..7, ThemeFile,
+Background, Title, ExitTitle, Icon, Log, SaveFilename,
+Language, Font, Font1..10, FontSample, FontChoice, TekFont,
+CopyAsRTFFont, SearchBar, Printer, Answerback,
 SixelClipChars, Class, AppID, AppName, AppLaunchCmd,
 DropCommands, UserCommands, SessionCommands, TaskCommands,
 KeyFunctions, SysMenuFunctions, CtxMenuFunctions,
@@ -1373,6 +1489,7 @@ when working in it).</p>
 available: <br>
 &ndash; <b>Line</b> <br>
 &ndash; <b>Block</b> <br>
+&ndash; <b>Box</b> <i>(not in Options dialog)</i> <br>
 &ndash; <b>Underscore</b></p>
 
 <p style="margin-left:22%; margin-top: 1em">The line cursor
@@ -1748,36 +1865,32 @@ set here, which is the default, mintty uses the locale and
 character set specified via the environment variables
 <i>LC_ALL</i>, <i>LC_CTYPE</i> or <i>LANG</i>.</p>
 
-<p style="margin-left:22%; margin-top: 1em">If the locale
-option is set, however, it will override any environment
-variable setting: <i>LC_ALL</i> and the <i>LC_*</i>
-variables for specific locale categories are cleared, while
-<i>LANG</i> is set according to the selected locale and
-character set.</p>
+<p style="margin-left:22%; margin-top: 1em">The major
+purpose of setting <b>Locale</b>, as far as the terminal is
+concerned, is to enable setting <b>Charset</b>. Therefore,
+after revision of locale handling in mintty 3.4.1, mintty
+restrains itself to setting the LC_CTYPE category of the
+locale mechanism if possible and not overwrite other
+categories if they are set in the environment. In addition,
+however, if Locale is set, mintty also sets the LANG
+variable.</p>
 
-<p style="margin-left:22%; margin-top: 1em"><i>Note:</i>
-This means, while not strictly necessary, that also locale
+<p style="margin-left:22%; margin-top: 1em">If you prefer
+basic locale setup for all categories to be affected by the
+LC_CTYPE locale, whether setting Locale is used or not, it
+is suggested to add the following to the shell startup
+scripts: <br>
+export LANG=&quot;${LC_ALL:-${LC_CTYPE:-$LANG}}&quot;</p>
+
+<p style="margin-left:22%; margin-top: 1em">Until mintty
+3.4.0 or with option OldLocale set, if the locale option is
+set, however, it would override any environment variable
+setting: <i>LC_ALL</i> and the <i>LC_*</i> variables for
+specific locale categories are cleared, while <i>LANG</i> is
+set according to the selected locale and character set. This
+meant, while not strictly necessary, that also locale
 variables unrelated to the terminal character set (e.g.
 LC_MESSAGES) are cleared to avoid confusion.</p>
-
-<p style="margin-left:22%; margin-top: 1em"><i>Note:</i> If
-the <b>Locale</b> option is set, mintty further checks
-whether the locale is a &quot;wide&quot; locale (i.e.
-ambiguous-width characters are wide in a CJK locale) but the
-selected font is actually &quot;ambiguous-narrow&quot; (i.e.
-ambiguous-width characters are narrow in the font, as
-detected at characters U+03B1 and U+2500) in which case it
-appends the &quot;@cjknarrow&quot; locale modifier, in order
-to adapt the selected locale to the chosen font. (This would
-be overridden by setting <b>Charwidth=ambig-wide</b>.)</p>
-
-<p style="margin-left:22%; margin-top: 1em">By default, the
-selected locale also determines the character width
-assumptions used for screen rendering. For exceptions, see
-the setting <b>Charwidth</b> and the control sequences for
-special wide character handling (
-<i><a href="https://github.com/mintty/mintty/wiki/CtrlSeqs#wide-characters">https://github.com/mintty/mintty/wiki/CtrlSeqs#wide-characters</a></i>
-).</p>
 
 <p style="margin-left:11%;"><b>Character set</b>
 (Charset=)</p>
@@ -1786,15 +1899,24 @@ special wide character handling (
 for encoding input and decoding output. If no locale is set,
 this setting is ignored.</p>
 
+<p style="margin-left:22%; margin-top: 1em">By default, the
+locale selected by options <b>Locale</b> and <b>Charset</b>
+also determines the character width assumptions used for
+screen rendering. Exceptions are enabled by some settings,
+particularly <b>Charwidth</b>, and some control sequences;
+for an overview see (
+<i><a href="https://github.com/mintty/mintty/wiki/Tips#character-width">https://github.com/mintty/mintty/wiki/Tips#character-width</a></i>
+).</p>
+
 <p style="margin-left:22%; margin-top: 1em"><i>Note:</i>
-While changing the character set takes effect immediately
-for text input and ouput, it does not affect the processes
-already running in mintty. This is because the environment
-variables of a running process cannot be changed from
-outside that process. Therefore mintty should be restarted
-for a character set change to take full effect, or the
-locale environment of the shell should be changed
-accordingly.</p>
+When changing the character set interactively in the Options
+dialog, it takes effect immediately for text input and
+ouput, but it does not affect the processes already running
+in mintty. This is because the environment variables of a
+running process cannot be changed from outside that process.
+Therefore mintty should be restarted for a character set
+change to take full effect, or the locale environment of the
+shell should be changed accordingly.</p>
 
 <p style="margin-left:22%; margin-top: 1em"><i>Note:</i>
 The locale and character set can also be changed with an
@@ -1804,6 +1926,67 @@ escape sequence, see the Control Sequences wiki page
 menu will silently have no effect unless an escape sequence
 with empty locale is sent to the terminal to restore to
 &quot;default&quot;.</p>
+
+<p style="margin-left:11%;"><b>Character width handling</b>
+(Charwidth=locale)</p>
+
+<p style="margin-left:22%;">With this hidden setting,
+locale-determined character width properties can be
+overridden: <br>
+&ndash; <b>locale</b> Use locale width properties. <br>
+&ndash; <b>unicode</b> Use built-in width properties, likely
+based on a more up-to-date Unicode version. (Corresponds to
+the xterm resource <b>mkWidth</b>.) <br>
+&ndash; <b>ambig-wide</b> Use built-in width properties,
+with ambiguous-width characters assumed to be wide.
+(Corresponds to the xterm resource <b>cjkWidth:true</b>.)
+<br>
+&ndash; <b>ambig-narrow</b> Use built-in width properties,
+with ambiguous-width characters assumed to be narrow.
+(Corresponds to the xterm resource <b>cjkWidth:false</b>.)
+<br>
+&ndash; <b>single</b> Enforce single-width (no double width
+rendering). <br>
+&ndash; <b>single-unicode</b> Enforce single-width (no
+double width rendering), with built-in width properties to
+determine combining characters.</p>
+
+<p style="margin-left:22%; margin-top: 1em"><i>Note:</i>
+With setting <b>ambig-wide</b>, if the effective locale does
+not define ambiguous-width characters wide already, mintty
+appends the &quot;@cjkwide&quot; locale modifier, in order
+to adapt the selected locale to the width preference. With
+setting <b>ambig-narrow</b>, if the effective locale does
+not define ambiguous-width characters narrow already, mintty
+appends the &quot;@cjknarrow&quot; locale modifier, in order
+to adapt the selected locale to the width preference.</p>
+
+<p style="margin-left:22%; margin-top: 1em"><i>Note:</i>
+With settings <b>single</b> or <b>single-unicode</b>, mintty
+appends the &quot;@cjksingle&quot; locale modifier, in order
+to adapt the selected locale to the width preference.</p>
+
+<p style="margin-left:22%; margin-top: 1em"><i>Note:</i> If
+this option selects using built-in width properties, the
+response to the Secondary Device Attributes request will
+report the built-in Unicode version as its third
+parameter.</p>
+
+
+<p style="margin-left:22%; margin-top: 1em"><i>Warning:</i>
+With this option, actual width properties as rendered on the
+screen and width assumptions of the <b>wcwidth</b> function
+may be inconsistent for the impacted characters, which may
+confuse screen applications (such as editors) that rely on
+<b>wcwidth</b> information.</p>
+
+<p style="margin-left:11%;"><b>Old character locale
+handling</b> (OldLocale=false)</p>
+
+<p style="margin-left:22%;">This setting reverts
+determination and handling of character encoding and
+character width from locale and options mostly to mintty up
+to 3.4.0.</p>
 
 <p style="margin-left:11%; margin-top: 1em"><b>Keys</b>
 <br>
@@ -1825,8 +2008,8 @@ also changes the <b>Ctrl+Backspace</b> code from <b>^_</b>
 to <b>^?</b>. <br>
 (Corresponds to the xterm resource <b>backarrowKey</b>.)</p>
 
-<p style="margin-left:11%;"><b>Delete sends
-DEL</b>(DeleteSendsDEL=no)</p>
+<p style="margin-left:11%;"><b>Delete sends DEL</b>
+(DeleteSendsDEL=no)</p>
 
 <p style="margin-left:22%;">By default, mintty sends VT100
 Remove as the keycode for the keypad Del key. If this option
@@ -1979,6 +2162,15 @@ with the mouse is copied to the clipboard as soon as the
 mouse button is released, thus emulating X Window
 behaviour.</p>
 
+<p style="margin-left:11%;"><b>Copy with TABs</b>
+(CopyTab=no)</p>
+
+<p style="margin-left:22%;">With this setting, when copying
+text, TAB characters will be preserved rather than expanded
+to spaces. Note that user-definable functions are available
+to invoke copying explicitly with or without TABs via
+keyboard shortcut or menu item.</p>
+
 <p style="margin-left:11%;"><b>Copy as rich text</b>
 (CopyAsRTF=yes)</p>
 
@@ -2039,8 +2231,8 @@ region instead of pasting the clipboard. If it is set to
 <b>Extend</b>, a left click with <b>Shift</b> pressed pastes
 the clipboard instead of extending the selection.</p>
 
-<p style="margin-left:11%;"><b>Middle mouse
-button</b>(MiddleClickAction=paste)</p>
+<p style="margin-left:11%;"><b>Middle mouse button</b>
+(MiddleClickAction=paste)</p>
 
 <p style="margin-left:22%;">Action to take when the middle
 mouse button is pressed. <br>
@@ -2077,8 +2269,8 @@ The <b>Off</b> setting disables overriding. <br>
 &ndash; <b>Win</b> <br>
 &ndash; <b>Off</b></p>
 
-<p style="margin-left:11%;"><b>Mouse
-auto-hiding</b>(HideMouse=on)</p>
+<p style="margin-left:11%;"><b>Mouse auto-hiding</b>
+(HideMouse=on)</p>
 
 <p style="margin-left:22%;">By default, mintty
 automatically hides the cross-hair mouse cursor when
@@ -2087,8 +2279,8 @@ keeps the cursor. <br>
 (Corresponds to the xterm resource value
 <b>pointerMode:2</b>.)</p>
 
-<p style="margin-left:11%;"><b>Elastic text
-selection</b>(ElasticMouse=off)</p>
+<p style="margin-left:11%;"><b>Elastic text selection</b>
+(ElasticMouse=off)</p>
 
 <p style="margin-left:22%;">With this option set, text
 selection with mouse dragging only includes first and last
@@ -2133,8 +2325,8 @@ adjustment</b> (ColSpacing=0)</p>
 <p style="margin-left:22%;">Additional column padding;
 ColSpacing=1 can avoid boldened glyphs being clipped.</p>
 
-<p style="margin-left:11%;"><b>Border
-spacing</b>(Padding=1)</p>
+<p style="margin-left:11%;"><b>Border spacing</b>
+(Padding=1)</p>
 
 <p style="margin-left:22%;">Window padding; margin between
 text and window border. The effective value is limited by
@@ -2489,22 +2681,21 @@ signal indicating a runtime error. <br>
 <p style="margin-left:11%;"><b>Window icon</b> (Icon=)</p>
 
 <p style="margin-left:22%;">The <b>Icon</b> setting with
-format <i>FILE</i>[<b>,</b><i>INDEX</i><b>] allows to load
-the window icon from an executable, DLL, or icon file. The
+format <i>FILE</i>[<b>,</b><i>INDEX</i>] allows to load the
+window icon from an executable, DLL, or icon file. The
 optional comma-separated index can be used to select a
-particular icon in a file with multiple icons.</b></p>
+particular icon in a file with multiple icons.</p>
 
-<p style="margin-left:22%; margin-top: 1em"><b>If the
-setting is empty, as it is by default, mintty&rsquo;s
-program icon is used, unless mintty was invoked from a
-desktop shortcut in which case it uses the shortcut
-icon.</b></p>
+<p style="margin-left:22%; margin-top: 1em">If the setting
+is empty, as it is by default, mintty&rsquo;s program icon
+is used, unless mintty was invoked from a desktop shortcut
+in which case it uses the shortcut icon.</p>
 
-<p style="margin-left:22%; margin-top: 1em"><b>For
-interaction problems of icon, shortcut, and the Windows
-taskbar, see the note for the -i option above.</b></p>
+<p style="margin-left:22%; margin-top: 1em">For interaction
+problems of icon, shortcut, and the Windows taskbar, see the
+note for the -i option above.</p>
 
-<p style="margin-left:11%;"><b>Log file (Log=)</b></p>
+<p style="margin-left:11%;"><b>Log file</b> (Log=)</p>
 
 <p style="margin-left:22%;">The <b>Log</b> setting can be
 used to specify a log file that all output is copied into.
@@ -2546,6 +2737,14 @@ enabled</b> (Logging=yes)</p>
 logging initially. If a log file name is specified with
 <b>Log=...</b> and <b>Logging=no</b>, logging can be enabled
 (and toggled) from the extended context menu.</p>
+
+<p style="margin-left:11%;"><b>Filename pattern for screen
+saving</b> <br>
+(SaveFilename=mintty.%Y-%m-%d_%H-%M-%S)</p>
+
+<p style="margin-left:22%;">This setting selects the
+location and filename pattern (which is expanded with the
+strftime(3) function) for .html and .png screen dumps.</p>
 
 <p style="margin-left:11%;"><b>Window title</b>
 (Title=)</p>
@@ -2589,8 +2788,9 @@ suggested by the window manager is used.</p>
 <p style="margin-left:22%;">The <b>Class</b> setting
 determines the name of the window class of the terminal
 window. It can be used to distinguish or group different
-mintty windows, e.g. for the mintty session switcher, or for
-Windows scripting tools such as AutoHotKey.</p>
+mintty windows, or tab sets, e.g. for the mintty session
+switcher, or for Windows scripting tools such as
+AutoHotKey.</p>
 
 <p style="margin-left:22%; margin-top: 1em">For a flexible
 grouping configuration, the Class option supports the same
@@ -2675,6 +2875,17 @@ title when hovering</b> (HoverTitle=true)</p>
 an explicit hyperlink (OSC 8 attribute) in the window title
 when hovering can be disabled.</p>
 
+<p style="margin-left:11%;"><b>Show automatic progress
+bar</b> (ProgressBar=0)</p>
+
+<p style="margin-left:22%;">This setting initially enables
+a progress indication on the taskbar icon, based on
+automatic progress detection: if the current cursor line
+ends with a percent indication (x%) it will be notified via
+progress bar in one of three levels 1 (green), 2 (yellow), 3
+(red). Note that the progress bar can also be switched or
+even controlled by an escape sequence.</p>
+
 <p style="margin-left:11%;"><b>Single-dash long options</b>
 (ShortLongOpts=false)</p>
 
@@ -2682,49 +2893,23 @@ when hovering can be disabled.</p>
 options (&quot;long options&quot;) on the command line to be
 given with only one dash rather than a double dash.</p>
 
-<p style="margin-left:11%;"><b>Character width handling</b>
-(Charwidth=locale)</p>
+<p style="margin-left:11%;"><b>Display control
+characters</b> (PrintableControls=0)</p>
 
-<p style="margin-left:22%;">With this option,
-locale-determined character width properties can be
-overridden: <br>
-&ndash; <b>locale</b> Use locale width properties. <br>
-&ndash; <b>unicode</b> Use built-in width properties, likely
-based on a more up-to-date Unicode version. (Corresponds to
-the xterm resource <b>mkWidth</b>.) <br>
-&ndash; <b>ambig-wide</b> Use built-in width properties,
-with ambiguous-width characters assumed to be wide.
-(Corresponds to the xterm resource <b>cjkWidth</b>.) <br>
-&ndash; <b>single</b> Enforce single-width (no double width
-rendering). <br>
-&ndash; <b>single-unicode</b> Enforce single-width (no
-double width rendering), with built-in width properties to
-determine combining characters.</p>
-
-<p style="margin-left:22%; margin-top: 1em"><i>Note:</i>
-With setting <b>ambig-wide</b>, if the effective locale does
-not define ambiguous-width characters wide already, mintty
-appends the &quot;@cjkwide&quot; locale modifier, in order
-to adapt the selected locale to the width preference.</p>
-
-<p style="margin-left:22%; margin-top: 1em"><i>Note:</i>
-With settings <b>single</b> or <b>single-unicode</b>, mintty
-appends the &quot;@cjksingle&quot; locale modifier, in order
-to adapt the selected locale to the width preference.</p>
-
-<p style="margin-left:22%; margin-top: 1em"><i>Note:</i> If
-this option selects using built-in width properties, the
-response to the Secondary Device Attributes request will
-report the built-in Unicode version as its third
-parameter.</p>
+<p style="margin-left:22%;">Controls characters are
+non-printing by default and as specified by the locale
+width. Setting PrintableControls=1 enables visual indication
+of &quot;C1&quot; control characters (range U+80...U+9F);
+PrintableControls=2 would also make &quot;C0&quot; (normal)
+control characters visible. (Value 1 corresponds to the
+xterm resource <b>allowC1Printable</b>.)</p>
 
 
 <p style="margin-left:22%; margin-top: 1em"><i>Warning:</i>
-With this option, actual width properties as rendered on the
-screen and width assumptions of the <b>wcwidth</b> function
-may be inconsistent for the impacted characters, which may
-confuse screen applications (such as editors) that rely on
-<b>wcwidth</b> information.</p>
+With this option, control character display is inconsistent
+with width assumptions of the <b>wcwidth</b> function, which
+may confuse screen applications (such as editors) that rely
+on <b>wcwidth</b> information.</p>
 
 <p style="margin-left:11%;"><b>Character narrowing
 factor</b> (CharNarrowing=75)</p>
@@ -2955,12 +3140,12 @@ optional whitespace indentation. <br>
 are described as follows: <br>
 &ndash; function keys F1...F24 <br>
 &ndash; modified function keys or special keys (see below),
-preceded with a combination of C, A, S, W, U, Y, in this
-order, indicating Ctrl, Alt, Shift, Win, Super, Hyper as
-combined with the key, attached with a &quot;+&quot;
-separator, e.g. <b>CS+F9</b>; or a prefix &quot;*&quot; that
-applies the definition for all modified variations of the
-key, e.g. <b>*Menu</b> <br>
+preceded with a combination of C, A, S, W, U, Y, indicating
+Ctrl, Alt, Shift, Win, Super, Hyper as combined with the
+key, attached with a &quot;+&quot; separator, e.g.
+<b>CS+F9</b>; or a prefix &quot;*&quot; that applies the
+definition for all modified variations of the key, e.g.
+<b>*Menu</b> <br>
 &ndash; special keys (some of which do not occur on typical
 keyboards) and keypad keys, as well as modified special and
 keypad keys; Space, Enter, Esc and Tab are only considered
@@ -3059,6 +3244,10 @@ transparency level <br>
 &ndash; <b>copy</b>: copies the selection to the clipboard
 <br>
 &ndash; <b>copy-text</b>: copies text only <br>
+&ndash; <b>copy-tabs</b>: copies text only, including TAB
+characters <br>
+&ndash; <b>copy-plain</b>: copies text only, TAB characters
+expanded as on screen <br>
 &ndash; <b>copy-rtf</b>: copies rich text format <br>
 &ndash; <b>copy-html-text</b>: copies HTML text only (no
 font information) <br>
@@ -3079,9 +3268,16 @@ scrollback <br>
 mode <br>
 &ndash; <b>copy-title</b>: copies the window title to the
 clipboard <br>
+&ndash; <b>clear-title</b>: clears the window title <br>
 &ndash; <b>lock-title</b>: locks the window title from being
 changed <br>
 &ndash; <b>reset</b>: resets the terminal <br>
+&ndash; <b>tek-reset</b>: Tek mode RESET <br>
+&ndash; <b>tek-page</b>: Tek mode PAGE key (~soft reset)
+<br>
+&ndash; <b>tek-copy</b>: Tek mode COPY key (image
+&quot;hard&quot; copy to file) <br>
+&ndash; <b>save-image</b>: Save terminal image to file <br>
 &ndash; <b>break</b>: sends a break condition to the
 application <br>
 &ndash; <b>flipscreen</b>: switches the alternate screen
@@ -3096,6 +3292,7 @@ HTML file <br>
 &ndash; <b>print-screen</b>: print screen contents <br>
 &ndash; <b>toggle-bidi</b>: toggles (global) bidi disabling
 <br>
+&ndash; <b>refresh</b>: refresh terminal display <br>
 &ndash; <b>void</b>: do nothing <br>
 &ndash; <b>super</b>: use this key as Super modifier key
 <br>
@@ -3171,6 +3368,10 @@ has a Ctrl+_ assignment already <br>
 &ndash; <b>KeyFunctions=c:copy;v:paste</b> in combination
 with setting <b>-o CtrlExchangeShift=true</b> will assign
 copy/paste to ^C and ^V for Windows addicts <br>
+&ndash;
+<b>KeyFunctions=AS+Insert:paste-path;AS+KP_Insert:paste-path</b>
+will always try to convert pasted paths to POSIX syntax on
+Alt+Shift+Insert <br>
 &ndash; <b>KeyFunctions=A+Enter:void;A+KP_Enter:</b> will
 disable zooming on Alt+Enter and also disable it on
 Alt+keypad-Enter but enter ESC Return in the latter case
@@ -3179,12 +3380,51 @@ Alt+keypad-Enter but enter ESC Return in the latter case
 Super modifier to the CapsLock key <br>
 &ndash; <b>KeyFunctions=*Menu:29</b> turns the Menu key into
 an F16 function key (xterm default) and applies all
-modifiers to it <br>
-&ndash;
-<b>KeyFunctions=S+KP_Prior:scroll_pgup;C+KP_Prior:scroll_pgup;\
-C+KP_Next:scroll_pgdn;S+KP_Next:scroll_pgdn</b> enables
-scrollback scrolling with either of Shift or Control
-modifiers</p>
+modifiers to it</p>
+
+<table width="100%" border="0" rules="none" frame="void"
+       cellspacing="0" cellpadding="0">
+<tr valign="top" align="left">
+<td width="22%"></td>
+<td width="-14%"></td>
+<td width="7%"></td>
+<td width="85%">
+
+
+<p>&ndash;
+<b>KeyFunctions=A+Left:switch-prev;A+Right:switch-next;\</b></p> </td></tr>
+<tr valign="top" align="left">
+<td width="22%"></td>
+<td width="-14%"></td>
+<td width="7%"></td>
+<td width="85%">
+
+
+
+<p><b>A+C+Left:switch-visible-prev;A+C+Right:switch-visible-next</b>
+enables window switching with [Ctrl+]Alt+Left/Right keys on
+the &quot;editing keypad&quot; (prefix KP_ for the numeric
+keypad)</p> </td></tr>
+<tr valign="top" align="left">
+<td width="22%"></td>
+<td width="-14%"></td>
+<td width="7%"></td>
+<td width="85%">
+
+
+<p>&ndash;
+<b>KeyFunctions=S+KP_Prior:scroll_pgup;C+KP_Prior:scroll_pgup;\</b></p> </td></tr>
+<tr valign="top" align="left">
+<td width="22%"></td>
+<td width="-14%"></td>
+<td width="7%"></td>
+<td width="85%">
+
+
+<p><b>C+KP_Next:scroll_pgdn;S+KP_Next:scroll_pgdn</b>
+enables scrollback scrolling with either of Shift or Control
+modifiers</p> </td></tr>
+</table>
 
 <p style="margin-left:11%;"><b>Use system colours</b>
 (UseSystemColours=no)</p>
@@ -3205,8 +3445,7 @@ red.</p>
 
 <p style="margin-left:22%; margin-top: 1em">By default,
 this is unset, which means that the cursor colour does not
-change. The colour can also be changed using xterm&rsquo;s
-OSC 4 control sequence with colour number 262.</p>
+change.</p>
 
 <p style="margin-left:11%;"><b>ANSI colours</b></p>
 
@@ -3234,6 +3473,32 @@ can be used as well. Also X11 color names are supported.
 &ndash; <b>BoldMagenta</b>=255,64,255 <br>
 &ndash; <b>BoldCyan</b>=64,255,255 <br>
 &ndash; <b>BoldWhite</b>=255,255,255</p>
+
+<p style="margin-left:11%;"><b>Tektronix mode
+colours</b></p>
+
+<p style="margin-left:22%;">For Tektronix 4014 emulation,
+colours can be overridden; <b>TekWriteThruColour</b> and
+<b>TekDefocusedColour</b> can be used to visualize
+Write-Thru and Defocused modes. <br>
+&ndash; <b>TekForegroundColour</b>= <br>
+&ndash; <b>TekBackgroundColour</b>= <br>
+&ndash; <b>TekCursorColour</b>= <br>
+&ndash; <b>TekWriteThruColour</b>= <br>
+&ndash; <b>TekDefocusedColour</b>=</p>
+
+<p style="margin-left:11%;"><b>Tektronix mode font</b>
+(TekFont=)</p>
+
+<p style="margin-left:22%;">For Tektronix 4014 emulation, a
+dedicated font can be selected. The terminal default font is
+used otherwise.</p>
+
+<p style="margin-left:11%;"><b>Tektronix mode effect</b>
+(TekGlow=1)</p>
+
+<p style="margin-left:22%;">The Tektronix drawing beam glow
+can be switched with this setting.</p>
 
 <p style="margin-left:11%;"><b>Downloaded colour scheme</b>
 (ColourScheme=)</p>
@@ -3366,6 +3631,16 @@ Control+V character.</p>
 
 <p style="margin-left:22%;">Enabling font zooming with
 <b>Ctrl+mouse-wheel/middle-mouse-click</b>.</p>
+
+<p style="margin-left:11%;"><b>Scroll lines per mouse wheel
+notch</b> (LinesPerMouseWheelNotch=0)</p>
+
+<p style="margin-left:22%;">With this setting, the number
+of lines counted per notch of the mouse wheel can be set to
+a maximum of the terminal height - 1. This applies to
+scrollback scrolling as well as to mousewheel reporting but
+not to mouse tracking reports. The default is to take the
+value from a system setting, typically 3.</p>
 
 <p style="margin-left:11%;"><b>Disable Shift-coupled
 implicit font zooming</b> (ZoomFontWithWindow=yes)</p>
@@ -3764,15 +4039,33 @@ within the Virtual Tabs feature: <br>
 &ndash; <b>0</b>: no geometry handling; terminal session
 windows are separate <br>
 &ndash; <b>1</b>: sync. position/size when
-switching/launching a session <br>
+switching/launching/closing a session <br>
 &ndash; <b>2</b>: sync. also when window is moved or resized
 <br>
 &ndash; <b>3</b>: sync. also when window is minimized <br>
 &ndash; <b>4</b>: sync. also when window is started
 separately</p>
 
-<h2>LIMITATIONS
-<a name="LIMITATIONS"></a>
+<p style="margin-left:11%;"><b>Tabbar and tab
+synchronization</b> (TabBar=0)</p>
+
+<p style="margin-left:22%;">Setting
+<b>TabBar=</b><i>level</i> enables an interactive tabbar as
+an alternative session switcher. It raises the effective
+window position synchronization to the given level as if
+also setting <b>SessionGeomSync=</b><i>level</i>. It is
+recommended to use level 3 or higher.</p>
+
+<p style="margin-left:11%;"><b>Tabbar highlighting</b></p>
+
+<p style="margin-left:22%;">With these settings, colour
+highlighting of the active tab in the tabbar can be
+configured. <br>
+&ndash; <b>TabForegroundColour</b>= <br>
+&ndash; <b>TabBackgroundColour</b>=</p>
+
+<h2>SCOPE AND LIMITATIONS
+<a name="SCOPE AND LIMITATIONS"></a>
 </h2>
 
 
@@ -3812,14 +4105,19 @@ attribute controls (including RGB and CMYK true-colour
 support, italic, overline, strikeout, rapid blinking,
 alternative fonts) and additional rendering attributes
 (underline styles and colours, superscript and subscript,
-shadowed and overstrike). Mintty provides Sixel graphics and
-other image support, Emoji support, and Bidi reordering
+shadowed and overstrike). Mintty provides Sixel graphics,
+image support according to the iTerm2 protocol (including
+png, jpeg, gif output), Emoji support, and Bidi reordering
 according to the Unicode Bidi Algorithm UBA, amended with
 flexible bidi controls according to the draft bidi mode
 model of the <b>BiDi in Terminal Emulators</b>
 recommendation (
 <i><a href="https://terminal-wg.pages.freedesktop.org/bidi/">https://terminal-wg.pages.freedesktop.org/bidi/</a></i>
 ).</p>
+
+<p style="margin-left:11%; margin-top: 1em">Mintty also
+provides emulation of the Tektronix 4014 vector graphics
+terminal.</p>
 
 <p style="margin-left:11%; margin-top: 1em">Mintty is not
 as configurable as xterm; it offers essential configuration
@@ -3828,8 +4126,7 @@ i.e. they do not appear in the interactive
 &quot;Options&quot; configuration dialog. Of xterm&rsquo;s
 keyboard modes, only the default PC-style and VT220-style
 are available. 8-bit control characters are not supported.
-There is no Tektronix 4014 emulation. Mouse highlighting
-mode is not implemented.</p>
+Mouse highlighting mode is not implemented.</p>
 
 <h2>SEE ALSO
 <a name="SEE ALSO"></a>
@@ -3848,7 +4145,7 @@ page
 
 
 <p style="margin-left:11%; margin-top: 1em">Copyright (C)
-2013 Andy Koppe (C) 2019 Thomas Wolff</p>
+2013 Andy Koppe (C) 2020 Thomas Wolff</p>
 
 <p style="margin-left:11%; margin-top: 1em">Mintty is
 released under the terms of the the <i>GNU General Public

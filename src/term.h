@@ -61,8 +61,13 @@ typedef enum {
   // configured Bold colour
   BOLD_COLOUR_I = 281,
 
+  // Tektronix colours
+  TEK_FG_COLOUR_I      = 282,
+  TEK_BG_COLOUR_I      = 283,
+  TEK_CURSOR_COLOUR_I  = 284,
+
   // Number of colours
-  COLOUR_NUM = 282,
+  COLOUR_NUM = 285,
 
   // True Colour indicator
   // assert (TRUE_COLOUR % 4) == 0 so that checking x >= TRUE_COLOUR
@@ -239,7 +244,7 @@ typedef struct {
   cattr attr;
 } termchar;
 
-/*const*/ termchar basic_erase_char;
+extern termchar basic_erase_char;
 
 typedef struct {
   ushort lattr;
@@ -310,7 +315,8 @@ typedef enum {
 } term_cset;
 
 typedef struct {
-  int y, x;
+  int y, x;      // cell coordinates of mouse event
+  int piy, pix;  // pixel coordinates of mouse event
   bool r;
 } pos;
 
@@ -552,6 +558,8 @@ struct term {
   uchar *tabs;
   bool newtab;
 
+  int detect_progress;
+
   enum {
     NORMAL, ESCAPE, CSI_ARGS,
     IGNORE_STRING, CMD_STRING, CMD_ESCAPE,
@@ -565,7 +573,8 @@ struct term {
     DCS_IGNORE,
     DCS_ESCAPE,
     VT52_Y, VT52_X,
-    VT52_FG, VT52_BG
+    VT52_FG, VT52_BG,
+    TEK_ESCAPE, TEK_ADDRESS0, TEK_ADDRESS, TEK_INCREMENTAL
   } state;
 
   // Mouse mode
@@ -583,7 +592,8 @@ struct term {
     ME_X10,        // CSI M followed by one byte each for event, X and Y
     ME_UTF8,       // Same as X10, but with UTF-8 encoded X and Y (ugly!)
     ME_URXVT_CSI,  // CSI event ; x ; y M
-    ME_XTERM_CSI   // CSI > event ; x ; y M/m
+    ME_XTERM_CSI,  // CSI > event ; x ; y M/m
+    ME_PIXEL_CSI   // CSI > event ; pix ; piy M/m
   } mouse_enc;
 
   enum {
