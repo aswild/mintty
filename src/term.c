@@ -398,6 +398,7 @@ term_reset(bool full)
   term_clear_scrollback();
 
   term.detect_progress = cfg.progress_bar;
+  taskbar_progress(-9);
 
   term_schedule_search_update();
 
@@ -1305,12 +1306,13 @@ disp_scroll(int topscroll, int botscroll, int scrolllines)
 static void
 disp_do_scroll(int topscroll, int botscroll, int scrolllines)
 {
-  if (!win_do_scroll(topscroll, botscroll, scrolllines))
+  bool down = scrolllines < 0;
+  int lines = min(abs(scrolllines), term.rows);
+
+  if (!win_do_scroll(topscroll, botscroll, lines))
     return;
 
   // update display cache
-  bool down = scrolllines < 0;
-  int lines = abs(scrolllines);
   termline * recycled[lines];
   if (down) {
     for (int l = 0; l < lines; l++) {
@@ -1636,11 +1638,11 @@ emoji_tags(int i)
 #endif
 
 struct emoji_seq {
-  wchar * efn;  // image filename
-  void * buf;   // cached image
-  int buflen;   // cached image
-  echar chs[8]; // code points
-  char * name;  // short name in emoji-sequences.txt, emoji-zwj-sequences.txt
+  wchar * efn;   // image filename
+  void * buf;    // cached image
+  int buflen;    // cached image
+  echar chs[10]; // code points
+  char * name;   // short name in emoji-sequences.txt, emoji-zwj-sequences.txt
 };
 
 struct emoji_seq emoji_seqs[] = {
@@ -2353,22 +2355,25 @@ term_paint(void)
           tattr.attr != (dispchars[j].attr.attr & ~(TATTR_NARROW | DATTR_MASK))
               )
       {
+        xchar xch = tchar;
+        if ((xch & 0xFC00) == 0xD800 && d->cc_next) {
+          termchar * cc = d + d->cc_next;
+          if ((cc->chr & 0xFC00) == 0xDC00) {
+            xch = ((xchar) (xch - 0xD7C0) << 10) | (cc->chr & 0x03FF);
+          }
+        }
+
         if ((tattr.attr & TATTR_WIDE) == 0
-            && win_char_width(tchar, tattr.attr) == 2
+            && win_char_width(xch, tattr.attr) == 2
             // && !(line->lattr & LATTR_MODE) ? "do not tamper with graphics"
             // && is_ambigwide(tchar) ? but then they will be clipped...
            )
         {
           //printf("[%d:%d] narrow? %04X..%04X\n", i, j, tchar, chars[j + 1].chr);
-          xchar ch = tchar;
-          if ((ch & 0xFC00) == 0xD800 && d->cc_next) {
-            termchar * cc = d + d->cc_next;
-            if ((cc->chr & 0xFC00) == 0xDC00) {
-              ch = ((xchar) (ch - 0xD7C0) << 10) | (cc->chr & 0x03FF);
-            }
-          }
-          if ((ch >= 0x2190 && ch <= 0x2BFF)
-           || (ch >= 0x1F000 && ch <= 0x1FAFF)
+          if (
+              // do not narrow various symbol ranges
+                 (xch >= 0x2190 && xch <= 0x25FF)
+              || (xch >= 0x27C0 && xch <= 0x2BFF)
              )
           {
             //tattr.attr |= TATTR_NARROW1; // ?
@@ -2379,7 +2384,7 @@ term_paint(void)
 #endif
             tattr.attr |= TATTR_NARROW;
             //if (ch != 0x25CC)
-            //printf("char %lc U+%04X narrow %d ambig %d\n", ch, ch, !!(tattr.attr & TATTR_NARROW), is_ambigwide(ch));
+            //printf("char %lc U+%04X narrow %d ambig %d\n", xch, xch, !!(tattr.attr & TATTR_NARROW), is_ambigwide(xch));
         }
         else if (tattr.attr & TATTR_WIDE
                  // guard character expanding properly to avoid 
@@ -2394,7 +2399,7 @@ term_paint(void)
                  // MS Mincho: wide Greek/Cyrillic but narrow æ, œ, ...
                  // SimSun, NSimSun, Yu Gothic
                  //&& !font_ambig_wide
-                 && win_char_width(tchar, tattr.attr) == 1
+                 && win_char_width(xch, tattr.attr) == 1
                  // and reassure to apply this only to ambiguous width chars
                  && is_ambigwide(tchar) // is_ambig(tchar) && !is_wide(tchar)
                  // do not widen Geometric Shapes
@@ -2500,16 +2505,23 @@ term_paint(void)
       if (term.detect_progress) {
         int j = term.cols;
         while (--j > 0) {
-          if (chars[j].chr == '%' ||
+          if (chars[j].chr == '%'
+#ifdef detect_percentage_only_at_line_end
+              ||
+              // check empty space indication in chars;
+              // note: TATTR_CLEAR is already cleared in newchars
               (!(chars[j].attr.attr & TATTR_CLEAR)
-               // note: TATTR_CLEAR is already cleared in newchars
-               && !wcschr(W(")"), chars[j].chr)
+               // accept anything after %
+               && 0
+               // accept termination chars after percentage indication
+               && !wcschr(W(")]."), chars[j].chr)
               )
+#endif
              )
             break;
         }
         int p = 0;
-        if (chars[j].chr == '%') {
+        if (chars[j].chr == '%' && (displine->lattr & LATTR_PROGRESS)) {
           int f = 1;
           while (--j >= 0) {
             if (chars[j].chr >= '0' && chars[j].chr <= '9') {

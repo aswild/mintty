@@ -1,3 +1,34 @@
+### 3.4.4 (19 December 2020) ###
+
+Unicode and Emoji data
+  * Update to Emoji data version 13.1.
+
+Terminal features
+  * Terminal reset clears progress bar (mintty/wsltty#202).
+  * DECTST colour fillings (CSI 4;10..13 y, VT240).
+  * Smart detection of progress indication also inmidst line (mintty/wsltty#202).
+  * Fixed rendering of 0x7F (DEL code) in some 96-characters NRCS modes.
+  * Support for 48-bit hex colour specs (#1072).
+
+Font rendering
+  * Enabled width detection for auto-narrowing non-BMP characters (#1065).
+  * Tweaked character ranges to consider for auto-narrowing (#1065).
+  * Enabled secondary font specification for Unicode blocks (#777).
+
+Keyboard handling
+  * Compose key may also be user-defined super or hyper (#777).
+
+Window handling
+  * Optionally transform Exit to characters, to exit on application-level (#1063).
+  * Options dialog: configurable font and size (~#1059).
+  * Tweak initial setup of terminal pixel size (#1071).
+
+Configuration
+  * New option ExitCommands (#1063).
+  * New options OptionsFont and OptionsFontHeight (~#1059).
+  * Extended syntax for option FontChoice (#777).
+  * New ComposeKey values super, hyper (#777).
+
 ### 3.4.3 (11 November 2020) ###
 
 Character encoding

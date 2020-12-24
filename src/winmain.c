@@ -285,12 +285,6 @@ uint dpi = 96;
 // DPI handling V2
 static bool is_in_dpi_change = false;
 
-#ifndef WM_DPICHANGED
-#define WM_DPICHANGED 0x02E0
-#endif
-#ifndef WM_GETDPISCALEDSIZE
-#define WM_GETDPISCALEDSIZE 0x02E4
-#endif
 const int Process_System_DPI_Aware = 1;
 const int Process_Per_Monitor_DPI_Aware = 2;
 static HRESULT (WINAPI * pGetProcessDpiAwareness)(HANDLE hprocess, int * value) = 0;
@@ -2433,6 +2427,24 @@ confirm_exit(void)
 void
 win_close(void)
 {
+  if (!support_wsl && *cfg.exit_commands) {
+    // try to determine foreground program
+    char * fg_prog = foreground_prog();
+    if (fg_prog) {
+      // match program base name
+      char * exits = cs__wcstombs(cfg.exit_commands);
+      char * paste = matchconf(exits, fg_prog);
+      if (paste) {
+        child_send(paste, strlen(paste));
+        free(exits);  // also frees paste which points into exits
+        free(fg_prog);
+        return;  // don't close terminal
+      }
+      free(exits);
+      free(fg_prog);
+    }
+  }
+
   if (!cfg.confirm_exit || confirm_exit())
     child_kill((GetKeyState(VK_SHIFT) & 0x80) != 0);
 }
@@ -5672,7 +5684,8 @@ static int dynfonts = 0;
 
   // Create child process.
   child_create(
-    argv, &(struct winsize){term_rows, term_cols, term_width, term_height}
+    argv,
+    &(struct winsize){term_rows, term_cols, term_cols * cell_width, term_rows * cell_height}
   );
 
   // Set up clipboard notifications.

@@ -282,7 +282,7 @@ using the Linux path name.
 \(en When Ctrl+clicking a file name, it will be interpreted in the Linux 
 namespace and converted before opening in Windows.
 .br
-\(en Options DropCommands and setting MINTTY_PROG for UserCommands are disabled.
+\(en Options DropCommands, ExitCommands, and setting MINTTY_PROG for UserCommands are disabled.
 .br
 \(en The working directory of the current foreground process 
 (for click-opening pathnames) cannot be detected.
@@ -1035,7 +1035,7 @@ Language, Font, Font1..10, FontSample, FontChoice,
 TekFont, CopyAsRTFFont, 
 SearchBar, Printer, Answerback, SixelClipChars, 
 Class, AppID, AppName, AppLaunchCmd, 
-DropCommands, UserCommands, SessionCommands, TaskCommands, 
+DropCommands, ExitCommands, UserCommands, SessionCommands, TaskCommands, 
 KeyFunctions, SysMenuFunctions, CtxMenuFunctions, UserCommandsPath.
 
 Be careful when running multiple instances of mintty. If options are saved 
@@ -1119,6 +1119,9 @@ and only if glass colour brightness was set black in the Windows control panel.
 Numeric transparency values ranging from 4 to 254 can be specified in config
 files or on the command line.  (Values below 4 are multiplied by 16, for
 backward compatibility reasons.)
+
+Note that opaqueness (non-transparency) cumulates in SessionGeomSync modes 
+like with tabbar.
 
 .TP
 \fBOpaque when focused\fP (OpaqueWhenFocused=no)
@@ -1231,6 +1234,10 @@ will override an earlier one (see CJK example below).
 .br
 Finally, special name \fBPrivate\fP covers the Private Use ranges, which are 
 often used for additional icon symbols (e.g. by "Nerd Fonts" or "Powerline" fonts).
+.br
+In addition to Unicode scripts, also Unicode blocks can be used 
+to specify a secondary font, by a "|" prefix to the block name, with block 
+specifications preceding over the more general script specifications.
 
 .br
 Example:
@@ -1250,6 +1257,8 @@ Example:
   \fBFontChoice=PictoSymbols:2\fP
 .br
   \fBFont2=DejaVu Sans Mono\fP
+.br
+  \fBFontChoice=Greek:3;|Greek Extended:4\fP
 
 \(en \fBFont sample text\fP (FontSample=):
 This hidden setting overrides the text for the "Sample" box in the Font chooser dialog.
@@ -2256,6 +2265,12 @@ options, which means they can only be set in config files or using the
 \fB--option\fP or \fB-o\fP command line option.
 
 .TP
+\fBOptions dialog custom font and size\fP (OptionsFont=, OptionsFontHeight=0)
+These settings change the font and fontsize in the Options dialog.
+(Note that scaling a custom font in the Options dialog when changing the 
+screen resolution does not work, so Options is closed in this case.)
+
+.TP
 \fBCustomize Options dialog\fP (OldOptions=)
 Listing comma-separated tags in this setting will disable extended or 
 enhanced parts of the Options dialog.
@@ -2313,9 +2328,10 @@ in the window title when hovering can be disabled.
 .TP
 \fBShow automatic progress bar\fP (ProgressBar=0)
 This setting initially enables a progress indication on the taskbar icon, 
-based on automatic progress detection: if the current cursor line ends 
-with a percent indication (x%) it will be notified via progress bar in 
-one of three levels 1 (green), 2 (yellow), 3 (red).
+based on automatic progress detection: if the current cursor line contains 
+a percent indication (x%) and a subsequent relative positioning (e.g. a CR 
+return character) like in text progress indications, it will be notified 
+via progress bar in one of three levels 1 (green), 2 (yellow), 3 (red).
 Note that the progress bar can also be switched or even controlled by an 
 escape sequence.
 
@@ -3051,6 +3067,36 @@ control characters need to be embedded verbatim
 \fINote:\fP If different actions for directories/folders or even different 
 command invocations depending on file name pattern are desired, this should 
 be handled by a suitable cooperating shell function.
+
+.TP
+\fBExit application-targetted commands\fP (ExitCommands=)
+With this setting, a set of strings can be configured to be sent to 
+respective applications,
+in dependence of the program running in the terminal foreground,
+if the window is instructed to "Close" from its menu or close button.
+
+\fINote:\fP Detection of terminal foreground processes works only locally; 
+this features does not work with WSL or after remote login.
+
+The value is a series of semicolon-separated, colon-combined 
+pairs of program name and (control) string. The string is sent to the 
+client application.
+If a semicolon shall be embedded into any of the drop patterns, 
+a non-whitespace control character (i.e. none of \fB^I^J^K^L^M\fP) can be 
+specified as an alternative separator by starting the whole setting with it.
+The definition list can be split over multiple lines if a separator is 
+followed by a backslash, newline, and optional whitespace indentation.
+
+\fINote:\fP This feature potentially makes mintty vulnerable against command injection.
+Be careful what strings you configure!
+
+Example:
+.br
+\(en \fBExitCommands=bash:exit^M;mined:^[q;emacs:^X^C\fP
+
+\fINote:\fP An "Enter" key has to be specified with the CR character code, 
+control characters need to be embedded verbatim 
+(indicated above as "^M", "^[", "^X", "^C"); there is no escape notation.
 
 .TP
 \fBUser commands\fP (UserCommands=) [DEPRECATED, see \fBCtxMenuFunctions\fP]

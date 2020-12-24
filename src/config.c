@@ -197,6 +197,7 @@ const config default_cfg = {
   .app_name = W(""),
   .app_launch_cmd = W(""),
   .drop_commands = W(""),
+  .exit_commands = W(""),
   .user_commands = W(""),
   .ctx_user_commands = W(""),
   .sys_user_commands = W(""),
@@ -250,6 +251,8 @@ const config default_cfg = {
   .baud = 0,
   .bloom = 0,
   .old_xbuttons = false,
+  .options_font = W(""),
+  .options_fontsize = 0,
   .old_options = ""
 };
 
@@ -260,6 +263,7 @@ typedef enum {
   OPT_MIDDLECLICK, OPT_RIGHTCLICK, OPT_SCROLLBAR, OPT_WINDOW, OPT_HOLD,
   OPT_INT, OPT_COLOUR, OPT_STRING, OPT_WSTRING,
   OPT_CHARWIDTH, OPT_EMOJIS, OPT_EMOJI_PLACEMENT,
+  OPT_COMPOSE_KEY,
   OPT_TYPE_MASK = 0x1F,
   OPT_LEGACY = 0x20,
   OPT_KEEPCR = 0x40
@@ -372,7 +376,7 @@ options[] = {
   {"CtrlShiftShortcuts", OPT_BOOL, offcfg(ctrl_shift_shortcuts)},
   {"CtrlExchangeShift", OPT_BOOL, offcfg(ctrl_exchange_shift)},
   {"CtrlControls", OPT_BOOL, offcfg(ctrl_controls)},
-  {"ComposeKey", OPT_MOD, offcfg(compose_key)},
+  {"ComposeKey", OPT_COMPOSE_KEY, offcfg(compose_key)},
   {"Key_PrintScreen", OPT_STRING, offcfg(key_prtscreen)},
   {"Key_Pause", OPT_STRING, offcfg(key_pause)},
   {"Key_Break", OPT_STRING, offcfg(key_break)},
@@ -401,6 +405,7 @@ options[] = {
   {"CopyAsRTF", OPT_BOOL, offcfg(copy_as_rtf)},
   {"CopyAsHTML", OPT_BOOL, offcfg(copy_as_html)},
   {"CopyAsRTFFont", OPT_WSTRING, offcfg(copy_as_rtf_font)},
+  {"CopyAsRTFFontSize", OPT_INT | OPT_LEGACY, offcfg(copy_as_rtf_font_size)},
   {"CopyAsRTFFontHeight", OPT_INT, offcfg(copy_as_rtf_font_size)},
   {"TrimSelection", OPT_BOOL, offcfg(trim_selection)},
   {"AllowSetSelection", OPT_BOOL, offcfg(allow_set_selection)},
@@ -478,6 +483,7 @@ options[] = {
   {"AppLaunchCmd", OPT_WSTRING, offcfg(app_launch_cmd)},
 
   {"DropCommands", OPT_WSTRING | OPT_KEEPCR, offcfg(drop_commands)},
+  {"ExitCommands", OPT_WSTRING | OPT_KEEPCR, offcfg(exit_commands)},
   {"UserCommands", OPT_WSTRING | OPT_KEEPCR, offcfg(user_commands)},
   {"CtxMenuFunctions", OPT_WSTRING | OPT_KEEPCR, offcfg(ctx_user_commands)},
   {"SysMenuFunctions", OPT_WSTRING | OPT_KEEPCR, offcfg(sys_user_commands)},
@@ -513,6 +519,9 @@ options[] = {
   {"Baud", OPT_INT, offcfg(baud)},
   {"Bloom", OPT_INT, offcfg(bloom)},
   {"OldXButtons", OPT_BOOL, offcfg(old_xbuttons)},
+  {"OptionsFont", OPT_WSTRING, offcfg(options_font)},
+  {"OptionsFontSize", OPT_INT | OPT_LEGACY, offcfg(options_fontsize)},
+  {"OptionsFontHeight", OPT_INT, offcfg(options_fontsize)},
   {"OldOptions", OPT_STRING, offcfg(old_options)},
 
   // ANSI colours
@@ -594,6 +603,15 @@ static opt_val
     {"alt", MDK_ALT},
     {"ctrl", MDK_CTRL},
     {"win", MDK_WIN},
+    {"super", MDK_SUPER},
+    {"hyper", MDK_HYPER},
+    {0, 0}
+  },
+  [OPT_COMPOSE_KEY] = (opt_val[]) {
+    {"off", 0},
+    {"shift", MDK_SHIFT},
+    {"alt", MDK_ALT},
+    {"ctrl", MDK_CTRL},
     {"super", MDK_SUPER},
     {"hyper", MDK_HYPER},
     {0, 0}
@@ -816,6 +834,11 @@ parse_colour(string s, colour *cp)
   float c, m, y, k = 0;
   if (sscanf(s, "%u,%u,%u", &r, &g, &b) == 3)
     ;
+  else if (sscanf(s, "#%4x%4x%4x", &r, &g, &b) == 3) {
+    r >>= 8;
+    g >>= 8;
+    b >>= 8;
+  }
   else if (sscanf(s, "#%2x%2x%2x", &r, &g, &b) == 3)
     ;
   else if (sscanf(s, "rgb:%2x/%2x/%2x", &r, &g, &b) == 3)
@@ -965,6 +988,44 @@ void
 parse_arg_option(string option)
 {
   check_arg_option(parse_option(option, false));
+}
+
+
+/*
+   In a configuration parameter list, map tag to value.
+ */
+char *
+matchconf(char * conf, char * item)
+{
+  char * cmdp = conf;
+  char sepch = ';';
+  if ((uchar)*cmdp <= (uchar)' ')
+    sepch = *cmdp++;
+
+  char * paramp;
+  while ((paramp = strchr(cmdp, ':'))) {
+    *paramp = '\0';
+    paramp++;
+    char * sepp = strchr(paramp, sepch);
+    if (sepp)
+      *sepp = '\0';
+
+    if (!strcmp(cmdp, item))
+      return paramp;
+
+    if (sepp) {
+      cmdp = sepp + 1;
+      // check for multi-line separation
+      if (*cmdp == '\\' && cmdp[1] == '\n') {
+        cmdp += 2;
+        while (iswspace(*cmdp))
+          cmdp++;
+      }
+    }
+    else
+      break;
+  }
+  return 0;
 }
 
 
@@ -3073,6 +3134,12 @@ emoji_placement_handler(control *ctrl, int event)
   opt_handler(ctrl, event, &new_cfg.emoji_placement, opt_vals[OPT_EMOJI_PLACEMENT]);
 }
 
+static void
+compose_key_handler(control *ctrl, int event)
+{
+  opt_handler(ctrl, event, &new_cfg.compose_key, opt_vals[OPT_COMPOSE_KEY]);
+}
+
 static bool bold_like_xterm;
 
 static void
@@ -3498,22 +3565,29 @@ setup_config_box(controlbox * b)
     dlg_stdcheckbox_handler, &new_cfg.ctrl_shift_shortcuts
   );
 
-  s = ctrl_new_set(b, _("Keys"), null, 
-  //__ Options - Keys: section title
-                      _("Compose key"));
-  ctrl_radiobuttons(
-    s, null, 4,
-    dlg_stdradiobutton_handler, &new_cfg.compose_key,
-    //__ Options - Keys:
-    _("&Shift"), MDK_SHIFT,
-    //__ Options - Keys:
-    _("&Ctrl"), MDK_CTRL,
-    //__ Options - Keys:
-    _("&Alt"), MDK_ALT,
-    //__ Options - Keys:
-    _("&Off"), 0,
-    null
-  );
+  if (strstr(cfg.old_options, "composekey")) {
+    s = ctrl_new_set(b, _("Keys"), null, 
+    //__ Options - Keys: section title
+                        _("Compose key"));
+    ctrl_radiobuttons(
+      s, null, 4,
+      dlg_stdradiobutton_handler, &new_cfg.compose_key,
+      //__ Options - Keys:
+      _("&Shift"), MDK_SHIFT,
+      //__ Options - Keys:
+      _("&Ctrl"), MDK_CTRL,
+      //__ Options - Keys:
+      _("&Alt"), MDK_ALT,
+      //__ Options - Keys:
+      _("&Off"), 0,
+      null
+    );
+  }
+  else {
+    s = ctrl_new_set(b, _("Keys"), null, null);
+    ctrl_combobox(
+      s, _("Compose key"), 50, compose_key_handler, 0);
+  }
 
  /*
   * The Mouse panel.

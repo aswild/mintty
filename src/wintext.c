@@ -828,7 +828,34 @@ wcscasestr(wstring in, wstring find)
   return 0;
 }
 
-static void
+static int CALLBACK
+enum_fonts(const LOGFONTW * lfp, const TEXTMETRICW * tmp, DWORD fontType, LPARAM lParam)
+{
+  (void)tmp;
+  (void)fontType;
+  wstring * fnp = (wstring *)lParam;
+
+#if defined(debug_fonts) && debug_fonts > 1
+  trace_font(("%ls %dx%d %d it %d cs %d %s\n", lfp->lfFaceName, (int)lfp->lfWidth, (int)lfp->lfHeight, (int)lfp->lfWeight, lfp->lfItalic, lfp->lfCharSet, (lfp->lfPitchAndFamily & 3) == FIXED_PITCH ? "fixed" : ""));
+#endif
+  if ((lfp->lfPitchAndFamily & 3) == FIXED_PITCH
+   && !lfp->lfCharSet
+   && lfp->lfFaceName[0] != '@'
+     )
+  {
+    if (wcscasestr(lfp->lfFaceName, W("Fraktur"))) {
+      *fnp = wcsdup(lfp->lfFaceName);
+      return 0;  // done
+    }
+    else if (wcscasestr(lfp->lfFaceName, W("Blackletter"))) {
+      *fnp = wcsdup(lfp->lfFaceName);
+      // continue to look for "Fraktur"
+    }
+  }
+  return 1;  // continue
+}
+
+void
 findFraktur(wstring * fnp)
 {
   LOGFONTW lf;
@@ -836,36 +863,11 @@ findFraktur(wstring * fnp)
   lf.lfPitchAndFamily = 0;
   lf.lfCharSet = ANSI_CHARSET;   // report only ANSI character range
 
-  int CALLBACK enum_fonts(const LOGFONTW * lfp, const TEXTMETRICW * tmp, DWORD fontType, LPARAM lParam)
-  {
-    (void)tmp;
-    (void)fontType;
-    wstring * fnp = (wstring *)lParam;
-
-#if defined(debug_fonts) && debug_fonts > 1
-    trace_font(("%ls %dx%d %d it %d cs %d %s\n", lfp->lfFaceName, (int)lfp->lfWidth, (int)lfp->lfHeight, (int)lfp->lfWeight, lfp->lfItalic, lfp->lfCharSet, (lfp->lfPitchAndFamily & 3) == FIXED_PITCH ? "fixed" : ""));
-#endif
-    if ((lfp->lfPitchAndFamily & 3) == FIXED_PITCH
-     && !lfp->lfCharSet
-     && lfp->lfFaceName[0] != '@'
-       )
-    {
-      if (wcscasestr(lfp->lfFaceName, W("Fraktur"))) {
-        *fnp = wcsdup(lfp->lfFaceName);
-        return 0;  // done
-      }
-      else if (wcscasestr(lfp->lfFaceName, W("Blackletter"))) {
-        *fnp = wcsdup(lfp->lfFaceName);
-        // continue to look for "Fraktur"
-      }
-    }
-    return 1;  // continue
-  }
-
   HDC dc = GetDC(0);
   EnumFontFamiliesExW(dc, 0, enum_fonts, (LPARAM)fnp, 0);
   ReleaseDC(0, dc);
 }
+
 
 /*
  * Initialize fonts for all configured font families.
@@ -4131,7 +4133,7 @@ win_check_glyphs(wchar *wcs, uint num, cattrflags attr)
   ReleaseDC(wnd, dc);
 }
 
-#define dont_debug_win_char_width
+#define dont_debug_win_char_width 2
 
 #ifdef debug_win_char_width
 int
@@ -4139,9 +4141,10 @@ win_char_width(xchar c, cattrflags attr)
 {
 #define win_char_width xwin_char_width
 int win_char_width(xchar, cattrflags);
+  ulong t = mtime();
   int w = win_char_width(c, attr);
   if (c >= 0x80)
-    printf(" win_char_width(%04X) -> %d\n", c, w);
+    printf(" [%ld:%ld] win_char_width(%04X) -> %d\n", t, mtime() - t, c, w);
   return w;
 }
 #endif
@@ -4156,6 +4159,12 @@ int win_char_width(xchar, cattrflags);
 int
 win_char_width(xchar c, cattrflags attr)
 {
+  // NOTE: if wintext.c is compiled with optimization (-O1 or higher), 
+  // and win_char_width is called for a non-BMP character (>= 0x10000), 
+  // (unless inhibited by calls to GetCharABCWidths* below)
+  // a mysterious delay occurs, if tracing with timestamps apparently 
+  // *before* invocation of win_char_width (unless printf gets delayed...)
+
   int findex = (attr & FONTFAM_MASK) >> ATTR_FONTFAM_SHIFT;
   if (findex > 10)
     findex = 0;
@@ -4202,6 +4211,9 @@ win_char_width(xchar c, cattrflags attr)
     float cwf = 0.0;
     BOOL ok2 = GetCharWidthFloatW(dc, c, c, &cwf);
     ABC abc; memset(&abc, 0, sizeof abc);
+    // NOTE: with these 2 calls of GetCharABCWidths*, 
+    // the mysterious delay for non-BMP characters does not occur, 
+    // again mysteriously
     BOOL ok3 = GetCharABCWidthsW(dc, c, c, &abc);  // only on TrueType
     ABCFLOAT abcf; memset(&abcf, 0, sizeof abcf);
     BOOL ok4 = GetCharABCWidthsFloatW(dc, c, c, &abcf);
@@ -4214,30 +4226,36 @@ win_char_width(xchar c, cattrflags attr)
 #endif
 
   int ibuf = 0;
-  bool ok = GetCharWidth32W(dc, c, c, &ibuf);
-#ifdef debug_win_char_width
-  printf(" getcharw %04X %dpx/cell %dpx\n", c, ibuf, cell_width);
-#endif
-  if (!ok) {
-    ReleaseDC(wnd, dc);
-    return 0;
-  }
 
-  // report char as wide if its width is more than 1½ cells;
-  // this is unreliable if font fallback is involved (#615)
-  ibuf += cell_width / 2 - 1;
-  ibuf /= cell_width;
-  if (ibuf > 1) {
+#ifdef use_getcharwidth
+#warning avoid buggy GetCharWidth*
+  if (c < 0x10000) {
+    bool ok = GetCharWidth32W(dc, c, c, &ibuf);
 #ifdef debug_win_char_width
-    printf(" enquired %04X %dpx/cell %dpx\n", c, ibuf, cell_width);
+    printf(" getcharwidth32 %04X %dpx(/cell %dpx)\n", c, ibuf, cell_width);
 #endif
-    ReleaseDC(wnd, dc);
-    //printf(" win_char_width %04X -> %d\n", c, ibuf);
-    return ibuf;
+    if (!ok) {
+      ReleaseDC(wnd, dc);
+      return 0;
+    }
+
+    // report char as wide if its width is more than 1½ cells;
+    // this is unreliable if font fallback is involved (#615)
+    ibuf += cell_width / 2 - 1;
+    ibuf /= cell_width;
+    if (ibuf > 1) {
+#ifdef debug_win_char_width
+      printf(" enquired %04X %dpx/cell %dpx\n", c, ibuf, cell_width);
+#endif
+      ReleaseDC(wnd, dc);
+      //printf(" win_char_width %04X -> %d\n", c, ibuf);
+      return ibuf;
+    }
   }
+#endif
 
 #ifdef measure_width
-  int act_char_width(wchar wc)
+  int act_char_width(xchar wc)
   {
     HDC wid_dc = CreateCompatibleDC(dc);
     HBITMAP wid_bm = CreateCompatibleBitmap(dc, cell_width * 2, cell_height);
@@ -4249,10 +4267,20 @@ win_char_width(xchar c, cattrflags attr)
     SetBkMode(wid_dc, OPAQUE);
     int dx = 0;
     use_uniscribe = cfg.font_render == FR_UNISCRIBE;
-    text_out_start(wid_dc, &wc, 1, &dx);
-    text_out(wid_dc, 0, 0, ETO_OPAQUE, null, &wc, 1, &dx);
+    wchar wc2[2];
+    if (wc < 0x10000) {
+      *wc2 = wc;
+      text_out_start(wid_dc, wc2, 1, &dx);
+      text_out(wid_dc, 0, 0, ETO_OPAQUE, null, wc2, 1, &dx);
+    }
+    else {
+      wc2[0] = high_surrogate(wc);
+      wc2[1] = low_surrogate(wc);
+      text_out_start(wid_dc, wc2, 2, &dx);
+      text_out(wid_dc, 0, 0, ETO_OPAQUE, null, wc2, 2, &dx);
+    }
     text_out_end();
-# ifdef debug_win_char_width
+# if defined(debug_win_char_width) && debug_win_char_width > 1
     for (int y = 0; y < cell_height; y++) {
       printf(" %2d|", y);
       for (int x = 0; x < cell_width * 2; x++) {
@@ -4294,23 +4322,28 @@ win_char_width(xchar c, cattrflags attr)
                // although FONT_WIDE is actually activated
   }
 
-  if ((c >= 0x3000 && c <= 0x303F)
-   || (c >= 0x2460 && c <= 0x24FF)   // Enclosed Alphanumerics
-   || (c >= 0x2600 && c <= 0x27BF)   // Miscellaneous Symbols, Dingbats
+  if ((c >= 0x3000 && c <= 0x303F)   // CJK Symbols and Punctuation
+
+   || (c >= 0x2460 && c <= 0x24FF)   // Enclosed Alphanumerics, to cover:
    //|| (c >= 0x249C && c <= 0x24E9)   // parenthesized/circled letters
-   || (c >= 0x3248 && c <= 0x324F)   // Enclosed CJK Letters and Months
+
+   //|| (c >= 0x2600 && c <= 0x27BF)   // Miscellaneous Symbols, Dingbats
+   || c == 0x26AC
+
+   || (c >= 0x3248 && c <= 0x324F)   // circled CJK Numbers
    || (c >= 0x1F100 && c <= 0x1F1FF) // Enclosed Alphanumeric Supplement
-#ifdef check_more_mostly_covered_below
-   || (c >= 0x2100 && c <= 0x23FF)   // Letterlike, Number Forms, Arrows, Math Operators, Misc Technical
-   || (c >= 0x25A0 && c <= 0x25FF)   // Geometric Shapes
-   || (c >= 0x2B00 && c <= 0x2BFF)   // Miscellaneous Symbols and Arrows
-#endif
+
+   || c == 0x2139                    // Letterlike: Information Source
+   || (c >= 0x2180 && c <= 0x2182)   // Number Forms: combined Roman Numerals
+   || (c >= 0x2187 && c <= 0x2188)   // Number Forms: combined Roman Numerals
+
    || (c >= 0xE000 && c < 0xF900)    // Private Use Area
+
    || (// check all non-letters with some exceptions
        bidi_class(c) != L               // indicates not a letter
-      &&
+      &&  // do not check these non-letters:
        !(  (c >= 0x2500 && c <= 0x2588)  // Box Drawing, Block Elements
-        || (c >= 0x2592 && c <= 0x2594)  // Block Elements
+        || (c >= 0x2591 && c <= 0x2594)  // Block Elements
         || (c >= 0x2160 && c <= 0x2179)  // Roman Numerals
         //|| wcschr (W("‐‑‘’‚‛“”„‟‹›"), c) // #712 workaround; now caching
         )
