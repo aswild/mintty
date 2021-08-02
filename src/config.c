@@ -1,5 +1,5 @@
 // config.c (part of mintty)
-// Copyright 2008-13 Andy Koppe, 2015-2020 Thomas Wolff
+// Copyright 2008-13 Andy Koppe, 2015-2021 Thomas Wolff
 // Based on code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -14,8 +14,10 @@
 #include "print.h"
 #include "charset.h"
 #include "win.h"
+#include <fcntl.h>  // open+flags, mkdir
 
 #include <windows.h>  // registry handling
+#include "winpriv.h"  // support_wsl, load_library_func
 
 #include <termios.h>
 #ifdef __CYGWIN__
@@ -36,6 +38,7 @@ const config default_cfg = {
   // Looks
   .fg_colour = 0xBFBFBF,
   .bold_colour = (colour)-1,
+  .blink_colour = (colour)-1,
   .bg_colour = 0x000000,
   .cursor_colour = 0xBFBFBF,
   .tek_fg_colour = (colour)-1,
@@ -44,6 +47,7 @@ const config default_cfg = {
   .tek_write_thru_colour = (colour)-1,
   .tek_defocused_colour = (colour)-1,
   .tek_glow = 1,
+  .tek_strap = 0,
   .underl_colour = (colour)-1,
   .tab_fg_colour = (colour)-1,
   .tab_bg_colour = (colour)-1,
@@ -98,6 +102,8 @@ const config default_cfg = {
   .altgr_is_alt = false,
   .ctrl_alt_delay_altgr = 0,
   .old_altgr_detection = false,
+  .old_modify_keys = 0,
+  .format_other_keys = 1,
   .auto_repeat = true,
   .external_hotkeys = 2,
   .clip_shortcuts = true,
@@ -127,6 +133,8 @@ const config default_cfg = {
   .hide_mouse = true,
   .elastic_mouse = false,
   .lines_per_notch = 0,
+  .mouse_pointer = W("ibeam"),
+  .appmouse_pointer = W("arrow"),
   // Selection
   .input_clears_selection = true,
   .copy_on_select = true,
@@ -179,6 +187,7 @@ const config default_cfg = {
   // "Hidden"
   .bidi = 2,
   .disable_alternate_screen = false,
+  .erase_to_scrollback = true,
   .display_speedup = 6,
   .suppress_sgr = "",
   .suppress_dec = "",
@@ -204,6 +213,8 @@ const config default_cfg = {
   .user_commands_path = W("/bin:%s"),
   .session_commands = W(""),
   .task_commands = W(""),
+  .conpty_support = -1,
+  .login_from_shortcut = true,
   .menu_mouse = "b",
   .menu_ctrlmouse = "e|ls",
   .menu_altmouse = "ls",
@@ -215,6 +226,7 @@ const config default_cfg = {
   .tabbar = 0,
   .col_spacing = 0,
   .row_spacing = 0,
+  .auto_leading = 2,
   .padding = 1,
   .ligatures = 1,
   .ligatures_support = 0,
@@ -285,6 +297,7 @@ options[] = {
 
   // Looks
   {"BoldColour", OPT_COLOUR, offcfg(bold_colour)},
+  {"BlinkColour", OPT_COLOUR, offcfg(blink_colour)},
   {"CursorColour", OPT_COLOUR, offcfg(cursor_colour)},
   {"TekForegroundColour", OPT_COLOUR, offcfg(tek_fg_colour)},
   {"TekBackgroundColour", OPT_COLOUR, offcfg(tek_bg_colour)},
@@ -292,6 +305,7 @@ options[] = {
   {"TekWriteThruColour", OPT_COLOUR, offcfg(tek_write_thru_colour)},
   {"TekDefocusedColour", OPT_COLOUR, offcfg(tek_defocused_colour)},
   {"TekGlow", OPT_INT, offcfg(tek_glow)},
+  {"TekStrap", OPT_INT, offcfg(tek_strap)},
   {"UnderlineColour", OPT_COLOUR, offcfg(underl_colour)},
   {"TabForegroundColour", OPT_COLOUR, offcfg(tab_fg_colour)},
   {"TabBackgroundColour", OPT_COLOUR, offcfg(tab_bg_colour)},
@@ -365,6 +379,8 @@ options[] = {
   {"AltGrIsAlsoAlt", OPT_BOOL, offcfg(altgr_is_alt)},
   {"CtrlAltDelayAltGr", OPT_INT, offcfg(ctrl_alt_delay_altgr)},
   {"OldAltGrDetection", OPT_BOOL, offcfg(old_altgr_detection)},
+  {"OldModifyKeys", OPT_INT, offcfg(old_modify_keys)},
+  {"FormatOtherKeys", OPT_INT, offcfg(format_other_keys)},
   {"AutoRepeat", OPT_BOOL, offcfg(auto_repeat)},
   {"SupportExternalHotkeys", OPT_INT, offcfg(external_hotkeys)},
   {"ClipShortcuts", OPT_BOOL, offcfg(clip_shortcuts)},
@@ -397,6 +413,8 @@ options[] = {
   {"HideMouse", OPT_BOOL, offcfg(hide_mouse)},
   {"ElasticMouse", OPT_BOOL, offcfg(elastic_mouse)},
   {"LinesPerMouseWheelNotch", OPT_INT, offcfg(lines_per_notch)},
+  {"MousePointer", OPT_WSTRING, offcfg(mouse_pointer)},
+  {"AppMousePointer", OPT_WSTRING, offcfg(appmouse_pointer)},
 
   // Selection
   {"ClearSelectionOnInput", OPT_BOOL, offcfg(input_clears_selection)},
@@ -464,6 +482,7 @@ options[] = {
   // "Hidden"
   {"Bidi", OPT_INT, offcfg(bidi)},
   {"NoAltScreen", OPT_BOOL, offcfg(disable_alternate_screen)},
+  {"EraseToScrollback", OPT_BOOL, offcfg(erase_to_scrollback)},
   {"DisplaySpeedup", OPT_INT, offcfg(display_speedup)},
   {"SuppressSGR", OPT_STRING, offcfg(suppress_sgr)},
   {"SuppressDEC", OPT_STRING, offcfg(suppress_dec)},
@@ -490,6 +509,8 @@ options[] = {
   {"UserCommandsPath", OPT_WSTRING, offcfg(user_commands_path)},
   {"SessionCommands", OPT_WSTRING | OPT_KEEPCR, offcfg(session_commands)},
   {"TaskCommands", OPT_WSTRING | OPT_KEEPCR, offcfg(task_commands)},
+  {"ConPTY", OPT_BOOL, offcfg(conpty_support)},
+  {"LoginFromShortcut", OPT_BOOL, offcfg(login_from_shortcut)},
   {"MenuMouse", OPT_STRING, offcfg(menu_mouse)},
   {"MenuCtrlMouse", OPT_STRING, offcfg(menu_ctrlmouse)},
   {"MenuMouse5", OPT_STRING, offcfg(menu_altmouse)},
@@ -502,6 +523,7 @@ options[] = {
   {"TabBar", OPT_BOOL, offcfg(tabbar)},
   {"ColSpacing", OPT_INT, offcfg(col_spacing)},
   {"RowSpacing", OPT_INT, offcfg(row_spacing)},
+  {"AutoLeading", OPT_INT, offcfg(auto_leading)},
   {"Padding", OPT_INT, offcfg(padding)},
   {"Ligatures", OPT_INT, offcfg(ligatures)},
   {"LigaturesSupport", OPT_INT, offcfg(ligatures_support)},
@@ -552,8 +574,7 @@ typedef const struct {
   char val;
 } opt_val;
 
-static opt_val
-*const opt_vals[] = {
+static opt_val * const opt_vals[] = {
   [OPT_BOOL] = (opt_val[]) {
     {"no", false},
     {"yes", true},
@@ -584,6 +605,7 @@ static opt_val
     {"facebook", EMOJIS_FB},
     {"samsung", EMOJIS_SAMSUNG},
     {"windows", EMOJIS_WINDOWS},
+    {"zoom", EMOJIS_ZOOM},
     {0, 0}
   },
   [OPT_EMOJI_PLACEMENT] = (opt_val[]) {
@@ -691,15 +713,47 @@ static opt_val
 char *
 save_filename(char * suf)
 {
-  char * pat = path_win_w_to_posix(cfg.save_filename);
-  // e.g. "mintty.%Y-%m-%d_%H-%M-%S"
+  char * pat = cs__wcstombs(cfg.save_filename);
+
+  // expand initial ~ or $variable
+  char * sep;
+  if (*pat == '~' && pat[1] == '/') {
+    char * pat1 = asform("%s%s", home, pat + 1);
+    free(pat);
+    pat = pat1;
+  }
+  else if (*pat == '$' && (sep = strchr(pat, '/'))) {
+    *sep = 0;
+    if (getenv(pat + 1)) {
+      char * pat1 = asform("%s/%s", getenv(pat + 1), sep + 1);
+      free(pat);
+      pat = pat1;
+    }
+  }
+  wchar * wpat = cs__mbstowcs(pat);
+  free(pat);
+  pat = path_win_w_to_posix(wpat);
+  free(wpat);
+  //printf("save_filename pat %ls -> %s\n", cfg.save_filename, pat);
 
   struct timeval now;
   gettimeofday(& now, 0);
   char * fn = newn(char, MAX_PATH + 1 + strlen(suf));
   strftime(fn, MAX_PATH, pat, localtime(& now.tv_sec));
+  //printf("save_filename [%s] (%s) -> %s%s\n", pat, suf, fn, suf);
   free(pat);
   strcat(fn, suf);
+
+  // make sure directory exists
+  char * basesep = strrchr(fn, '/');
+  if (basesep) {
+    *basesep = 0;
+    if (access(fn, X_OK | W_OK) != 0) {
+      mkdir(fn, 0755);
+    }
+    *basesep = '/';
+  }
+
   return fn;
 }
 
@@ -936,8 +990,9 @@ set_option(string name, string val_str, bool from_file)
     }
   }
   //__ %2$s: option name, %1$s: invalid value
-  opterror(_("Ignoring invalid value '%s' for option '%s'"), 
-           from_file, val_str, name);
+  if (!wnd)  // report errors only during initialisation
+    opterror(_("Ignoring invalid value '%s' for option '%s'"), 
+             from_file, val_str, name);
   return -1;
 }
 
@@ -1029,8 +1084,6 @@ matchconf(char * conf, char * item)
 }
 
 
-#include "winpriv.h"  // home
-
 static string * config_dirs = 0;
 static int last_config_dir = -1;
 
@@ -1067,8 +1120,6 @@ init_config_dirs(void)
     config_dirs[++last_config_dir] = config_dir;
   }
 }
-
-#include <fcntl.h>
 
 char *
 get_resource_file(wstring sub, wstring res, bool towrite)
@@ -2192,12 +2243,35 @@ term_handler(control *ctrl, int event)
     bool terminfo_exists_in(char * dir, char * sub, char * ti) {
       char * terminfo = asform("%s%s/%x/%s", dir, sub ?: "", *ti, ti);
       bool exists = !access(terminfo, R_OK);
+      //printf("exists %d <%s>\n", exists, terminfo);
       free(terminfo);
+      if (support_wsl && !exists) {
+        terminfo = asform("%s%s/%c/%s", dir, sub ?: "", *ti, ti);
+        exists = !access(terminfo, R_OK);
+        //printf("exists %d <%s>\n", exists, terminfo);
+        free(terminfo);
+      }
       return exists;
     }
-    return terminfo_exists_in("/usr/share/terminfo", 0, ti)
-        || terminfo_exists_in(home, "/.terminfo", ti)
-         ;
+    if (support_wsl) {
+      char * wslroot;
+      if (wslname) {
+        char * wslnamec = cs__wcstombs(wslname);
+        wslroot = asform("//wsl$/%s", wslnamec);
+        free(wslnamec);
+      }
+      else if (*wsl_basepath)
+        wslroot = path_win_w_to_posix(wsl_basepath);
+      else
+        wslroot = strdup("");
+      bool ex = terminfo_exists_in(wslroot, "/usr/share/terminfo", ti);
+      free(wslroot);
+      return ex;
+    }
+    else
+      return terminfo_exists_in("/usr/share/terminfo", 0, ti)
+          || terminfo_exists_in(home, "/.terminfo", ti)
+           ;
   }
   switch (event) {
     when EVENT_REFRESH:
@@ -2321,52 +2395,119 @@ enable_widget(control * ctrl, bool enable)
   EnableWindow(wid, enable);
 }
 
+#define dont_debug_scheme 2
+
+/*
+   Load scheme from URL or file, convert .itermcolors and .json formats
+ */
 static char *
 download_scheme(char * url)
 {
+#ifdef debug_scheme
+  printf("download_scheme <%s>\n", url);
+#endif
   if (strchr(url, '\''))
     return null;  // Insecure link
 
-#ifdef use_curl
-  static string cmdpat = "curl '%s' -o - 2> /dev/null";
-  char * cmd = newn(char, strlen(cmdpat) -1 + strlen(url));
-  sprintf(cmd, cmdpat, url);
-  FILE * sf = popen(cmd, "r");
-  if (!sf)
-    return null;
-#else
-  HRESULT (WINAPI * pURLDownloadToFile)(void *, LPCSTR, LPCSTR, DWORD, void *) = 0;
-  pURLDownloadToFile = load_library_func("urlmon.dll", "URLDownloadToFileA");
-  bool ok = false;
-  char * sfn = asform("%s/.mintty-scheme.%d", tmpdir(), getpid());
-  if (pURLDownloadToFile) {
-#ifdef __CYGWIN__
-    /* Need to sync the Windows environment */
-    cygwin_internal(CW_SYNC_WINENV);
-#endif
-    char * wfn = path_posix_to_win_a(sfn);
-    ok = S_OK == pURLDownloadToFile(NULL, url, wfn, 0, NULL);
-    free(wfn);
+  FILE * sf = 0;
+  char * sfn = 0;
+  if (url[1] == ':') {
+    sf = fopen(url, "r");
   }
-  if (!ok)
-    return null;
-  FILE * sf = fopen(sfn, "r");
-  //printf("URL <%s> file <%s> OK %d\n", url, sfn, !!sf);
+  else {
+#ifdef use_curl
+    static string cmdpat = "curl '%s' -o - 2> /dev/null";
+    char * cmd = newn(char, strlen(cmdpat) -1 + strlen(url));
+    sprintf(cmd, cmdpat, url);
+    sf = popen(cmd, "r");
+#else
+    HRESULT (WINAPI * pURLDownloadToFile)(void *, LPCSTR, LPCSTR, DWORD, void *) = 0;
+    pURLDownloadToFile = load_library_func("urlmon.dll", "URLDownloadToFileA");
+    bool ok = false;
+    sfn = asform("%s/.mintty-scheme.%d", tmpdir(), getpid());
+    if (pURLDownloadToFile) {
+# ifdef __CYGWIN__
+      /* Need to sync the Windows environment */
+      cygwin_internal(CW_SYNC_WINENV);
+# endif
+      char * wfn = path_posix_to_win_a(sfn);
+      ok = S_OK == pURLDownloadToFile(NULL, url, wfn, 0, NULL);
+      free(wfn);
+    }
+    if (!ok)
+      free(sfn);
+    sf = fopen(sfn, "r");
+    //printf("URL <%s> file <%s> OK %d\n", url, sfn, !!sf);
+    if (!sf) {
+      remove(sfn);
+      free(sfn);
+    }
+#endif
+  }
   if (!sf)
     return null;
+#ifdef debug_scheme
+  printf("URL <%s> OK %d\n", url, !!sf);
 #endif
 
+  // colour scheme string
   char * sch = null;
+  // colour modifications, common for .itermcolors and .json (unused there)
+  colour ansi_colours[16] = 
+    {(colour)-1, (colour)-1, (colour)-1, (colour)-1, 
+     (colour)-1, (colour)-1, (colour)-1, (colour)-1, 
+     (colour)-1, (colour)-1, (colour)-1, (colour)-1, 
+     (colour)-1, (colour)-1, (colour)-1, (colour)-1};
+  colour fg_colour = (colour)-1, bg_colour = (colour)-1;
+  colour bold_colour = (colour)-1, blink_colour = (colour)-1;
+  colour cursor_colour = (colour)-1, sel_fg_colour = (colour)-1, sel_bg_colour = (colour)-1;
+  colour underl_colour = (colour)-1, hover_colour = (colour)-1;
+  // construct a ColourScheme string
+  void schapp(char * opt, colour c)
+  {
+#if defined(debug_scheme) && debug_scheme > 1
+    printf("schapp %s %06X\n", opt, c);
+#endif
+    if (c != (colour)-1) {
+      char colval[strlen(opt) + 14];
+      sprintf(colval, "%s=%u,%u,%u;", opt, red(c), green(c), blue(c));
+      int len = sch ? strlen(sch) : 0;
+      sch = renewn(sch, len + strlen(colval) + 1);
+      strcpy(&sch[len], colval);
+    }
+  }
+  // collect all modified colours in a colour scheme string
+  void schappall()
+  {
+    schapp("ForegroundColour", fg_colour);
+    schapp("BackgroundColour", bg_colour);
+    schapp("BoldColour", bold_colour);
+    schapp("BlinkColour", blink_colour);
+    schapp("CursorColour", cursor_colour);
+    schapp("UnderlineColour", underl_colour);
+    schapp("HoverColour", hover_colour);
+    schapp("HighlightBackgroundColour", sel_bg_colour);
+    schapp("HighlightForegroundColour", sel_fg_colour);
+    schapp("Black", ansi_colours[BLACK_I]);
+    schapp("Red", ansi_colours[RED_I]);
+    schapp("Green", ansi_colours[GREEN_I]);
+    schapp("Yellow", ansi_colours[YELLOW_I]);
+    schapp("Blue", ansi_colours[BLUE_I]);
+    schapp("Magenta", ansi_colours[MAGENTA_I]);
+    schapp("Cyan", ansi_colours[CYAN_I]);
+    schapp("White", ansi_colours[WHITE_I]);
+    schapp("BoldBlack", ansi_colours[BOLD_BLACK_I]);
+    schapp("BoldRed", ansi_colours[BOLD_RED_I]);
+    schapp("BoldGreen", ansi_colours[BOLD_GREEN_I]);
+    schapp("BoldYellow", ansi_colours[BOLD_YELLOW_I]);
+    schapp("BoldBlue", ansi_colours[BOLD_BLUE_I]);
+    schapp("BoldMagenta", ansi_colours[BOLD_MAGENTA_I]);
+    schapp("BoldCyan", ansi_colours[BOLD_CYAN_I]);
+    schapp("BoldWhite", ansi_colours[BOLD_WHITE_I]);
+  }
+
   char * urlsuf = strrchr(url, '.');
   if (urlsuf && !strcmp(urlsuf, ".itermcolors")) {
-    colour ansi_colours[16] = 
-      {(colour)-1, (colour)-1, (colour)-1, (colour)-1, 
-       (colour)-1, (colour)-1, (colour)-1, (colour)-1, 
-       (colour)-1, (colour)-1, (colour)-1, (colour)-1, 
-       (colour)-1, (colour)-1, (colour)-1, (colour)-1};
-    colour fg_colour = (colour)-1, bold_colour = (colour)-1, bg_colour = (colour)-1;
-    colour cursor_colour = (colour)-1, sel_fg_colour = (colour)-1, sel_bg_colour = (colour)-1;
-    colour underl_colour = (colour)-1, hover_colour = (colour)-1;
     int level = 0;
     colour * key = 0;
     int component = -1;
@@ -2398,6 +2539,9 @@ download_scheme(char * url)
             }
           }
           else if (level == 1) {
+#if defined(debug_scheme) && debug_scheme > 1
+            printf("iterm entity <%s>\n", entity);
+#endif
             int coli;
             if (0 == strcmp(entity, "Foreground Color"))
               key = &fg_colour;
@@ -2427,6 +2571,9 @@ download_scheme(char * url)
           }
         }
         else if (level == 2 && key) {
+#if defined(debug_scheme) && debug_scheme > 1
+          printf("iterm value <%s>\n", linebuf);
+#endif
           entity = strstr(linebuf, "<real>");
           double val;
           if (entity && sscanf(entity, "<real>%lf<", &val) == 1 && val >= 0.0 && val <= 1.0) {
@@ -2443,41 +2590,77 @@ download_scheme(char * url)
         }
       }
     }
-    // construct a ColourScheme string
-    void schapp(char * opt, colour c)
-    {
-      if (c != (colour)-1) {
-        char colval[strlen(opt) + 14];
-        sprintf(colval, "%s=%u,%u,%u;", opt, red(c), green(c), blue(c));
-        int len = sch ? strlen(sch) : 0;
-        sch = renewn(sch, len + strlen(colval) + 1);
-        strcpy(&sch[len], colval);
+    // collect modified colours into colour scheme string
+    schappall();
+  }
+  else if (urlsuf && !strcmp(urlsuf, ".json")) {
+    // support .json theme files in either vscode or Windows terminal format
+    while (fgets(linebuf, sizeof(linebuf) - 1, sf)) {
+      char * scan = strchr(linebuf, '"');
+      char * key;
+      char * val;
+      if (scan) {
+        scan++;
+        // strip vscode prefixes
+        if (strncmp(scan, "terminal.", 9) == 0) {
+          scan += 9;
+          if (strncmp(scan, "ansi", 4) == 0)
+            scan += 4;
+        }
+        key = scan;
+        scan = strchr(scan, '"');
+      }
+      if (scan) {
+        *scan = 0;
+        scan++;
+        scan = strchr(scan, '"');
+        if (scan) {
+          scan++;
+          val = scan;
+          scan = strchr(scan, '"');
+          if (scan) {
+            *scan = 0;
+          }
+        }
+      }
+      if (scan) {
+#if defined(debug_scheme) && debug_scheme > 1
+        printf("<%s> <%s> (%s)\n", key, val, linebuf);
+#endif
+        // transform .json colour names
+        void schapp(char * jname, char * name)
+        {
+          if (strcasecmp(key, jname) == 0) {
+#if defined(debug_scheme) && debug_scheme > 1
+            printf("%s=%s\n", name, val);
+#endif
+            int len = sch ? strlen(sch) : 0;
+            sch = renewn(sch, len + strlen(name) + strlen(val) + 3);
+            sprintf(&sch[len], "%s=%s;", name, val);
+          }
+        }
+        schapp("black", "Black");
+        schapp("red", "Red");
+        schapp("green", "Green");
+        schapp("yellow", "Yellow");
+        schapp("blue", "Blue");
+        schapp("magenta", "Magenta");
+        schapp("purple", "Magenta");
+        schapp("cyan", "Cyan");
+        schapp("white", "White");
+        schapp("brightblack", "BoldBlack");
+        schapp("brightred", "BoldRed");
+        schapp("brightgreen", "BoldGreen");
+        schapp("brightyellow", "BoldYellow");
+        schapp("brightblue", "BoldBlue");
+        schapp("brightmagenta", "BoldMagenta");
+        schapp("brightpurple", "BoldMagenta");
+        schapp("brightcyan", "BoldCyan");
+        schapp("brightwhite", "BoldWhite");
+        schapp("foreground", "ForegroundColour");
+        schapp("background", "BackgroundColour");
       }
     }
-    schapp("ForegroundColour", fg_colour);
-    schapp("BackgroundColour", bg_colour);
-    schapp("BoldColour", bold_colour);
-    schapp("CursorColour", cursor_colour);
-    schapp("UnderlineColour", underl_colour);
-    schapp("HoverColour", hover_colour);
-    schapp("HighlightBackgroundColour", sel_bg_colour);
-    schapp("HighlightForegroundColour", sel_fg_colour);
-    schapp("Black", ansi_colours[BLACK_I]);
-    schapp("Red", ansi_colours[RED_I]);
-    schapp("Green", ansi_colours[GREEN_I]);
-    schapp("Yellow", ansi_colours[YELLOW_I]);
-    schapp("Blue", ansi_colours[BLUE_I]);
-    schapp("Magenta", ansi_colours[MAGENTA_I]);
-    schapp("Cyan", ansi_colours[CYAN_I]);
-    schapp("White", ansi_colours[WHITE_I]);
-    schapp("BoldBlack", ansi_colours[BOLD_BLACK_I]);
-    schapp("BoldRed", ansi_colours[BOLD_RED_I]);
-    schapp("BoldGreen", ansi_colours[BOLD_GREEN_I]);
-    schapp("BoldYellow", ansi_colours[BOLD_YELLOW_I]);
-    schapp("BoldBlue", ansi_colours[BOLD_BLUE_I]);
-    schapp("BoldMagenta", ansi_colours[BOLD_MAGENTA_I]);
-    schapp("BoldCyan", ansi_colours[BOLD_CYAN_I]);
-    schapp("BoldWhite", ansi_colours[BOLD_WHITE_I]);
   }
   else {
     while (fgets(linebuf, sizeof(linebuf) - 1, sf)) {
@@ -2526,10 +2709,15 @@ download_scheme(char * url)
   pclose(sf);
 #else
   fclose(sf);
-  remove(sfn);
-  free(sfn);
+  if (sfn) {
+    remove(sfn);
+    free(sfn);
+  }
 #endif
 
+#if defined(debug_scheme) && debug_scheme > 1
+  printf("download_scheme -> <%s>\n", sch);
+#endif
   return sch;
 }
 
@@ -2578,6 +2766,9 @@ theme_handler(control *ctrl, int event)
                  );
   }
   else if (event == EVENT_DROP) {
+#ifdef debug_scheme
+    printf("EVENT_DROP <%ls>\n", dragndrop);
+#endif
     if (wcsncmp(W("data:text/plain,"), dragndrop, 16) == 0) {
       // indicate availability of downloaded scheme to be stored
       dlg_editbox_set_w(ctrl, DOWNLOADED);
@@ -2607,14 +2798,27 @@ theme_handler(control *ctrl, int event)
           || wcsncmp(W("https:"), dragndrop, 6) == 0
           || wcsncmp(W("ftp:"), dragndrop, 4) == 0
           || wcsncmp(W("ftps:"), dragndrop, 5) == 0
-            ) {
+          || wcsncmp(W("file:"), dragndrop, 5) == 0
+#if CYGWIN_VERSION_API_MINOR >= 74
+          || (dragndrop[1] == ':' &&
+              (wcsstr(dragndrop, W(".itermcolors")) ||
+               wcsstr(dragndrop, W(".json"))
+              )
+             )
+#endif
+            )
+    {
       char * url = cs__wcstoutf(dragndrop);
       char * sch = download_scheme(url);
       if (sch) {
         wchar * urlpoi = wcschr(dragndrop, '?');
         if (urlpoi)
           *urlpoi = 0;
+        // find URL basename
         urlpoi = wcsrchr(dragndrop, '/');
+        // or file basename
+        if (!urlpoi)
+          urlpoi = wcsrchr(dragndrop, '\\');
         if (urlpoi) {
           // set theme name proposal to url base name
           urlpoi++;
@@ -3140,6 +3344,34 @@ compose_key_handler(control *ctrl, int event)
   opt_handler(ctrl, event, &new_cfg.compose_key, opt_vals[OPT_COMPOSE_KEY]);
 }
 
+static void
+smoothing_handler(control *ctrl, int event)
+{
+  opt_handler(ctrl, event, &new_cfg.font_smoothing, opt_vals[OPT_FONTSMOOTH]);
+}
+
+static opt_val * const showbold_vals =
+(opt_val[]) {
+    {__("as font"), 1},
+    {__("as colour"), 2},
+    {__("as font & as colour"), 3},
+    {__("xterm"), 0},
+    {0, 0}
+};
+
+static char showbold;
+
+static void
+showbold_handler(control *ctrl, int event)
+{
+  showbold = new_cfg.bold_as_font | ((char)new_cfg.bold_as_colour) << 1;
+  //printf("bold as font %d as colour %d event %d\n", new_cfg.bold_as_font, new_cfg.bold_as_colour, event);
+  opt_handler(ctrl, event, &showbold, showbold_vals);
+  new_cfg.bold_as_font = showbold & 1;
+  new_cfg.bold_as_colour = showbold & 2;
+  //printf("bold as font %d as colour %d\n", new_cfg.bold_as_font, new_cfg.bold_as_colour);
+}
+
 static bool bold_like_xterm;
 
 static void
@@ -3366,6 +3598,7 @@ setup_config_box(controlbox * b)
       )->column = 1;
     }
     else {
+     if (0 != strstr(cfg.old_options, "blinking")) {
       s = ctrl_new_set(b, _("Text"), null, 
                        //__ Options - Text:
                        _("Show bold"));
@@ -3385,6 +3618,17 @@ setup_config_box(controlbox * b)
         s, _("xterm"),
         bold_handler, &bold_like_xterm
       )->column = 2;
+     }
+     else {
+      ctrl_combobox(
+        //__ Options - Text:
+        s, _("Show bold"),
+        50, showbold_handler, 0);
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("&Allow blinking"),
+        dlg_stdcheckbox_handler, &new_cfg.allow_blinking);
+     }
     }
   }
   else {
@@ -3429,6 +3673,7 @@ setup_config_box(controlbox * b)
       )->column = 0;
     }
     else {
+     if (0 != strstr(cfg.old_options, "blinking")) {
       ctrl_radiobuttons(
         //__ Options - Text:
         s, _("Font smoothing"), 4,
@@ -3463,6 +3708,21 @@ setup_config_box(controlbox * b)
         s, _("xterm"),
         bold_handler, &bold_like_xterm
       )->column = 2;
+     }
+     else {
+      ctrl_combobox(
+        s, _("Font smoothing"), 50, smoothing_handler, 0);
+
+      s = ctrl_new_set(b, _("Text"), null, null);
+      ctrl_combobox(
+        //__ Options - Text:
+        s, _("Show bold"),
+        50, showbold_handler, 0);
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("&Allow blinking"),
+        dlg_stdcheckbox_handler, &new_cfg.allow_blinking);
+     }
     }
   }
 

@@ -1171,6 +1171,13 @@ contains(string s, int i)
 
 static short prev_state = 0;
 
+static void
+tek_gin_fin(void)
+{
+  if (tek_mode == TEKMODE_GIN)
+    tek_mode = TEKMODE_ALPHA;
+}
+
 /* Process Tek mode ESC control */
 static void
 tek_esc(char c)
@@ -1206,11 +1213,12 @@ tek_esc(char c)
     when CTRL('W'):   /* ETB: Make Copy */
       term_save_image();
       tek_bypass = false;
+      tek_gin_fin();
     when CTRL('X'):   /* CAN: Set Bypass */
       tek_bypass = true;
     when CTRL('Z'):   /* SUB: Gin mode */
-      tek_mode = TEKMODE_GIN;
       tek_gin();
+      tek_mode = TEKMODE_GIN;
       term.state = NORMAL;
       tek_bypass = true;
     when 0x1C:   /* FS: Special Plot mode */
@@ -1259,17 +1267,21 @@ tek_ctrl(char c)
     when '\a':   /* BEL: Bell */
       write_bell();
       tek_bypass = false;
+      tek_gin_fin();
     when '\b' or '\t' or '\v':     /* BS or HT or VT */
       if (tek_mode == TEKMODE_ALPHA)
         tek_write(c, -2);
     when '\n':   /* LF: Line feed */
       tek_bypass = false;
       tek_write(c, -2);
+      tek_gin_fin();
     when '\r':   /* CR: Carriage return */
       tek_mode = TEKMODE_ALPHA;
       term.state = NORMAL;
       tek_bypass = false;
       tek_write(c, -2);
+    when CTRL('O'):   /* SI */
+      tek_gin_fin();
     when 0x1C:   /* FS: Point Plot mode */
       tek_mode = TEKMODE_POINT_PLOT;
       term.state = TEK_ADDRESS0;
@@ -1299,6 +1311,7 @@ do_ctrl(char c)
     when '\e':   /* ESC: Escape */
       term.state = ESCAPE;
       term.esc_mod = 0;
+      return true;  // keep preceding char for REP
     when '\a':   /* BEL: Bell */
       write_bell();
     when '\b':     /* BS: Back space */
@@ -1338,6 +1351,7 @@ do_ctrl(char c)
     otherwise:
       return false;
   }
+  last_char = 0;  // cancel preceding char for REP
   return true;
 }
 
@@ -1461,8 +1475,8 @@ lookup_cset(ushort nrc_code, uchar csmask, bool enabled)
     {'0', 1, 1, CSET_LINEDRW},	// DEC Special Line Drawing
     {'>', 1, 1, CSET_TECH},		// DEC Technical
     {'U', 1, 1, CSET_OEM},		// OEM Codepage 437
-    {'<', 1, 1, CSET_DECSUPP},	// DEC Supplementary (VT200)
-    {CPAIR('%', '5'), 1, 1, CSET_DECSPGR},	// DEC Supplementary Graphics (VT300)
+    {'<', 1, 1, CSET_DECSUPP},	// DEC User-preferred Supplemental (VT200)
+    {CPAIR('%', '5'), 1, 1, CSET_DECSPGR},	// DEC Supplementary (VT300)
     // definitions for NRC support:
     {'4', 1, 0, CSET_NL},	// Dutch
     {'C', 1, 0, CSET_FI},	// Finnish
@@ -1489,7 +1503,7 @@ lookup_cset(ushort nrc_code, uchar csmask, bool enabled)
     {CPAIR('"', '?'), 1, 1, CSET_DEC_Greek_Supp},
     {CPAIR('"', '4'), 1, 1, CSET_DEC_Hebrew_Supp},
     {CPAIR('%', '0'), 1, 1, CSET_DEC_Turkish_Supp},
-    {CPAIR('&', '4'), 1, 0, CSET_NRCS_Cyrillic},
+    {CPAIR('&', '4'), 1, 1, CSET_DEC_Cyrillic},
     {CPAIR('"', '>'), 1, 0, CSET_NRCS_Greek},
     {CPAIR('%', '='), 1, 0, CSET_NRCS_Hebrew},
     {CPAIR('%', '2'), 1, 0, CSET_NRCS_Turkish},
@@ -1542,6 +1556,7 @@ do_esc(uchar c)
     if (cs) {
       curs->csets[gi] = cs;
       term_update_cs();
+      last_char = 0;  // cancel preceding char for REP
       return;
     }
   }
@@ -1553,6 +1568,7 @@ do_esc(uchar c)
       memset(term.csi_argv, 0, sizeof(term.csi_argv));
       memset(term.csi_argv_defined, 0, sizeof(term.csi_argv_defined));
       term.esc_mod = 0;
+      return;  // keep preceding char for REP
     when ']':  /* OSC: operating system command */
       term.state = OSC_START;
     when 'P':  /* DCS: device control string */
@@ -1596,15 +1612,16 @@ do_esc(uchar c)
         term.marg_top = curs->y;
     when 'm':  /* HP Memory Unlock */
       term.marg_top = 0;
-    when CPAIR('#', '8'):    /* DECALN: fills screen with Es :-) */
+    when CPAIR('#', '8'): {  /* DECALN: fills screen with Es :-) */
       term.curs.origin = false;
       term.curs.wrapnext = false;
-      term.curs.attr = CATTR_DEFAULT;
       term.marg_top = 0;
       term.marg_bot = term.rows - 1;
       term.marg_left = 0;
       term.marg_right = term.cols - 1;
       move(0, 0, 0);
+      cattr savattr = term.curs.attr;
+      term.curs.attr = CATTR_DEFAULT;
       for (int i = 0; i < term.rows; i++) {
         termline *line = term.lines[i];
         for (int j = 0; j < term.cols; j++) {
@@ -1613,7 +1630,9 @@ do_esc(uchar c)
         }
         line->lattr = LATTR_NORM;
       }
+      term.curs.attr = savattr;
       term.disptop = 0;
+    }
     when CPAIR('#', '3'):  /* DECDHL: 2*height, top */
       if (!term.lrmargmode) {
         term.lines[curs->y]->lattr &= LATTR_BIDIMASK;
@@ -1667,7 +1686,14 @@ do_esc(uchar c)
         insdel_column(term.marg_left, true, 1);
       else
         move(curs->x + 1, curs->y, 1);
+    when 'V':  /* Start of Guarded Area (SPA) */
+      term.curs.attr.attr |= ATTR_PROTECTED;
+      term.iso_guarded_area = true;
+    when 'W':  /* End of Guarded Area (EPA) */
+      term.curs.attr.attr &= ~ATTR_PROTECTED;
+      term.iso_guarded_area = true;
   }
+  last_char = 0;  // cancel preceding char for REP
 }
 
 static void
@@ -2029,6 +2055,12 @@ set_modes(bool state)
         when 25: /* DECTCEM: enable/disable cursor */
           term.cursor_on = state;
           // Should we set term.cursor_invalid or call term_invalidate ?
+#ifdef end_suspend_output_by_enabling_cursor
+          if (state) {
+            term.suspend_update = false;
+            do_update();
+          }
+#endif
         when 30: /* Show/hide scrollbar */
           if (state != term.show_scrollbar) {
             term.show_scrollbar = state;
@@ -2552,6 +2584,7 @@ do_winop(void)
         win_maximise(0);
         win_set_chars(rows0, cols0);
       }
+      usleep(1000);
     }
     when 10:
       if (term.csi_argc != 2)
@@ -2563,6 +2596,7 @@ do_winop(void)
         win_maximise(-2);
       else if (arg1 == 1 || arg1 == 0)
         win_maximise(arg1 ? 2 : 0);
+      usleep(1000);
     when 11: child_write(win_is_iconic() ? "\e[2t" : "\e[1t", 4);
     when 13: {
       int x, y;
@@ -2605,7 +2639,9 @@ do_winop(void)
 static void
 set_taskbar_progress(int state, int percent)
 {
-  if (state == 0) {  // disable progress indication
+  //printf("set_taskbar_progress (%d) %d %d%%\n", term.detect_progress, state, percent);
+  if (state == 0 && percent < 0) {  // disable progress indication
+    // skipping this if percent < 0 to allow percent-only setting with state 0
     taskbar_progress(-9);
     term.detect_progress = 0;
   }
@@ -2613,9 +2649,18 @@ set_taskbar_progress(int state, int percent)
     taskbar_progress(-8);
     term.detect_progress = 0;
   }
+  else if (state == 10) {  // reset to default
+    term.detect_progress = cfg.progress_bar;
+    taskbar_progress(-9);
+  }
   else if (state <= 3) {
-    taskbar_progress(- state);
+    if (state > 0)
+      taskbar_progress(- state);
     if (percent >= 0) {
+      // if we disable (above), then request percentage only (here), 
+      // colour will be 1/green regardless of previous/configured setting;
+      // to improve this, we'd have to introduce another variable,
+      // term.previous_progress
       taskbar_progress(percent);
       term.detect_progress = 0;
     }
@@ -2646,8 +2691,9 @@ do_csi(uchar c)
       cattr cur_attr = term.curs.attr;
       term.curs.attr = last_attr;
       wchar h = last_high, c = last_char;
-      for (int i = 0; i < arg0_def1; i++)
-        write_ucschar(h, c, last_width);
+      if (last_char)
+        for (int i = 0; i < arg0_def1; i++)
+          write_ucschar(h, c, last_width);
       term.curs.attr = cur_attr;
     }
     when 'A':        /* CUU: move up N lines */
@@ -2713,14 +2759,31 @@ do_csi(uchar c)
       else if (arg0 <= 2) {
         bool above = arg0 == 1 || arg0 == 2;
         bool below = arg0 == 0 || arg0 == 2;
-        term_erase(term.esc_mod, false, above, below);
+        term_erase(term.esc_mod | term.iso_guarded_area, false, above, below);
       }
     when 'K' or CPAIR('?', 'K'):  /* EL/DECSEL: (selective) erase in line */
       if (arg0 <= 2) {
         bool right = arg0 == 0 || arg0 == 2;
         bool left  = arg0 == 1 || arg0 == 2;
-        term_erase(term.esc_mod, true, left, right);
+        term_erase(term.esc_mod | term.iso_guarded_area, true, left, right);
       }
+    when 'X': {      /* ECH: write N spaces w/o moving cursor */
+      termline *line = term.lines[curs->y];
+      int cols = min(line->cols, line->size);
+      int n = min(arg0_def1, cols - curs->x);
+      if (n > 0) {
+        int p = curs->x;
+        term_check_boundary(curs->x, curs->y);
+        term_check_boundary(curs->x + n, curs->y);
+        while (n--) {
+          if (!term.iso_guarded_area ||
+              !(line->chars[p].attr.attr & ATTR_PROTECTED)
+             )
+            line->chars[p] = term.erase_char;
+          p++;
+        }
+      }
+    }
     when 'L':        /* IL: insert lines */
       if (curs->y >= term.marg_top && curs->y <= term.marg_bot
        && curs->x >= term.marg_left && curs->x <= term.marg_right
@@ -2938,18 +3001,6 @@ do_csi(uchar c)
       */
       win_set_chars(term.rows, arg0 ?: cfg.cols);
       term.selected = false;
-    when 'X': {      /* ECH: write N spaces w/o moving cursor */
-      termline *line = term.lines[curs->y];
-      int cols = min(line->cols, line->size);
-      int n = min(arg0_def1, cols - curs->x);
-      if (n > 0) {
-        int p = curs->x;
-        term_check_boundary(curs->x, curs->y);
-        term_check_boundary(curs->x + n, curs->y);
-        while (n--)
-          line->chars[p++] = term.erase_char;
-      }
-    }
     when 'x':        /* DECREQTPARM: report terminal characteristics */
       if (arg0 <= 1)
         child_printf("\e[%u;1;1;120;120;1;0x", arg0 + 2);
@@ -2999,8 +3050,12 @@ do_csi(uchar c)
       term.cursor_size = arg0;
     when CPAIR('"', 'q'):  /* DECSCA: select character protection attribute */
       switch (arg0) {
-        when 0 or 2: term.curs.attr.attr &= ~ATTR_PROTECTED;
-        when 1: term.curs.attr.attr |= ATTR_PROTECTED;
+        when 0 or 2:
+          term.curs.attr.attr &= ~ATTR_PROTECTED;
+          term.iso_guarded_area = false;
+        when 1:
+          term.curs.attr.attr |= ATTR_PROTECTED;
+          term.iso_guarded_area = false;
       }
     when 'n':        /* DSR: device status report */
       if (arg0 == 6)  // CPR
@@ -3008,7 +3063,7 @@ do_csi(uchar c)
                      curs->y + 1 - (curs->origin ? term.marg_top : 0),
                      curs->x + 1 - (curs->origin ? term.marg_left : 0));
       else if (arg0 == 5)
-        child_write("\e[0n", 4);
+        child_write("\e[0n", 4);  // "in good operating condition"
     when CPAIR('?', 'n'):  /* DSR, DEC specific */
       switch (arg0) {
         when 6:  // DECXCPR
@@ -3017,6 +3072,8 @@ do_csi(uchar c)
                        curs->x + 1 - (curs->origin ? term.marg_left : 0));
         when 15:
           child_printf("\e[?%un", 11 - !!*cfg.printer);
+        when 26:  // Keyboard Report
+          child_printf("\e[?27;0;%cn", term.has_focus ? '0' : '8');
         // DEC Locator
         when 53 or 55:
           child_printf("\e[?53n");
@@ -3247,7 +3304,19 @@ do_csi(uchar c)
         }
         term.disptop = 0;
       }
+#ifdef suspend_display_update_via_CSI
+    when CPAIR('&', 'q'):  /* suspend display update (ms) */
+      term.suspend_update = min(arg0, term.rows * term.cols / 8);
+      //printf("susp = %d\n", term.suspend_update);
+      if (term.suspend_update == 0) {
+        do_update();
+        // mysteriously, a delay here makes the output flush 
+        // more likely to happen, yet not reliably...
+        usleep(1000);
+      }
+#endif
   }
+  last_char = 0;  // cancel preceding char for REP
 }
 
 /*
@@ -3308,6 +3377,7 @@ do_dcs(void)
   char *s = term.cmd_buf;
   if (!term.cmd_len)
     *s = 0;
+  //printf("DCS %04X state %d <%s>\n", term.dcs_cmd, term.state, s);
 
   switch (term.dcs_cmd) {
 
@@ -3375,7 +3445,7 @@ do_dcs(void)
       //printf("w %d/%d %d h %d/%d %d\n", pixelwidth, st->grid_width, width, pixelheight, st->grid_height, height);
 
       imglist * img;
-      if (!winimg_new(&img, 0, pixels, 0, left, top, width, height, pixelwidth, pixelheight, false, 0, 0, 0, 0)) {
+      if (!winimg_new(&img, 0, pixels, 0, left, top, width, height, pixelwidth, pixelheight, false, 0, 0, 0, 0, term.curs.attr.attr & (ATTR_BLINK | ATTR_BLINK2))) {
         free(pixels);
         sixel_parser_deinit(st);
         //printf("free state 4 %p\n", term.imgs.parser_state);
@@ -3468,7 +3538,7 @@ do_dcs(void)
   }
 
   when CPAIR('$', 'q'):
-    switch (term.state) {
+   switch (term.state) {
     when DCS_ESCAPE: {     // DECRQSS
       cattr attr = term.curs.attr;
       if (!strcmp(s, "m")) { // SGR
@@ -3585,7 +3655,35 @@ do_dcs(void)
     }
     otherwise:
       return;
+   }
+
+  // https://gitlab.com/gnachman/iterm2/-/wikis/synchronized-updates-spec
+  // Begin synchronized update (BSU): ESC P = 1 s Parameters ST
+  // End synchronized update (ESU): ESC P = 2 s Parameters ST
+  when CPAIR('=', 's'): {
+    //printf("DCS =[%u]%u;%us term.state %d <%s>\n", term.csi_argc, term.csi_argv[0], term.csi_argv[1], term.state, s);
+    int susp = -1;
+    if (term.csi_argv[0] == 1) {
+      // calculate default and max timeout
+      //susp = term.rows * term.cols / (10 + cfg.display_speedup);
+      susp = 420;  // limit of user-requested delay
+      // limit timeout if requested
+      if (term.csi_argc > 1 && term.csi_argv[1])
+        susp = min((int)term.csi_argv[1], susp);
+      else
+        susp = 150;  // constant default
     }
+    else if (term.csi_argv[0] == 2)
+      susp = 0;
+    if (susp < 0)
+      return;
+
+    term.suspend_update = susp;
+    if (susp == 0) {
+      do_update();
+      //usleep(1000);  // flush update not needed here...
+    }
+  }
 
   }
 }
@@ -3610,11 +3708,11 @@ do_osc_control:
     if (osc % 100 == 5) {
       if (i == 0)
         i = BOLD_COLOUR_I;
+      else if (i == 2)
+        i = BLINK_COLOUR_I;
 #ifdef other_color_substitutes
       else if (i == 1)
         i = UNDERLINE_COLOUR_I;
-      else if (i == 2)
-        i = BLINK_COLOUR_I;
       else if (i == 3)
         i = REVERSE_COLOUR_I;
       else if (i == 4)
@@ -3748,9 +3846,12 @@ do_cmd(void)
     when 5:   do_colour_osc(true, 5, false);
     when 6 or 106: {
       int col, on;
-      if (sscanf(term.cmd_buf, "%u;%u", &col, &on) == 2)
+      if (sscanf(term.cmd_buf, "%u;%u", &col, &on) == 2) {
         if (col == 0)
           term.enable_bold_colour = on;
+        else if (col == 2)
+          term.enable_blink_colour = on;
+      }
     }
     when 104: do_colour_osc(true, 4, true);
     when 105: do_colour_osc(true, 5, true);
@@ -3884,6 +3985,15 @@ do_cmd(void)
           }
         }
       }
+    when 22: {  // set mouse pointer style
+      wchar * ps = cs__mbstowcs(s);
+      set_cursor_style(term.mouse_mode || term.locator_1_enabled, ps);
+      free(ps);
+    }
+    when 7750:
+      set_arg_option("Emojis", strdup(s));
+      clear_emoji_data();
+      win_invalidate_all(false);
     when 8: {  // hyperlink attribute
       char * link = s;
       char * url = strchr(s, ';');
@@ -4032,7 +4142,7 @@ do_cmd(void)
           imglist * img;
           short left = term.curs.x;
           short top = term.virtuallines + term.curs.y;
-          if (winimg_new(&img, name, data, datalen, left, top, width, height, pixelwidth, pixelheight, pAR, crop_x, crop_y, crop_width, crop_height)) {
+          if (winimg_new(&img, name, data, datalen, left, top, width, height, pixelwidth, pixelheight, pAR, crop_x, crop_y, crop_width, crop_height, term.curs.attr.attr & (ATTR_BLINK | ATTR_BLINK2))) {
             fill_image_space(img);
 
             if (term.imgs.first == NULL) {
@@ -4091,6 +4201,8 @@ typedef struct {
       len = scanenum(s, &state,
                      (paramap[]){
                                  {"off", 0},
+                                 {"default", 10},
+                                 {"", 10},
                                  {"green", 1},
                                  {"yellow", 2},
                                  {"red", 3},
@@ -4195,10 +4307,13 @@ term_do_write(const char *buf, uint len)
           cset = term.curs.cset_single;
           term.curs.cset_single = CSET_ASCII;
         }
-        else if (term.decnrc_enabled
-         && term.curs.gr && term.curs.csets[term.curs.gr] != CSET_ASCII
-         && !term.curs.oem_acs && !term.curs.utf
-         && c >= 0x80 && c < 0xFF) {
+        else if (term.curs.gr
+              //&& (term.decnrc_enabled || !term.decnrc_enabled)
+              && term.curs.csets[term.curs.gr] != CSET_ASCII
+              && !term.curs.oem_acs && !term.curs.utf
+              && c >= 0x80 && c < 0xFF
+                )
+        {
           // tune C1 behaviour to mimic xterm
           if (c < 0xA0)
             continue;
@@ -4447,7 +4562,7 @@ term_do_write(const char *buf, uint len)
               wc = W(" ¡¢£￿¥￿§¨©ª«￿￿İ￿°±²³￿µ¶·￿¹º»¼½ı¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏĞÑÒÓÔÕÖŒØÙÚÛÜŸŞßàáâãäåæçèéêëìíîïğñòóôõöœøùúûüÿş")
                    [c - ' '];
             }
-          when CSET_NRCS_Cyrillic:
+          when CSET_DEC_Cyrillic:
             if (c >= ' ' && c <= 0x7F) {
               wc = W(" ￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿￿юабцдефгхийклмнопярстужвьызшэщчъЮАБЦДЕФГХИЙКЛМНОПЯРСТУЖВЬЫЗШЭЩЧЪ")
                    [c - ' '];
@@ -4580,7 +4695,10 @@ term_do_write(const char *buf, uint len)
         tek_esc(c);
 
       when TEK_ADDRESS0 or TEK_ADDRESS:
-        if (c < ' ')
+        if (c == '\a' && tek_mode == TEKMODE_GRAPH0 && term.state == TEK_ADDRESS0) {
+          tek_mode= TEKMODE_GRAPH;
+        }
+        else if (c < ' ')
           tek_ctrl(c);
         else if (tek_mode == TEKMODE_SPECIAL_PLOT && term.state == TEK_ADDRESS0) {
           term.state = TEK_ADDRESS;
@@ -4792,6 +4910,11 @@ term_do_write(const char *buf, uint len)
         term.cmd_num = -1;
         term.cmd_len = 0;
         term.dcs_cmd = 0;
+        // use csi_arg vars also for DCS parameters
+        term.csi_argc = 0;
+        memset(term.csi_argv, 0, sizeof(term.csi_argv));
+        memset(term.csi_argv_defined, 0, sizeof(term.csi_argv_defined));
+
         switch (c) {
           when '@' ... '~':  /* DCS cmd final byte */
             term.dcs_cmd = c;
@@ -4800,13 +4923,17 @@ term_do_write(const char *buf, uint len)
           when '\e':
             term.state = DCS_ESCAPE;
           when '0' ... '9':  /* DCS parameter */
+            //printf("DCS start %c\n", c);
             term.state = DCS_PARAM;
           when ';':          /* DCS separator */
+            //printf("DCS sep %c\n", c);
             term.state = DCS_PARAM;
           when ':':
+            //printf("DCS sep %c\n", c);
             term.state = DCS_IGNORE;
           when '<' ... '?':
             term.dcs_cmd = c;
+            //printf("DCS sep %c\n", c);
             term.state = DCS_PARAM;
           when ' ' ... '/':  /* DCS intermediate byte */
             term.dcs_cmd = c;
@@ -4819,17 +4946,29 @@ term_do_write(const char *buf, uint len)
         switch (c) {
           when '@' ... '~':  /* DCS cmd final byte */
             term.dcs_cmd = term.dcs_cmd << 8 | c;
+            if (term.csi_argv[term.csi_argc])
+              term.csi_argc ++;
             do_dcs();
             term.state = DCS_PASSTHROUGH;
           when '\e':
             term.state = DCS_ESCAPE;
             term.esc_mod = 0;
-          when '0' ... '9' or ';' or ':':  /* DCS parameter */
-            term.state = DCS_PARAM;
+          when '0' ... '9':  /* DCS parameter */
+            //printf("DCS param %c\n", c);
+            if (term.csi_argc < 2) {
+              uint i = term.csi_argc;
+              term.csi_argv[i] = 10 * term.csi_argv[i] + c - '0';
+            }
+          when ';' or ':':  /* DCS parameter separator */
+            //printf("DCS param sep %c\n", c);
+            if (term.csi_argc + 1 < lengthof(term.csi_argv))
+              term.csi_argc ++;
           when '<' ... '?':
             term.dcs_cmd = term.dcs_cmd << 8 | c;
+            //printf("DCS param %c\n", c);
             term.state = DCS_PARAM;
           when ' ' ... '/':  /* DCS intermediate byte */
+            //printf("DCS param->inter %c\n", c);
             term.dcs_cmd = term.dcs_cmd << 8 | c;
             term.state = DCS_INTERMEDIATE;
           otherwise:
@@ -4846,6 +4985,7 @@ term_do_write(const char *buf, uint len)
             term.state = DCS_ESCAPE;
             term.esc_mod = 0;
           when '0' ... '?':  /* DCS parameter byte */
+            //printf("DCS inter->ignore %c\n", c);
             term.state = DCS_IGNORE;
           when ' ' ... '/':  /* DCS intermediate byte */
             term.dcs_cmd = term.dcs_cmd << 8 | c;

@@ -225,7 +225,9 @@ Note that automatic progress bar can also be configured (option ProgressBar).
 | `^[[1%q`                     | enable progress indication level 1 (green)  |
 | `^[[2%q`                     | enable progress indication level 2 (yellow) |
 | `^[[3%q`                     | enable progress indication level 3 (red)    |
+| `^[[10%q`                    | reset progress indication as configured     |
 | `^[[`_level_`;`_percent_`%q` | set progress level (1..3) and value         |
+| `^[[;`_percent_`%q`          | change progress value only                  |
 | `^[[8%q`                     | enable continuous "busy" indication         |
 
 An _OSC 9;4_ sequence (compatible with ConEmu or Windows Terminal) 
@@ -237,6 +239,7 @@ is available too, alternatively supporting mnemonic parameters:
 | `^[]9;progress;green^G`                 | enable green progress indication  |
 | `^[]9;progress;yellow^G`                | enable yellow progress indication |
 | `^[]9;progress;red^G`                   | enable red progress indication    |
+| `^[]9;progress;default^G` _or empty_    | reset progress indication         |
 | `^[]9;progress;`_level_`;`_percent_`^G` | set progress level and value      |
 | `^[]9;progress;busy^G`                  | enable busy indication            |
 
@@ -396,6 +399,14 @@ As usual, OSC sequences can also be terminated with `^[\` (_ST_, the string term
 When the font size is queried, a sequence that would restore the current font and window size is sent.
 
 
+## Emojis style ##
+
+Like OSC 50 for font style, this sequence can change the emojis style.
+For values, see setting `Emojis` in the manual.
+
+> `^[]7750;_emojis-style_`^G`
+
+
 ## Locale ##
 
 The locale and charset used by the terminal can be queried or changed using
@@ -492,6 +503,20 @@ two features:
 | `^[[?7711l`   | mark secondary prompt line (upper lines)                  |
 
 
+## Synchronous update ##
+
+A pair of Begin/End Synchronous Update DCS sequences suspends the output 
+between them in order to be updated to the screen synchronously.
+The purpose is that applications can control atomic screen update, 
+in order to avoid screen flickering in certain situations of display update.
+
+| **sequence**      | **function**                                        |
+|:------------------|:----------------------------------------------------|
+| `^[P=1s^[\`       | suspend screen update for 150 ms                    |
+| `^[P=1;`_N_`s^[\` | suspend screen update for _N_ ms, max 420 ms        |
+| `^[P=2s^[\`       | update screen (flush output), end update suspending |
+
+
 ## Image support ##
 
 In addition to the legacy Sixel feature, mintty supports graphic image display 
@@ -577,6 +602,22 @@ supported; cursor colour can be set with the OSC 12 sequence.)
 | **4**   | lower_half   |
 | **5**   | two_thirds   |
 | **6**   | full block   |
+
+
+## Mouse pointer style ##
+
+The following _OSC_ ("operating system command") sequence (xterm 367) 
+can be used to set the mouse pointer shape of the current mouse mode 
+(mintty maintains two different mouse pointer shapes, to distinguish 
+application mouse reporting modes).
+Valid values are Windows predefined cursor names 
+(appstarting, arrow, cross, hand, help, ibeam, icon, no, size, sizeall, sizenesw, sizens, sizenwse, sizewe, uparrow, wait).
+or cursor file names which are looked up in subdirectory `pointers` of 
+a mintty resource directory; supported file types are .cur, .ico, .ani.
+
+| **sequence**          |
+|:----------------------|
+| `^[]22;`_pointer_`^G` |
 
 
 ## Printing and screen dump ##

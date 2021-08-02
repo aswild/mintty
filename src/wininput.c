@@ -886,15 +886,21 @@ get_mods(void)
 static void
 update_mouse(mod_keys mods)
 {
-  static bool app_mouse;
+static bool last_app_mouse = false;
+
   bool new_app_mouse =
-    term.mouse_mode && !term.show_other_screen &&
-    cfg.clicks_target_app ^ ((mods & cfg.click_target_mod) != 0);
-  if (new_app_mouse != app_mouse) {
-    HCURSOR cursor = LoadCursor(null, new_app_mouse ? IDC_ARROW : IDC_IBEAM);
+    (term.mouse_mode || term.locator_1_enabled)
+    // disable app mouse pointer while showing "other" screen (flipped)
+    && !term.show_other_screen
+    // disable app mouse pointer while not targetting app
+    && (cfg.clicks_target_app ^ ((mods & cfg.click_target_mod) != 0));
+
+  if (new_app_mouse != last_app_mouse) {
+    //HCURSOR cursor = LoadCursor(null, new_app_mouse ? IDC_ARROW : IDC_IBEAM);
+    HCURSOR cursor = win_get_cursor(new_app_mouse);
     SetClassLongPtr(wnd, GCLP_HCURSOR, (LONG_PTR)cursor);
     SetCursor(cursor);
-    app_mouse = new_app_mouse;
+    last_app_mouse = new_app_mouse;
   }
 }
 
@@ -1248,6 +1254,12 @@ window_toggle_max()
 }
 
 static void
+win_toggle_screen_on()
+{
+  win_keep_screen_on(!keep_screen_on);
+}
+
+static void
 window_restore()
 {
   win_maximise(0);
@@ -1406,6 +1418,18 @@ mflags_zoomed()
 }
 
 static uint
+mflags_always_top()
+{
+  return win_is_always_on_top ? MF_CHECKED: MF_UNCHECKED;
+}
+
+static uint
+mflags_screen_on()
+{
+  return keep_screen_on ? MF_CHECKED: MF_UNCHECKED;
+}
+
+static uint
 mflags_flipscreen()
 {
   return term.show_other_screen ? MF_CHECKED : MF_UNCHECKED;
@@ -1508,6 +1532,8 @@ static struct function_def cmd_defs[] = {
   {"win-restore", {.fct = window_restore}, 0},
   {"win-icon", {.fct = window_min}, 0},
   {"close", {.fct = win_close}, 0},
+  {"win-toggle-always-on-top", {.fct = win_toggle_on_top}, mflags_always_top},
+  {"win-toggle-keep-screen-on", {.fct = win_toggle_screen_on}, mflags_screen_on},
 
   {"new", {.fct_key = newwin_begin}, 0},  // deprecated
   {"new-key", {.fct_key = newwin_begin}, 0},
@@ -2623,7 +2649,12 @@ static LONG last_key_time = 0;
   }
   void other_code(wchar c) {
     trace_key("other");
-    len = sprintf(buf, "\e[%u;%uu", c, mods + 1);
+    if (cfg.format_other_keys)
+      // xterm "formatOtherKeys: 1": CSI 64 ; 2 u
+      len = sprintf(buf, "\e[%u;%uu", c, mods + 1);
+    else
+      // xterm "formatOtherKeys: 0": CSI 2 7 ; 2 ; 64 ~
+      len = sprintf(buf, "\e[27;%u;%u~", mods + 1, c);
   }
   void app_pad_code(char c) {
     void mod_appl_xterm(char c) {len = sprintf(buf, "\eO%u%c", mods + 1, c);}
@@ -3010,15 +3041,32 @@ static struct {
         esc_if(alt),
         term.newline_mode ? ch('\r'), ch('\n') : ch(shift ? '\n' : '\r');
     when VK_BACK:
-      if (!ctrl)
-        esc_if(alt), ch(term.backspace_sends_bs ? '\b' : CDEL);
-      else if (term.modify_other_keys)
-        other_code(term.backspace_sends_bs ? '\b' : CDEL);
-      else
-        ctrl_ch(term.backspace_sends_bs ? CDEL : CTRL('_'));
+      if (cfg.old_modify_keys & 1) {
+        if (!ctrl)
+          esc_if(alt), ch(term.backspace_sends_bs ? '\b' : CDEL);
+        else if (term.modify_other_keys)
+          other_code(term.backspace_sends_bs ? '\b' : CDEL);
+        else
+          ctrl_ch(term.backspace_sends_bs ? CDEL : CTRL('_'));
+      }
+      else {
+        if (term.modify_other_keys > 1 && mods)
+          // perhaps also partially if:
+          // term.modify_other_keys == 1 && (mods & ~(MDK_CTRL | MDK_ALT)) ?
+          other_code(term.backspace_sends_bs ? '\b' : CDEL);
+        else {
+          esc_if(alt);
+          ch(term.backspace_sends_bs ^ ctrl ? '\b' : CDEL);
+        }
+      }
     when VK_TAB:
+      if (!(cfg.old_modify_keys & 2) && term.modify_other_keys > 1 && mods) {
+        // perhaps also partially if:
+        // term.modify_other_keys == 1 && (mods & ~(MDK_SHIFT | MDK_ALT)) ?
+        other_code('\t');
+      }
 #ifdef handle_alt_tab
-      if (alt) {
+      else if (alt) {
         if (cfg.switch_shortcuts) {
           // does not work as Alt+TAB is not passed here anyway;
           // could try something with KeyboardHook:
@@ -3030,18 +3078,28 @@ static struct {
           return false;
       }
 #endif
-      if (!ctrl)
+      else if (!ctrl) {
+        esc_if(alt);
         shift ? csi('Z') : ch('\t');
+      }
       else if (allow_shortcut && cfg.switch_shortcuts) {
         win_switch(shift, lctrl & rctrl);
         return true;
       }
-      else
-        term.modify_other_keys ? other_code('\t') : mod_csi('I');
+      //else term.modify_other_keys ? other_code('\t') : mod_csi('I');
+      else if ((cfg.old_modify_keys & 4) && term.modify_other_keys)
+        other_code('\t');
+      else {
+        esc_if(alt);
+        mod_csi('I');
+      }
     when VK_ESCAPE:
-      term.app_escape_key
-      ? ss3('[')
-      : ctrl_ch(term.escape_sends_fs ? CTRL('\\') : CTRL('['));
+      if (!(cfg.old_modify_keys & 8) && term.modify_other_keys > 1 && mods)
+        other_code('\033');
+      else
+        term.app_escape_key
+        ? ss3('[')
+        : ctrl_ch(term.escape_sends_fs ? CTRL('\\') : CTRL('['));
     when VK_PAUSE:
       if (!vk_special(ctrl & !extended ? cfg.key_break : cfg.key_pause))
         // default cfg.key_pause is CTRL(']')
@@ -3131,6 +3189,10 @@ static struct {
       else if (term.modify_other_keys > 1 && mods == MDK_SHIFT && !comp_state)
         // catch Shift+space (not losing Alt+ combinations if handled here)
         // only in modify-other-keys mode 2
+        modify_other_key();
+      else if (!(cfg.old_modify_keys & 16) && term.modify_other_keys > 1 && mods == (MDK_ALT | MDK_SHIFT))
+        // catch this case before char_key
+        trace_key("alt+shift"),
         modify_other_key();
       else if (char_key())
         trace_key("char");

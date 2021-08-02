@@ -12,8 +12,8 @@ For its configuration, it reads configuration files in this order:
 
 For resource files to configure a colour scheme, 
 wave file for the bell character, localization files, emoji graphics, 
-dynamic fonts, it looks for subfolders 
-`themes`, `sounds`, `lang`, `emojis`, `fonts`, respectively, 
+dynamic fonts, pointer shapes, it looks for subfolders 
+`themes`, `sounds`, `lang`, `emojis`, `fonts`, `pointers`, respectively, 
 in the directories
 * `~/.mintty`
 * `~/.config/mintty`
@@ -44,6 +44,12 @@ to be appended to the target field of the shortcut’s properties:
 The **[cygutils](http://www.cygwin.com/cygwin-ug-net/using-effectively.html#using-cygutils)** package 
 provides the **mkshortcut** utility for creating shortcuts from the command line. 
 See its manual page for details.
+
+### Smart login mode ###
+
+If invoked from a Windows shortcut (desktop or start menu), mintty starts 
+the shell in login mode implicitly (since mintty 3.4.7) unless disabled 
+with option `LoginFromShortcut`.
 
 ### Hotkey / Windows Shortcut key ###
 
@@ -183,6 +189,12 @@ icon location for each respective distribution is not easily found; the
 standalone package would set that up for you in the shortcuts. For other 
 invocation (cygwin or Windows command line), mintty finds the suitable 
 WSL icon itself.
+
+Note that older wslbridge2 backends used not to be interoperable among 
+systems with different libraries (glibc vs musl).
+The _distro_ `Alpine` had been checked out to build a backend that works 
+with all Linux distributions; builds of later wslbridge2 are reported 
+to be interoperable though.
 
 At the end of the `mintty --WSL` invocation line, you may add an explicit 
 WSL shell invocation like `/bin/bash -l` to select your favourite shell or 
@@ -603,7 +615,8 @@ can be used in different ways:
 
 (Option 3) 
 A number of colour schemes have been published for mintty, also 
-mintty supports direct drag-and-drop import of itermcolors schemes.
+mintty supports direct drag-and-drop import of theme files in 
+iTerm2 or Windows terminal formats.
 Look for the following repositories:
 * https://iterm2colorschemes.com/
 * https://github.com/oumu/mintty-color-schemes
@@ -839,6 +852,24 @@ in the Terminals Working Group Specifications.
 Mintty indicates this mode by appending the `@cjksingle` modifier to the 
 `LC_CTYPE` locale variable.
 
+### Remote locale width mismatch ###
+
+After remote login, locale definitions of remote and local systems may differ, 
+mostly about existing locales and ambiguous width properties.
+This is particularly the case if
+* the cygwin locale includes a @cjk... modifier which is not supported on other systems
+* the cygwin locale is a CJK locale with UTF-8 encoding in cygwin before 3.2.0 (which makes ambiguous width narrow for all UTF-8 locales to be consistent with other systems)
+
+The script `localejoin` in the 
+mintty [utils repository](https://github.com/mintty/utils) adjusts these 
+mismatches by switching the terminal locale temporarily and thus joining 
+its width properties with those of typical remote systems.
+Direct invocation of the script just runs a shell with a locale setting.
+To use it for direct remote invocation, install it under the name 
+containing any of the remote login programs (rsh, rlogin, rexec, telnet, ssh).
+Example (with `localejoin` renamed/linked/copied as `minssh`):
+* `minssh` _myLinuxhost_
+
 ### Selective double character width ###
 
 While mintty fully supports double-width characters (esp. CJK) as well 
@@ -867,6 +898,7 @@ interfere with mintty’s own bidi transformation.
 The actual window size is influenced by several parameters:
 * Font size / character height is the main parameter to determine the row height.
 * Row height is additionally affected by the “leading” information from the font.
+* Automatic row height adjustment method can be selected by setting `AutoLeading`.
 * Row height and column width can furthermore be tuned with setting `RowSpacing` and `ColSpacing`.
 * A gap between text and window border can be specified with setting `Padding` (default 1).
 
@@ -958,11 +990,11 @@ Note: SGR codes for superscript and subscript display are subject to change.
 Note: Text attributes can be disabled with option SuppressSGR (see manual).
 
 As a fancy add-on feature for text attributes, mintty supports distinct 
-colour attributes for combining characters, so a combined character 
+(colour) attributes for combining characters, so a combined character 
 can be displayed in multiple colours. Attributes considered for this 
 purpose are default and ANSI foreground colours, palette and true-colour 
-foreground colours, dim mode and manual bold mode (BoldAsFont=false); 
-background colours and inverse mode are ignored.
+foreground colours, dim mode and manual bold mode (BoldAsFont=false), 
+and blinking; background colours and inverse mode are ignored.
 <img align=top src=https://github.com/mintty/mintty/wiki/mintty-coloured-combinings.png>
 
 
@@ -1011,6 +1043,8 @@ Emoji data can be found at the following sources:
 * [JoyPixels](https://www.joypixels.com/) (formerly EmojiOne)
   * Download JoyPixels Free (or Premium)
   * Deploy the preferred subdirectory (e.g. png/unicode/128) as `joypixels`
+* Zoom (with an installed Zoom meeting client)
+  * Deploy $APPDATA/Zoom/data/Emojis/*.png into `zoom`
 <img align=right src=https://github.com/mintty/mintty/wiki/mintty-emojis.png>
 
 To “Clone” with limited download volume, use the command `git clone --depth 1`.

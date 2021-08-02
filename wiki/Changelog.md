@@ -1,3 +1,89 @@
+### 3.5.0 (16 April 2021) ###
+
+Terminal features
+  * Revised and fixed handling of blink attribute (~#1097).
+  * Coloured blink substitution display (xterm), escape sequences OSC 5/6;2.
+  * Support distinct blink attribute for base and combining characters.
+  * Apply blink attribute to graphics.
+  * Escape sequence OSC 22 to set mouse pointer shape (xterm 367).
+  * Escape sequences DCS=1/2s for atomic/synchronous screen update (~#1098).
+  * Support progress detection (for implicit progress bar) also if iconized.
+  * Implicit (detected) progress bar uses configured colour.
+  * Escape sequences to reset progress bar colour mode to configured value.
+  * Escape sequence to change progress value only.
+
+Desktop integration
+  * New user-definable function win-toggle-keep-screen-on to disable screen saver.
+
+Configuration
+  * New option BlinkColour.
+  * New options MousePointer, AppMousePointer.
+  * Restored "Allow blinking" in Options dialog (#1097).
+  * WSL-specific detection of Term info availabilities (mintty/wsltty#278).
+  * Export TERM to WSL (mintty/wsltty#278).
+
+### 3.4.7 (16 March 2021) ###
+
+Terminal features
+  * Fixed blinking for drawn/overstrike characters, (under)lining and emojis.
+  * Bracketed Paste Mode: ensure embedding of each line.
+  * Fixed character set GR mappings to be unguarded by NRCS (vttest 3.10).
+  * Restore attributes after DECALN test pattern (vttest 11.6.4/5).
+  * Simplified support of ISO Guarded Area as protected (xterm-like global distinction).
+  * Fixed validity for REP repeat preceding graphic char (vttest 11[.6].7.2).
+  * Keyboard status report (DEC DSR 26), reporting window focus (vttest 11.1.1.1.1).
+
+Vector graphics (Tektronix 4014 mode)
+  * Support "written first vector", triggered by GS-BEL (vttest 11.8.6.5, ~#896).
+  * Initial written vector joins previous text output (xterm).
+  * Adjustment of border coordinates to compensate for coordinate rounding.
+  * Fixed GIN mode and ENQ coordinates.
+  * Tweaked ENQ status byte.
+  * Distinct GIN mode mouse input (xterm).
+  * Smooth GIN mode crosshair cursor movement.
+  * Various mode handling fixes after GIN mode.
+  * GIN mode terminator strap options (Tek, xterm).
+  * Enhanced "defocused" indication by boldened colour.
+  * Enhanced "defocused" point plot indication by boldened point size.
+
+Window handling
+  * Lines cleared from top of screen are scrolled into scrollback buffer (mintty/wsltty#272).
+  * New user-definable function win-toggle-always-on-top (#1095).
+  * New heuristics to adjust row spacing to font metrics (mintty/wsltty#257).
+
+Configuration
+  * Run shell in login mode if terminal started from Windows shortcut.
+  * New option LoginFromShortcut.
+  * New option AutoLeading (mintty/wsltty#257).
+  * New option EraseToScrollback.
+  * New option TekStrap.
+
+### 3.4.6 (20 February 2021) ###
+
+Configuration
+  * Support style Emojis=zoom.
+  * OSC 7750 for dynamic change of emojis style.
+
+### 3.4.5 (17 February 2021) ###
+
+Terminal features
+  * Fixed width handling when selecting a non-text font (~#777).
+  * Auto-narrowing: glyph double-width detection for double-letter characters (like Dz, #777).
+  * Support fractional percentage for progress detection (#1074).
+  * Tweaked availability of DEC Cyrillic character set (VT520, xterm 363).
+
+Keyboard handling
+  * Changed Ctrl+Backarrow to send Backspace (#1082, #449, xterm).
+  * Applying modifyOtherKeys mode 2 more consistently to special keys (~~#1082).
+
+Configuration
+  * Tool `mintheme` works from WSL and in `screen` (mintty/wsltty#268).
+  * Support home or environment variable prefix for setting SaveFilename (~#1086).
+  * New settings -P/--pcon/ConPTY to enable/disable ConPTY support (mintty/wsltty#271).
+  * Support for theme file conversion on filename drag-and-drop (#1079).
+  * Support for theme file conversion on "file:" URL drag-and-drop (~#1079).
+  * Support for ".json" theme file conversion (~~#1079).
+
 ### 3.4.4 (19 December 2020) ###
 
 Unicode and Emoji data

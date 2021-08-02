@@ -613,16 +613,44 @@ win_init_fontfamily(HDC dc, int findex)
   GetCharWidthFloatW(dc, 0x2500, 0x2500, &line_char_width);
   GetCharWidthFloatW(dc, 0x4E00, 0x4E00, &cjk_char_width);
 
+  // avoid trouble with non-text font (#777, Noto Sans Symbols2)
+  if (!latin_char_width) {
+    //GetCharWidthFloatW(dc, 0x0020, 0x0020, &latin_char_width);
+    latin_char_width = (float)font_size / 16;
+  }
+
   if (!findex) {
-    //?int ilead = tm.tmInternalLeading - (dpi - 96) / 48;
-    int idpi = dpi;  // avoid coercion of tm.tmInternalLeading to unsigned
-    int ilead = tm.tmInternalLeading * 96 / idpi;
-    ff->row_spacing = row_padding(ilead, tm.tmExternalLeading);
-    //printf("row_sp dpi %d int %d -> ild %d (ext %d) -> pad %d + cfg %d\n", dpi, (int)tm.tmInternalLeading, ilead, (int)tm.tmExternalLeading, ff->row_spacing, cfg.row_spacing);
-    trace_font(("00 height %d avwidth %d asc %d dsc %d intlead %d extlead %d %ls\n", 
-               (int)tm.tmHeight, (int)tm.tmAveCharWidth, (int)tm.tmAscent, (int)tm.tmDescent, 
-               (int)tm.tmInternalLeading, (int)tm.tmExternalLeading, 
-               ff->name));
+    ff->row_spacing = 0;
+    if (cfg.auto_leading == 1) {
+      //?int ilead = tm.tmInternalLeading - (dpi - 96) / 48;
+      int idpi = dpi;  // avoid coercion of tm.tmInternalLeading to unsigned
+      int ilead = tm.tmInternalLeading * 96 / idpi;
+      ff->row_spacing = row_padding(ilead, tm.tmExternalLeading);
+      //printf("row_sp dpi %d int %d -> ild %d (ext %d) -> pad %d + cfg %d\n", dpi, (int)tm.tmInternalLeading, ilead, (int)tm.tmExternalLeading, ff->row_spacing, cfg.row_spacing);
+      trace_font(("00 height %d avwidth %d asc %d dsc %d intlead %d extlead %d %ls\n", 
+                 (int)tm.tmHeight, (int)tm.tmAveCharWidth, (int)tm.tmAscent, (int)tm.tmDescent, 
+                 (int)tm.tmInternalLeading, (int)tm.tmExternalLeading, 
+                 ff->name));
+    }
+    else if (cfg.auto_leading == 2) {
+      /*
+      	–	tmIntLeading	|	|
+      	M			|ascent	| tmHeight
+      	Mg			|	|
+      	 g	tmDescent		|
+      	–	tmExtLeading
+      */
+      if (tm.tmInternalLeading < 2)
+        ff->row_spacing += 2 - tm.tmInternalLeading;
+      else if (tm.tmInternalLeading > 7)
+        ff->row_spacing -= tm.tmExternalLeading;
+      trace_font(("vert geom: (int %d) asc %d + dsc %d -> hei %d, + ext %d; -> spc (%d) %d %ls\n", 
+                (int)tm.tmInternalLeading, (int)tm.tmAscent, (int)tm.tmDescent,
+                (int)tm.tmHeight, (int)tm.tmExternalLeading, 
+                row_spacing_1, ff->row_spacing,
+                ff->name));
+    }
+
     ff->row_spacing += cfg.row_spacing;
     if (ff->row_spacing < -tm.tmDescent)
       ff->row_spacing = -tm.tmDescent;
@@ -1006,7 +1034,11 @@ init_charnametable()
   }
 
   char * cnfn = get_resource_file(W("info"), W("charnames.txt"), false);
-  FILE * cnf = fopen(cnfn, "r");
+  FILE * cnf = 0;
+  if (cnfn) {
+    cnf = fopen(cnfn, "r");
+    free(cnfn);
+  }
   if (cnf) {
     uint cc;
     char cn[100];
@@ -1202,6 +1234,7 @@ do_update(void)
 #if defined(debug_cursor) && debug_cursor > 1
   printf("do_update cursor_on %d @%d,%d\n", term.cursor_on, term.curs.y, term.curs.x);
 #endif
+  //printf("do_update state %d susp %d\n", update_state, term.suspend_update);
   if (update_state == UPDATE_BLOCKED) {
     update_state = UPDATE_IDLE;
     return;
@@ -1212,13 +1245,20 @@ do_update(void)
   lines_scrolled = 0;
   if ((update_skipped < cfg.display_speedup && cfg.display_speedup < 10
        && output_speed > update_skipped
-      ) || win_is_iconic()
+       //&& !term.smooth_scroll ?
+      ) || (!term.detect_progress && win_is_iconic())
+        //|| win_is_hidden() ?
+        // suspend display update:
+        //|| (update_skipped < term.suspend_update * cfg.display_speedup)
+        || (update_skipped * update_timer < term.suspend_update)
      )
   {
+    //printf("skip %d susp %d\n", update_skipped, term.suspend_update);
     win_set_timer(do_update, update_timer);
     return;
   }
   update_skipped = 0;
+  term.suspend_update = 0;
 
   update_state = UPDATE_BLOCKED;
 
@@ -2412,7 +2452,9 @@ old_apply_attr_colour(cattr a, attr_colour_mode mode)
   // indexed modifications
   bool do_reverse_i = mode & (ACM_RTF_PALETTE | ACM_RTF_GEN);
   bool do_bold_i = mode & (ACM_TERM | ACM_RTF_PALETTE | ACM_RTF_GEN | ACM_SIMPLE | ACM_VBELL_BG);
+#ifdef handle_blinking_here
   bool do_blink_i = mode & (ACM_TERM | ACM_RTF_PALETTE | ACM_RTF_GEN);
+#endif
   bool do_finalize_rtf_i = mode & (ACM_RTF_PALETTE | ACM_RTF_GEN);
   bool do_rtf_bold_decolour_i = mode & (ACM_RTF_GEN);
 
@@ -2429,12 +2471,15 @@ old_apply_attr_colour(cattr a, attr_colour_mode mode)
   if (do_bold_i && (a.attr & ATTR_BOLD))    // rtf_bold_decolour uses ATTR_BOLD
     reset_bold = !old_apply_bold_colour(&fgi);  // we'll reset afterwards if needed
 
+#ifdef handle_blinking_here
+  // this is handled in term_paint
   if (do_blink_i && (a.attr & ATTR_BLINK)) {
     if (CCL_ANSI8(bgi))
       bgi |= 8;
     else if (CCL_DEFAULT(bgi))
       bgi |= 1;
   }
+#endif
 
   if (do_finalize_rtf_i) {
     if (do_rtf_bold_decolour_i) {  // uses ATTR_BOLD, ATTR_REVERSE
@@ -2508,11 +2553,15 @@ apply_bold_colour(colour_i *pfgi)
       *pfgi |= 8;  // (BLACK|...|WHITE)_I -> BOLD_(BLACK|...|WHITE)_I
     return true;  // both thickened
   }
-  // switchable bold_colour
+  // switchable attribute colours
   if (term.enable_bold_colour && CCL_DEFAULT(*pfgi)
       && colours[BOLD_COLOUR_I] != (colour)-1
      )
     *pfgi = BOLD_COLOUR_I;
+  else if (term.enable_blink_colour && CCL_DEFAULT(*pfgi)
+      && colours[BLINK_COLOUR_I] != (colour)-1
+     )
+    *pfgi = BLINK_COLOUR_I;
   else
   // normal independent as_font/as_colour controls
   if (cfg.bold_as_colour) {
@@ -2561,7 +2610,9 @@ apply_attr_colour(cattr a, attr_colour_mode mode)
   // indexed modifications
   bool do_reverse_i = mode & (ACM_RTF_PALETTE | ACM_RTF_GEN);
   bool do_bold_i = mode & (ACM_TERM | ACM_RTF_PALETTE | ACM_RTF_GEN | ACM_SIMPLE | ACM_VBELL_BG);
+#ifdef handle_blinking_here
   bool do_blink_i = mode & (ACM_TERM | ACM_RTF_PALETTE | ACM_RTF_GEN);
+#endif
   bool do_finalize_rtf_i = mode & (ACM_RTF_PALETTE | ACM_RTF_GEN);
   bool do_rtf_bold_decolour_i = mode & (ACM_RTF_GEN);
 
@@ -2578,12 +2629,15 @@ apply_attr_colour(cattr a, attr_colour_mode mode)
   if (do_bold_i && (a.attr & ATTR_BOLD))    // rtf_bold_decolour uses ATTR_BOLD
     reset_bold = !apply_bold_colour(&fgi);  // we'll reset afterwards if needed
 
+#ifdef handle_blinking_here
+  // this is handled in term_paint
   if (do_blink_i && (a.attr & ATTR_BLINK)) {
     if (CCL_ANSI8(bgi))
       bgi |= 8;
     else if (CCL_DEFAULT(bgi))
       bgi |= 1;
   }
+#endif
 
   if (do_finalize_rtf_i) {
     if (do_rtf_bold_decolour_i) {  // uses ATTR_BOLD, ATTR_REVERSE
@@ -4306,7 +4360,9 @@ win_char_width(xchar c, cattrflags attr)
     return wid;
   }
 
-  if (c >= 0x2160 && c <= 0x2179) {  // Roman Numerals
+  if ((c >= 0x2160 && c <= 0x2179)   // Roman Numerals
+     )
+  {
     ReleaseDC(wnd, dc);
     return 2;
   }
@@ -4323,6 +4379,9 @@ win_char_width(xchar c, cattrflags attr)
   }
 
   if ((c >= 0x3000 && c <= 0x303F)   // CJK Symbols and Punctuation
+
+   || (c >= 0x01C4 && c <= 0x01CC)   // double letters
+   || (c >= 0x01F1 && c <= 0x01F3)   // double letters
 
    || (c >= 0x2460 && c <= 0x24FF)   // Enclosed Alphanumerics, to cover:
    //|| (c >= 0x249C && c <= 0x24E9)   // parenthesized/circled letters
@@ -4461,6 +4520,9 @@ win_set_colour(colour_i i, colour c)
     // ... reset to default ...
     if (i == BOLD_COLOUR_I) {
       cc(BOLD_COLOUR_I, cfg.bold_colour);
+    }
+    else if (i == BLINK_COLOUR_I) {
+      cc(BLINK_COLOUR_I, cfg.blink_colour);
     }
     else if (i == BOLD_FG_COLOUR_I) {
       bold_colour_selected = false;
@@ -4603,8 +4665,9 @@ win_reset_colours(void)
   }
   win_set_colour(SEL_COLOUR_I, cfg.sel_bg_colour);
   win_set_colour(SEL_TEXT_COLOUR_I, cfg.sel_fg_colour);
-  // Bold colour
+  // attribute colours
   win_set_colour(BOLD_COLOUR_I, (colour)-1);
+  win_set_colour(BLINK_COLOUR_I, (colour)-1);
 #if defined(debug_bold) || defined(debug_brighten)
   string ci[] = {"FG_COLOUR_I", "BOLD_FG_COLOUR_I", "BG_COLOUR_I", "BOLD_BG_COLOUR_I", "CURSOR_TEXT_COLOUR_I", "CURSOR_COLOUR_I", "IME_CURSOR_COLOUR_I", "SEL_COLOUR_I", "SEL_TEXT_COLOUR_I", "BOLD_COLOUR_I"};
   for (int i = FG_COLOUR_I; i < COLOUR_NUM; i++)

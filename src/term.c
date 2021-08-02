@@ -348,6 +348,7 @@ term_reset(bool full)
     term.wide_extra = false;
     term.disable_bidi = false;
     term.enable_bold_colour = cfg.bold_as_colour;
+    term.enable_blink_colour = true;
   }
 
   term.virtuallines = 0;
@@ -397,8 +398,12 @@ term_reset(bool full)
   term_schedule_cblink();
   term_clear_scrollback();
 
+  term.iso_guarded_area = false;
+
   term.detect_progress = cfg.progress_bar;
   taskbar_progress(-9);
+
+  term.suspend_update = 0;
 
   term_schedule_search_update();
 
@@ -509,33 +514,8 @@ results_add(result abspos)
   ++term.results.length;
 }
 
-void
-term_set_search(wchar * needle)
-{
-  free(term.results.query);
-  term.results.query = needle;
-
-  // transform UTF-16 to UCS for matching
-  int wlen = wcslen(needle);
-  xchar * xquery = malloc(sizeof(xchar) * (wlen + 1));
-  wchar prev = 0;
-  int xlen = -1;
-  for (int i = 0; i < wlen; i++) {
-    if ((prev & 0xFC00) == 0xD800 && (needle[i] & 0xFC00) == 0xDC00)
-      xquery[xlen] = ((xchar) (prev - 0xD7C0) << 10) | (needle[i] & 0x03FF);
-    else
-      xquery[++xlen] = needle[i];
-    prev = needle[i];
-  }
-  xquery[++xlen] = 0;
-
-  free(term.results.xquery);
-  term.results.xquery = xquery;
-  term.results.xquery_length = xlen;
-  term.results.update_type = FULL_UPDATE;
-}
-
 #ifdef dynamic_casefolding
+
 static struct {
   uint code, fold;
 } * case_folding;
@@ -577,7 +557,9 @@ init_case_folding()
     fclose(cf);
   }
 }
+
 #else
+
 static struct {
   uint code, fold;
 } case_folding[] = {
@@ -585,6 +567,7 @@ static struct {
 };
 #define case_foldn lengthof(case_folding)
 #define init_case_folding()
+
 #endif
 
 static uint
@@ -616,6 +599,36 @@ case_fold(uint ch)
 }
 
 void
+term_set_search(wchar * needle)
+{
+  free(term.results.query);
+  term.results.query = needle;
+
+  // transform UTF-16 to UCS for matching
+  int wlen = wcslen(needle);
+  xchar * xquery = malloc(sizeof(xchar) * (wlen + 1));
+  wchar prev = 0;
+  int xlen = -1;
+  for (int i = 0; i < wlen; i++) {
+    xchar xqueri;
+    if ((prev & 0xFC00) == 0xD800 && (needle[i] & 0xFC00) == 0xDC00)
+      xqueri = ((xchar) (prev - 0xD7C0) << 10) | (needle[i] & 0x03FF);
+    else {
+      ++xlen;
+      xqueri = needle[i];
+    }
+    xquery[xlen] = case_fold(xqueri);
+    prev = needle[i];
+  }
+  xquery[++xlen] = 0;
+
+  free(term.results.xquery);
+  term.results.xquery = xquery;
+  term.results.xquery_length = xlen;
+  term.results.update_type = FULL_UPDATE;
+}
+
+void
 term_update_search(void)
 {
   if (term.results.update_type == NO_UPDATE)
@@ -633,7 +646,9 @@ term_update_search(void)
 
 // return search results contained by [begin, end)
 static void
-do_search(int begin, int end) {
+do_search(int begin, int end)
+{
+  //printf("do_search %d %d\n", begin, end);
   if (term.results.xquery_length == 0) {
     return;
   }
@@ -655,12 +670,12 @@ do_search(int begin, int end) {
     int x = (cpos % term.cols);
     int y = (cpos / term.cols);
     if (line_y != y) {
-        // If our current position isn't in the termline, add it in.
-        if (line) {
-            release_line(line);
-        }
-        line = fetch_line(y - term.sblines);
-        line_y = y;
+      // If our current position isn't in the termline, add it in.
+      if (line) {
+        release_line(line);
+      }
+      line = fetch_line(y - term.sblines);
+      line_y = y;
     }
 
     if (npos == 0 && cpos + term.results.xquery_length >= end) {
@@ -677,7 +692,7 @@ do_search(int begin, int end) {
       }
     }
     xchar pat = term.results.xquery[npos];
-    bool match = case_fold(ch) == case_fold(pat);
+    bool match = case_fold(ch) == pat;
     if (!match) {
       // Skip the second cell of any wide characters
       if (ch == UCSWIDE) {
@@ -1520,19 +1535,17 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
   if (!from_begin || !to_end)
     term_check_boundary(curs->x, curs->y);
 
-#ifdef scrollback_erase_lines
-#warning this behaviour is not compatible with xterm
  /* Lines scrolled away shouldn't be brought back on if the terminal resizes. */
   bool erasing_lines_from_top =
     start.y == 0 && start.x == 0 && end.x == 0 && !line_only && !selective;
 
-  if (erasing_lines_from_top && 
+  if (cfg.erase_to_scrollback && erasing_lines_from_top && 
       !(term.lrmargmode && (term.marg_left || term.marg_right != term.cols - 1))
      )
   {
    /* If it's a whole number of lines, starting at the top, and
     * we're fully erasing them, erase by scrolling and keep the
-    * lines in the scrollback. */
+    * lines in the scrollback. This behaviour is not compatible with xterm. */
     int scrolllines = end.y;
     if (end.y == term.rows) {
      /* Shrink until we find a non-empty row. */
@@ -1547,9 +1560,7 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
     if (!term.on_alt_screen)
       term.tempsblines = 0;
   }
-  else
-#endif
-  {
+  else {
     termline *line = term.lines[start.y];
     while (poslt(start, end)) {
       int cols = min(line->cols, line->size);
@@ -1757,6 +1768,11 @@ fallback:;
       sel = false;
     when EMOJIS_JOYPIXELS:
       pre = "joypixels/";
+      sep = "-";
+      zwj = false;
+      sel = false;
+    when EMOJIS_ZOOM:
+      pre = "zoom/";
       sep = "-";
       zwj = false;
       sel = false;
@@ -2077,6 +2093,9 @@ void trace_line(char * tag, termchar * chars)
 #define trace_line(tag, chars)	
 #endif
 
+#define UNLINED (UNDER_MASK | ATTR_STRIKEOUT | ATTR_OVERL | ATTR_OVERSTRIKE)
+#define UNBLINK (FONTFAM_MASK | GRAPH_MASK | UNLINED | TATTR_EMOJI)
+
 void
 term_paint(void)
 {
@@ -2306,16 +2325,32 @@ term_paint(void)
         tattr.attr &= ~TATTR_MARKED;
       }
 
-     /* 'Real' blinking ? */
-      if (term.blink_is_real && (tattr.attr & ATTR_BLINK)) {
-        if (term.has_focus && term.tblinker)
-          tchar = ' ';
-        tattr.attr &= ~ATTR_BLINK;
+     /* Colour indication for blinking ? */
+      if ((tattr.attr & (ATTR_BLINK | ATTR_BLINK2))
+       && term.enable_blink_colour && colours[BLINK_COLOUR_I] != (colour)-1
+       //&& !(tattr.attr & TATTR_EMOJI)
+         )
+      {
+        if (!(tattr.attr & TATTR_EMOJI)) {
+          tattr.truefg = colours[BLINK_COLOUR_I];
+          tattr.attr = (tattr.attr & ~ATTR_FGMASK) | (TRUE_COLOUR << ATTR_FGSHIFT);
+        }
       }
-      if (term.blink_is_real && (tattr.attr & ATTR_BLINK2)) {
-        if (term.has_focus && term.tblinker2)
-          tchar = ' ';
-        tattr.attr &= ~ATTR_BLINK2;
+     /* Real blinking ? */
+      else if (term.blink_is_real) {
+        if (tattr.attr & ATTR_BLINK2) {
+          if (term.has_focus && term.tblinker2) {
+            tattr.attr |= ATTR_INVISIBLE;
+            tattr.attr &= ~UNBLINK;
+          }
+        }
+        // ATTR_BLINK2 should override ATTR_BLINK to avoid chaotic dual blink
+        else if (tattr.attr & ATTR_BLINK) {
+          if (term.has_focus && term.tblinker) {
+            tattr.attr |= ATTR_INVISIBLE;
+            tattr.attr &= ~UNBLINK;
+          }
+        }
       }
 
      /* Mark box drawing, block and some other characters 
@@ -2528,14 +2563,20 @@ term_paint(void)
               p += f * (chars[j].chr - '0');
               f *= 10;
             }
+            else if (chars[j].chr == '.' || chars[j].chr == ',') {
+              p = 0;
+              f = 1;
+            }
             else {
               j++;
               break;
             }
           }
         }
-        if (p <= 100)
+        if (p <= 100) {
+          taskbar_progress(- term.detect_progress);
           taskbar_progress(p);
+        }
       }
     }
 
@@ -2943,6 +2984,7 @@ term_paint(void)
 
 #define dont_debug_surrogates
 
+     /* Append combining and overstrike characters, combine surrogates */
       if (d->cc_next) {
         termchar *dd = d;
         while (dd->cc_next && textlen < maxtextlen) {
@@ -2950,30 +2992,59 @@ term_paint(void)
           wchar prev = dd->chr;
 #endif
           dd += dd->cc_next;
+          wchar tchar = dd->chr;
 
           // mark combining unless pseudo-combining surrogates
-          if (!is_low_surrogate(dd->chr)) {
+          if (!is_low_surrogate(tchar)) {
             if (tattr.attr & TATTR_EMOJI)
               break;
             attr.attr |= TATTR_COMBINING;
           }
-          if (combiningdouble(dd->chr))
+          if (combiningdouble(tchar))
             attr.attr |= TATTR_COMBDOUBL;
 
-          textattr[textlen] = dd->attr;
-          if (cfg.emojis && dd->chr == 0xFE0E)
+          // copy attribute, handle blinking
+          cattr tattr = dd->attr;
+          if ((tattr.attr & (ATTR_BLINK | ATTR_BLINK2))
+           && term.enable_blink_colour && colours[BLINK_COLOUR_I] != (colour)-1
+           && !(tattr.attr & TATTR_EMOJI)
+             )
+          {  // colour indication for blinking
+            tattr.truefg = colours[BLINK_COLOUR_I];
+            tattr.attr = (tattr.attr & ~ATTR_FGMASK) | (TRUE_COLOUR << ATTR_FGSHIFT);
+          }
+          else if (term.blink_is_real) {
+            if (tattr.attr & ATTR_BLINK2) {
+              if (term.has_focus && term.tblinker2) {
+                tattr.attr |= ATTR_INVISIBLE;
+                tattr.attr &= ~UNBLINK;
+              }
+              dirty_run = true;  // attempt to optimise this failed
+            }
+            // ATTR_BLINK2 should override ATTR_BLINK to avoid chaotic dual blink
+            else if (tattr.attr & ATTR_BLINK) {
+              if (term.has_focus && term.tblinker) {
+                tattr.attr |= ATTR_INVISIBLE;
+                tattr.attr &= ~UNBLINK;
+              }
+              dirty_run = true;  // attempt to optimise this failed
+            }
+          }
+          textattr[textlen] = tattr;
+
+          if (cfg.emojis && tchar == 0xFE0E)
             ; // skip text style variation selector
-          else if (dd->chr >= 0x2066 && dd->chr <= 0x2069)
+          else if (tchar >= 0x2066 && tchar <= 0x2069)
             // hide bidi isolate mark glyphs (if handled zero-width)
             text[textlen++] = 0x200B;  // zero width space
           else
-            text[textlen++] = dd->chr;
+            text[textlen++] = tchar;
 #ifdef debug_surrogates
           ucschar comb = 0xFFFFF;
-          if ((prev & 0xFC00) == 0xD800 && (dd->chr & 0xFC00) == 0xDC00)
-            comb = ((ucschar) (prev - 0xD7C0) << 10) | (dd->chr & 0x03FF);
+          if ((prev & 0xFC00) == 0xD800 && (tchar & 0xFC00) == 0xDC00)
+            comb = ((ucschar) (prev - 0xD7C0) << 10) | (tchar & 0x03FF);
           printf("comb (%04X) %04X %04X (%05X) %11llX\n", 
-                 d->chr, prev, dd->chr, comb, attr.attr);
+                 d->chr, prev, tchar, comb, attr.attr);
 #endif
         }
       }

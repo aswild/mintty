@@ -17,7 +17,7 @@ enum { FLASH_FRAME = 1, FLASH_BORDER = 2, FLASH_FULL = 4, FLASH_REVERSE = 8 };
 enum { EMOJIS_NONE = 0, EMOJIS_ONE = 1, EMOJIS_NOTO = 2, EMOJIS_APPLE = 3, 
        EMOJIS_GOOGLE = 4, EMOJIS_TWITTER = 5, EMOJIS_FB = 6, 
        EMOJIS_SAMSUNG = 7, EMOJIS_WINDOWS = 8, EMOJIS_JOYPIXELS = 9, 
-       EMOJIS_OPENMOJI = 10 };
+       EMOJIS_OPENMOJI = 10, EMOJIS_ZOOM = 11 };
 enum { EMPL_STRETCH = 0, EMPL_ALIGN = 1, EMPL_MIDDLE = 2, EMPL_FULL = 3 };
 
 // Colour values.
@@ -50,11 +50,12 @@ typedef struct {
 
 typedef struct {
   // Looks
-  colour fg_colour, bold_colour, bg_colour, cursor_colour;
+  colour fg_colour, bold_colour, blink_colour, bg_colour, cursor_colour;
   colour tek_fg_colour, tek_bg_colour, tek_cursor_colour;
   colour tek_write_thru_colour, tek_defocused_colour;
   colour tab_fg_colour, tab_bg_colour;
   int tek_glow;
+  int tek_strap;
   colour underl_colour, hover_colour;
   int disp_space, disp_clear, disp_tab;
   bool underl_manual;
@@ -92,6 +93,8 @@ typedef struct {
   bool altgr_is_alt;
   int ctrl_alt_delay_altgr;
   bool old_altgr_detection;
+  int old_modify_keys;
+  int format_other_keys;
   bool auto_repeat;
   int external_hotkeys;
   bool clip_shortcuts;
@@ -121,6 +124,8 @@ typedef struct {
   bool hide_mouse;
   bool elastic_mouse;
   int lines_per_notch;
+  wstring mouse_pointer;
+  wstring appmouse_pointer;
   // Selection
   bool input_clears_selection;
   bool copy_on_select;
@@ -174,6 +179,7 @@ typedef struct {
   // "Hidden"
   int bidi;
   bool disable_alternate_screen;
+  bool erase_to_scrollback;
   int display_speedup;
   string suppress_sgr;
   string suppress_dec;
@@ -199,6 +205,8 @@ typedef struct {
   wstring user_commands_path;
   wstring session_commands;
   wstring task_commands;
+  int conpty_support;
+  bool login_from_shortcut;
   string menu_mouse;
   string menu_ctrlmouse;
   string menu_altmouse;
@@ -209,6 +217,7 @@ typedef struct {
   int geom_sync;
   int tabbar;
   int col_spacing, row_spacing;
+  int auto_leading;
   int padding;
   int ligatures;
   int ligatures_support;

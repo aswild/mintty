@@ -87,6 +87,7 @@ int ini_width, ini_height;
 
 // State
 bool win_is_fullscreen;
+bool win_is_always_on_top = false;
 static bool go_fullscr_on_max;
 static bool resizing;
 static bool moving = false;
@@ -95,6 +96,7 @@ static bool disable_poschange = true;
 static int zoom_token = 0;  // for heuristic handling of Shift zoom (#467, #476)
 static bool default_size_token = false;
 bool clipboard_token = false;
+bool keep_screen_on = false;
 
 // Options
 bool title_settable = true;
@@ -387,6 +389,16 @@ set_per_monitor_dpi_aware(void)
 void
 win_set_timer(void (*cb)(void), uint ticks)
 { SetTimer(wnd, (UINT_PTR)cb, ticks, null); }
+
+void
+win_keep_screen_on(bool on)
+{
+  keep_screen_on = on;
+  if (on)
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED /*| ES_AWAYMODE_REQUIRED*/);
+  else
+    SetThreadExecutionState(ES_CONTINUOUS);
+}
 
 
 /*
@@ -700,6 +712,7 @@ win_set_title(char *title)
       GetWindowTextW(wnd, oldtitle, len + 1);
       if (0 != wcscmp(wtitle, oldtitle)) {
         SetWindowTextW(wnd, wtitle);
+        usleep(1000);
         update_tab_titles();
       }
     }
@@ -1352,6 +1365,14 @@ win_set_zorder(bool top)
                SWP_NOMOVE | SWP_NOSIZE);
 }
 
+void
+win_toggle_on_top(void)
+{
+  win_is_always_on_top = !win_is_always_on_top;
+  SetWindowPos(wnd, win_is_always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST,
+               0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+}
+
 bool
 win_is_iconic(void)
 {
@@ -1748,9 +1769,15 @@ static int last_i = 0;
   ITaskbarList3 * tbl;
   HRESULT hres = CoCreateInstance(&CLSID_TaskbarList, NULL,
                                   CLSCTX_INPROC_SERVER,
-                                  &IID_ITaskbarList, (void **) &tbl);
+                                  &IID_ITaskbarList3, (void **) &tbl);
   if (!SUCCEEDED(hres))
     return;
+
+  hres = tbl->lpVtbl->HrInit(tbl);
+  if (!SUCCEEDED(hres)) {
+    tbl->lpVtbl->Release(tbl);
+    return;
+  }
 
   if (i >= 0)
     hres = tbl->lpVtbl->SetProgressValue(tbl, wnd, i, 100);
@@ -2447,6 +2474,83 @@ win_close(void)
 
   if (!cfg.confirm_exit || confirm_exit())
     child_kill((GetKeyState(VK_SHIFT) & 0x80) != 0);
+}
+
+
+/*
+   Mouse pointer style.
+ */
+
+static struct {
+  void * tag;
+  wchar * name;
+} cursorstyles[] = {
+  {IDC_APPSTARTING, W("appstarting")},
+  {IDC_ARROW, W("arrow")},
+  {IDC_CROSS, W("cross")},
+  {IDC_HAND, W("hand")},
+  {IDC_HELP, W("help")},
+  {IDC_IBEAM, W("ibeam")},
+  {IDC_ICON, W("icon")},
+  {IDC_NO, W("no")},
+  {IDC_SIZE, W("size")},
+  {IDC_SIZEALL, W("sizeall")},
+  {IDC_SIZENESW, W("sizenesw")},
+  {IDC_SIZENS, W("sizens")},
+  {IDC_SIZENWSE, W("sizenwse")},
+  {IDC_SIZEWE, W("sizewe")},
+  {IDC_UPARROW, W("uparrow")},
+  {IDC_WAIT, W("wait")},
+};
+
+static HCURSOR cursors[2] = {0, 0};
+
+HCURSOR
+win_get_cursor(bool appmouse)
+{
+  return cursors[appmouse];
+}
+
+void
+set_cursor_style(bool appmouse, wchar * style)
+{
+  HCURSOR c = 0;
+  if (wcschr(style, '.')) {
+    char * pf = get_resource_file(W("pointers"), style, false);
+    wchar * wpf = 0;
+    if (pf) {
+      wpf = path_posix_to_win_w(pf);
+      free(pf);
+    }
+    if (wpf) {
+      c = LoadImageW(null, wpf, IMAGE_CURSOR, 
+                           0, 0,
+                           LR_DEFAULTSIZE |
+                           LR_LOADFROMFILE | LR_LOADTRANSPARENT);
+      free(wpf);
+    }
+  }
+  if (!c)
+    for (uint i = 0; i < lengthof(cursorstyles); i++)
+      if (0 == wcscmp(style, cursorstyles[i].name)) {
+        c = LoadCursor(null, cursorstyles[i].tag);
+        break;
+      }
+  if (!c)
+    c = LoadCursor(null, appmouse ? IDC_ARROW : IDC_IBEAM);
+
+  if (!IS_INTRESOURCE(cursors[appmouse]))
+    DestroyCursor(cursors[appmouse]);
+  cursors[appmouse] = c;
+  SetClassLongPtr(wnd, GCLP_HCURSOR, (LONG_PTR)c);
+  SetCursor(c);
+}
+
+static void
+win_init_cursors()
+{
+  set_cursor_style(true, W("arrow"));
+  set_cursor_style(false, W("ibeam"));
 }
 
 
@@ -3175,6 +3279,13 @@ static struct {
       win_update_search();
       // support tabbar
       win_update_tabbar();
+      // update dark mode
+      if (message == WM_WININICHANGE) {
+        // SetWindowTheme will cause an asynchronous WM_THEMECHANGED message,
+        // so guard it by WM_WININICHANGE;
+        // this will switch from Light to Dark mode immediately but not back!
+        //win_dark_mode(wnd);
+      }
 
     when WM_FONTCHANGE:
       font_cs_reconfig(true);
@@ -4036,7 +4147,7 @@ getlxssinfo(bool list, wstring wslname, uint * wsl_ver,
     if (stat (rootdir, & fstat_buf) == 0 && S_ISDIR (fstat_buf.st_mode)) {
       *wsl_rootfs = rootfs;
     }
-    else {
+    else if (wslname) {
       free(rootfs);
       rootfs = newn(wchar, wcslen(wslname) + 8);
       wcscpy(rootfs, W("\\\\wsl$\\"));
@@ -4473,7 +4584,7 @@ static char help[] =
   "See manual page for further command line options and configuration.\n"
 );
 
-static const char short_opts[] = "+:c:C:eh:i:l:o:p:s:t:T:B:R:uw:HVdD~";
+static const char short_opts[] = "+:c:C:eh:i:l:o:p:s:t:T:B:R:uw:HVdD~P:";
 
 enum {
   OPT_FG       = 0x80,
@@ -4519,6 +4630,7 @@ opts[] = {
   {"WSL",        optional_argument, 0, ''},  // short option not enabled
   {"WSLmode",    optional_argument, 0, ''},  // short option not enabled
 #endif
+  {"pcon",       required_argument, 0, 'P'},
   {"rootfs",     required_argument, 0, ''},  // short option not enabled
   {"dir~",       no_argument,       0, '~'},
   {"help",       no_argument,       0, 'H'},
@@ -4586,6 +4698,14 @@ main(int argc, char *argv[])
   // shortcut or AppId would be found in sui.lpTitle
 # ifdef debuglog
   fprintf(mtlog, "shortcut %d %ls\n", invoked_from_shortcut, sui.lpTitle);
+# endif
+  // conclude whether started via Win+R (may be considered to set login mode)
+  //invoked_from_win_r = !invoked_from_shortcut & (sui.dwFlags & STARTF_USESHOWWINDOW);
+# ifdef debug_startupinfo
+  char * sinfo = asform("STARTUPINFO <%s> <%s> %08X %d\n",
+        cs__wcstombs(sui.lpDesktop ?: u""), cs__wcstombs(sui.lpTitle ?: u""),
+        sui.dwFlags, sui.wShowWindow);
+  show_info(sinfo);
 # endif
 
   // Options triggered via wsl*.exe
@@ -4948,6 +5068,8 @@ main(int argc, char *argv[])
         dup(tfd);
         close(tfd);
       }
+      when 'P':
+        set_arg_option("ConPTY", optarg);
     }
   }
 
@@ -5065,7 +5187,7 @@ main(int argc, char *argv[])
 #ifdef wslbridge2
     argc += start_home;
 #endif
-    argc += 6;  // LANG, LC_CTYPE, LC_ALL
+    argc += 10;  // -e parameters
 
     char ** new_argv = newn(char *, argc + 8 + start_home + (wsltty_appx ? 2 : 0));
     char ** pargv = new_argv;
@@ -5101,6 +5223,8 @@ main(int argc, char *argv[])
 #ifdef wslbridge_t
     *pargv++ = "-t";
 #endif
+    *pargv++ = "-e";
+    *pargv++ = "TERM";
     *pargv++ = "-e";
     *pargv++ = "APPDATA";
     if (!cfg.old_locale) {
@@ -5186,9 +5310,9 @@ main(int argc, char *argv[])
     // if called from WSL (mintty/wsltty#76)
     unsetenv("HOME");
   }
-  else if (*argv && (argv[1] || strcmp(*argv, "-")))
+  else if (*argv && (argv[1] || strcmp(*argv, "-")))  // argv is a command
     cmd = *argv;
-  else {  // argv is only "-"
+  else {  // argv is empty or only "-"
     // Look up the user's shell.
     cmd = getenv("SHELL");
     cmd = cmd ? strdup(cmd) :
@@ -5202,7 +5326,7 @@ main(int argc, char *argv[])
     char *arg0 = slash ? slash + 1 : cmd;
 
     // Prepend '-' if a login shell was requested.
-    if (*argv)
+    if (*argv || (invoked_from_shortcut && cfg.login_from_shortcut))
       arg0 = asform("-%s", arg0);
 
     // Create new argument array.
@@ -5654,6 +5778,7 @@ static int dynfonts = 0;
   CreateCaret(wnd, caretbm, 0, 0);
 
   // Initialise various other stuff.
+  win_init_cursors();
   win_init_drop_target();
   win_init_menus();
   win_update_transparency(cfg.opaque_when_focused);
@@ -5681,6 +5806,24 @@ static int dynfonts = 0;
   win_get_pixels(&ini_height, &ini_width, false);
   if (*cfg.background == '%')
     scale_to_image_ratio();
+
+  // Adjust ConPTY support if requested
+  if (cfg.conpty_support != (uchar)-1) {
+    char * env = 0;
+#ifdef __MSYS__
+    env = "MSYS";
+#else
+#ifdef __CYGWIN__
+    env = "CYGWIN";
+#endif
+#endif
+    if (env) {
+      char * val = cfg.conpty_support ? "enable_pcon" : "disable_pcon";
+      val = asform("%s %s", getenv(env) ?: "", val);
+      //printf("%d %s=%s\n", cfg.conpty_support, env, val);
+      setenv(env, val, true);
+    }
+  }
 
   // Create child process.
   child_create(

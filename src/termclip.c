@@ -243,12 +243,20 @@ term_paste(wchar *data, uint len, bool all)
 {
   term_cancel_paste();
 
+  uint size = len;
   term.paste_buffer = newn(wchar, len);
   term.paste_len = term.paste_pos = 0;
 
   // Copy data to the paste buffer, converting both Windows-style \r\n and
   // Unix-style \n line endings to \r, because that's what the Enter key sends.
   for (uint i = 0; i < len; i++) {
+    if (term.bracketed_paste) {
+      if (i + 6 <= len && wcsncmp(W("\e[201~"), &data[i], 6) == 0) {
+        i += 6 - 1;
+        continue;
+      }
+    }
+
     wchar wc = data[i];
     if (wc == '\n')
       wc = '\r';
@@ -259,6 +267,18 @@ term_paste(wchar *data, uint len, bool all)
       term.paste_buffer[term.paste_len++] = wc;
     else if (i == 0 || data[i - 1] != '\r')
       term.paste_buffer[term.paste_len++] = wc;
+    else
+      continue;
+
+    if (term.bracketed_paste && wc == '\r' && i + 1 < len
+     && (i + 2 != len || 0 != wcsncmp(&data[i], W("\r\n"), 2))
+       )
+    {
+      size += 12;
+      term.paste_buffer = renewn(term.paste_buffer, size);
+      wcsncpy(&term.paste_buffer[term.paste_len], W("\e[201~\e[200~"), 12);
+      term.paste_len += 12;
+    }
   }
 
   if (term.bracketed_paste)
@@ -512,6 +532,7 @@ term_create_html(FILE * hf, int level)
   colour fg_colour = win_get_colour(FG_COLOUR_I);
   colour bg_colour = win_get_colour(BG_COLOUR_I);
   colour bold_colour = win_get_colour(BOLD_COLOUR_I);
+  colour blink_colour = win_get_colour(BLINK_COLOUR_I);
   hprintf(hf,
     "<head>\n"
     "  <meta name='generator' content='mintty'/>\n"
@@ -619,6 +640,9 @@ term_create_html(FILE * hf, int level)
   if (bold_colour != (colour)-1)
     hprintf(hf, "  .bold-color { color: #%02X%02X%02X }\n",
             red(bold_colour), green(bold_colour), blue(bold_colour));
+  else if (blink_colour != (colour)-1)
+    hprintf(hf, "  .blink-color { color: #%02X%02X%02X }\n",
+            red(blink_colour), green(blink_colour), blue(blink_colour));
   for (int i = 0; i < 16; i++) {
     colour ansii = win_get_colour(ANSI0 + i);
     uchar r = red(ansii), g = green(ansii), b = blue(ansii);
@@ -702,6 +726,10 @@ term_create_html(FILE * hf, int level)
       if ((ca->attr & ATTR_BOLD) && fga < 8 && term.enable_bold_colour && !rev) {
         if (bold_colour != (colour)-1)
           fg = bold_colour;
+      }
+      else if ((ca->attr & (ATTR_BLINK | ATTR_BLINK2)) && term.enable_blink_colour) {
+        if (blink_colour != (colour)-1)
+          fg = blink_colour;
       }
       if (dim) {
         fg = ((fg & 0xFEFEFEFE) >> 1)
@@ -793,6 +821,18 @@ term_create_html(FILE * hf, int level)
             }
             else
               hprintf(hf, " bold-color");
+            fg = (colour)-1;
+          }
+        }
+        else if (ca->attr & (ATTR_BLINK | ATTR_BLINK2) && term.enable_blink_colour) {
+          if (fg == blink_colour) {
+            if (enhtml) {
+              add_style("color: ");
+              hprintf(hf, "#%02X%02X%02X;",
+                      red(blink_colour), green(blink_colour), blue(blink_colour));
+            }
+            else
+              hprintf(hf, " blink-color");
             fg = (colour)-1;
           }
         }

@@ -58,16 +58,17 @@ typedef enum {
   SEL_COLOUR_I         = 279,
   SEL_TEXT_COLOUR_I    = 280,
 
-  // configured Bold colour
+  // configured attribute substitution colours
   BOLD_COLOUR_I = 281,
+  BLINK_COLOUR_I = 282,
 
   // Tektronix colours
-  TEK_FG_COLOUR_I      = 282,
-  TEK_BG_COLOUR_I      = 283,
-  TEK_CURSOR_COLOUR_I  = 284,
+  TEK_FG_COLOUR_I      = 283,
+  TEK_BG_COLOUR_I      = 284,
+  TEK_CURSOR_COLOUR_I  = 285,
 
   // Number of colours
-  COLOUR_NUM = 285,
+  COLOUR_NUM = 286,
 
   // True Colour indicator
   // assert (TRUE_COLOUR % 4) == 0 so that checking x >= TRUE_COLOUR
@@ -112,13 +113,13 @@ enum {
   ATTR_INVALID    = 0x0003FFFFu,
   ATTR_BOLD       = 0x00040000u,
   ATTR_DIM        = 0x00080000u,
-  ATTR_REVERSE    = 0x00100000u,
-  ATTR_UNDER      = 0x00200000u,
-  ATTR_BLINK      = 0x00400000u,
+  ATTR_REVERSE    = 0x00400000u,
+  ATTR_UNDER      = 0x02000000u,
+  ATTR_BLINK      = 0x00100000u,
 
   ATTR_ITALIC     = 0x00800000u,
   ATTR_INVISIBLE  = 0x01000000u,
-  ATTR_BLINK2     = 0x02000000u,
+  ATTR_BLINK2     = 0x00200000u,
   ATTR_STRIKEOUT  = 0x04000000u,
   ATTR_DOUBLYUND  = 0x08000000u,
   ATTR_OVERL      = 0x10000000u,
@@ -309,7 +310,7 @@ typedef enum {
   CSET_DEC_Greek_Supp		= '?' + 0x80,
   CSET_DEC_Hebrew_Supp		= '4' + 0x80,
   CSET_DEC_Turkish_Supp		= '0' + 0x80,
-  CSET_NRCS_Cyrillic		= '&' + 0x80,
+  CSET_DEC_Cyrillic		= '&' + 0x80,
   CSET_NRCS_Greek		= '>' + 0x80,
   CSET_NRCS_Hebrew		= '=' + 0x80,
   CSET_NRCS_Turkish		= '2' + 0x80,
@@ -398,6 +399,9 @@ typedef struct imglist {
   int cwidth, cheight;
   // image: cropping
   int crop_x, crop_y, crop_width, crop_height;
+
+  // text attributes to be considered (blinking)
+  int attr;
 } imglist;
 
 typedef struct {
@@ -469,6 +473,8 @@ struct term {
   char * suspbuf;         /* suspend output during selection buffer */
   uint suspbuf_size, suspbuf_pos;
 
+  int suspend_update;
+
   bool rvideo;            /* global reverse video flag */
   bool cursor_on;         /* cursor enabled flag */
   bool deccolm_allowed;   /* DECCOLM sequence for 80/132 cols allowed? */
@@ -527,6 +533,7 @@ struct term {
   bool wide_extra;
   bool disable_bidi;
   bool enable_bold_colour;
+  bool enable_blink_colour;
 
   bool sixel_display;        // true if sixel scrolling mode is off
   bool sixel_scrolls_right;  // on: sixel scrolling leaves cursor to right of graphic
@@ -558,6 +565,9 @@ struct term {
 
   uchar *tabs;
   bool newtab;
+
+  bool iso_guarded_area;  // global distinction of ISO Guarded Area
+                          // as protected (xterm-like simplification)
 
   int detect_progress;
 
