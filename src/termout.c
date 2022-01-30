@@ -1388,7 +1388,7 @@ do_vt52(uchar c)
       move(0, 0, 0);
     when 'I':  /* Reverse line feed. */
       if (curs->y == term.marg_top)
-        term_do_scroll(term.marg_top, term.marg_bot, -1, true);
+        term_do_scroll(term.marg_top, term.marg_bot, -1, false);
       else if (curs->y > 0)
         curs->y--;
       curs->wrapnext = false;
@@ -1592,7 +1592,7 @@ do_esc(uchar c)
       }
     when 'M':  /* RI: reverse index - backwards LF */
       if (curs->y == term.marg_top)
-        term_do_scroll(term.marg_top, term.marg_bot, -1, true);
+        term_do_scroll(term.marg_top, term.marg_bot, -1, false);
       else if (curs->y > 0)
         curs->y--;
       curs->wrapnext = false;
@@ -2094,7 +2094,7 @@ set_modes(bool state)
             term.marg_right = term.cols - 1;
           }
         when 80: /* DECSDM: SIXEL display mode */
-          term.sixel_display = !state;
+          term.sixel_display = state;
         when 1000: /* VT200_MOUSE */
           term.mouse_mode = state ? MM_VT200 : 0;
           win_update_mouse();
@@ -2214,6 +2214,12 @@ set_modes(bool state)
             term.curs.bidimode &= ~LATTR_BIDISEL;
           else
             term.curs.bidimode |= LATTR_BIDISEL;
+        when 2026:
+          term.suspend_update = state ? 150 : 0;
+          if (!state) {
+            do_update();
+            usleep(1000);  // flush update
+          }
       }
     }
     else { /* SM/RM: set/reset mode */
@@ -2300,7 +2306,7 @@ get_mode(bool privatemode, int arg)
       when 69: /* DECLRMM: enable left and right margin mode DECSLRM */
         return 2 - term.lrmargmode;
       when 80: /* DECSDM: SIXEL display mode */
-        return 2 - !term.sixel_display;
+        return 2 - term.sixel_display;
       when 1000: /* VT200_MOUSE */
         return 2 - (term.mouse_mode == MM_VT200);
       when 1002: /* BTN_EVENT_MOUSE */
@@ -2983,9 +2989,12 @@ do_csi(uchar c)
     when 'T':        /* SD: Scroll down */
       /* Avoid clash with unsupported hilight mouse tracking mode sequence */
       if (term.csi_argc <= 1) {
-        term_do_scroll(term.marg_top, term.marg_bot, -arg0_def1, true);
+        term_do_scroll(term.marg_top, term.marg_bot, -arg0_def1, false);
         curs->wrapnext = false;
       }
+    when CPAIR('+', 'T'):     /* unscroll (kitty) */
+      term_do_scroll(term.marg_top, term.marg_bot, -arg0_def1, true);
+      curs->wrapnext = false;
     when CPAIR('*', '|'):     /* DECSNLS */
      /*
       * Set number of lines on screen
@@ -3191,27 +3200,124 @@ do_csi(uchar c)
       }
     when CPAIR('$', 'r')  /* DECCARA: VT420 Change Attributes in Area */
       or CPAIR('$', 't'): {  /* DECRARA: VT420 Reverse Attributes in Area */
-      cattrflags a1 = 0, a2 = 0;
-      for (uint i = 4; i < term.csi_argc; i++)
+      cattrflags a1 = 0, a2 = 0, ac = 0, af = 0;
+      for (uint i = 4; i < term.csi_argc; i++) {
+        int sub_pars = 0;
+        if (term.csi_argv[i] & SUB_PARS)
+          for (uint j = i + 1; j < term.csi_argc; j++) {
+            sub_pars++;
+            if (term.csi_argv[j] & SUB_PARS)
+              term.csi_argv[j] &= ~SUB_PARS;
+            else
+              break;
+          }
         switch (term.csi_argv[i]) {
-          when 0: a2 = ATTR_BOLD | ATTR_UNDER | ATTR_BLINK | ATTR_REVERSE;
+          when 0: a2 = ATTR_BOLD | ATTR_UNDER | ATTR_BLINK | ATTR_REVERSE
+                  | ATTR_DIM | ATTR_ITALIC | ATTR_BLINK2 | ATTR_STRIKEOUT
+                  ;
           when 1: a1 |= ATTR_BOLD;
           when 4: a1 |= ATTR_UNDER;
+                  a2 |= UNDER_MASK;
           when 5: a1 |= ATTR_BLINK;
           when 7: a1 |= ATTR_REVERSE;
-          when 22: a2 |= ATTR_BOLD;
-          when 24: a2 |= ATTR_UNDER;
-          when 25: a2 |= ATTR_BLINK;
+          when 22: a2 |= ATTR_BOLD | ATTR_DIM | ATTR_SHADOW;
+          when 24: a2 |= UNDER_MASK;
+          when 25: a2 |= ATTR_BLINK | ATTR_BLINK2;
           when 27: a2 |= ATTR_REVERSE;
-          //when 2: a1 |= ATTR_DIM;
-          //when 3: a1 |= ATTR_ITALIC;
-          //when 6: a1 |= ATTR_BLINK2;
-          //when 8: a1 |= ATTR_INVISIBLE;
-          //when 9: a1 |= ATTR_STRIKEOUT;
+          // extensions
+          when 1 | SUB_PARS:
+                  if (i + 1 < term.csi_argc && term.csi_argv[i + 1] == 1)
+                    a1 |= ATTR_SHADOW;
+          when 2: a1 |= ATTR_DIM;
+          when 3: a1 |= ATTR_ITALIC;
+          when 23: a2 |= ATTR_ITALIC;
+          when 4 | SUB_PARS:
+                  if (i + 1 < term.csi_argc) {
+                    a2 |= UNDER_MASK;
+                    switch (term.csi_argv[i + 1]) {
+                      when 0:
+                        ;
+                      when 1:
+                        a1 |= ATTR_UNDER;
+                      when 2:
+                        a1 |= ATTR_DOUBLYUND;
+                      when 3:
+                        a1 |= ATTR_CURLYUND;
+                      when 4:
+                        a1 |= ATTR_BROKENUND;
+                      when 5:
+                        a1 |= ATTR_BROKENUND | ATTR_DOUBLYUND;
+                    }
+                  }
+          when 6: a1 |= ATTR_BLINK2;
+          when 8: a1 |= ATTR_INVISIBLE;
+          when 28: a2 |= ATTR_INVISIBLE;
+          when 9: a1 |= ATTR_STRIKEOUT;
+          when 29: a2 |= ATTR_STRIKEOUT;
+          when 21: a1 |= ATTR_DOUBLYUND;
+                   a2 |= UNDER_MASK;
+          when 51 or 52: a1 |= ATTR_FRAMED;
+          when 54: a2 |= ATTR_FRAMED;
+          when 53: a1 |= ATTR_OVERL;
+          when 55: a2 |= ATTR_OVERL;
+          when 73: a1 |= ATTR_SUPERSCR;
+          when 74: a1 |= ATTR_SUBSCR;
+          when 75: a2 |= ATTR_SUPERSCR | ATTR_SUBSCR;
+          // colour
+          when 30 ... 37:
+                   a2 |= ATTR_FGMASK;
+                   ac = (term.csi_argv[i] - 30) << ATTR_FGSHIFT;
+          when 40 ... 47:
+                   a2 |= ATTR_BGMASK;
+                   ac = (term.csi_argv[i] - 40) << ATTR_BGSHIFT;
+          when 90 ... 97:
+                   a2 |= ATTR_FGMASK;
+                   ac = (term.csi_argv[i] - 90 + 8 + ANSI0) << ATTR_FGSHIFT;
+          when 100 ... 107:
+                   a2 |= ATTR_BGMASK;
+                   ac = (term.csi_argv[i] - 100 + 8 + ANSI0) << ATTR_BGSHIFT;
+          when 39: a2 |= ATTR_FGMASK;
+                   ac = ATTR_DEFFG;
+          when 49: a2 |= ATTR_BGMASK;
+                   ac = ATTR_DEFBG;
+          when 59: a2 |= ATTR_ULCOLOUR;
+          when 38 | SUB_PARS:
+            if (sub_pars == 2 && term.csi_argv[i + 1] == 5) {
+              a2 |= ATTR_FGMASK;
+              ac = ((term.csi_argv[i + 2] & 0xFF) << ATTR_FGSHIFT);
+            }
+            // true colour not implemented
+          when 48 | SUB_PARS:
+            if (sub_pars == 2 && term.csi_argv[i + 1] == 5) {
+              a2 |= ATTR_BGMASK;
+              ac = ((term.csi_argv[i + 2] & 0xFF) << ATTR_BGSHIFT);
+            }
+            // true colour not implemented
+          when 58 | SUB_PARS:
+            if (sub_pars == 2 && term.csi_argv[i + 1] == 5) {
+              // underline colour not implemented
+              //a1 |= ATTR_ULCOLOUR;
+              //ul = term.csi_argv[i + 2] & 0xFF;
+            }
+          // font
+          when 10 ... 20:
+            if (term.csi_argv[i] == 11 && !*cfg.fontfams[1].name)
+              continue;
+            a2 |= FONTFAM_MASK;
+            af = (cattrflags)(term.csi_argv[i] - 10) << ATTR_FONTFAM_SHIFT;
         }
+        i += sub_pars;
+      }
+      // withdraw cancelled changes
       a1 &= ~a2;
+#ifdef debug_deccara
       if (c == 'r')
-        attr_rect(a1, a2, 0, arg0_def1, arg1 ?: 1,
+        printf("-%16llX\n+%16llX\n", a1, a2);
+      else
+        printf("^%16llX\n", a1);
+#endif
+      if (c == 'r')
+        attr_rect(a1 | ac | af, a2, 0, arg0_def1, arg1 ?: 1,
                   term.csi_argv[2] ?: urows, term.csi_argv[3] ?: ucols);
       else
         attr_rect(0, 0, a1, arg0_def1, arg1 ?: 1,
@@ -3315,7 +3421,42 @@ do_csi(uchar c)
         usleep(1000);
       }
 #endif
+    when CPAIR(',', '~'): {  /* DECPS: VT520 Play Sound */
+      // CSI vol[:tone];duration[1/32s];note;... ,~
+      uint i = 0;
+      uint volarg = term.csi_argv[0];
+      if (volarg & SUB_PARS) {
+        volarg &= ~SUB_PARS;
+        ++i;
+        term.play_tone = term.csi_argv[1];
+      }
+
+      uint ms = term.csi_argv[++i] * 1000 / 32;
+
+      float vol = 0.0;
+      if (volarg <= 7)
+        vol = (float)volarg / 7.0;
+      else if (volarg <= 100)
+        vol = (float)volarg / 100.0;
+
+static float freq_C5_C7[26] =
+          {0.0, 523.2511, 554.3653, 587.3295, 622.2540, 659.2551, 698.4565, 
+           739.9888, 783.9909, 830.6094, 880.0000, 932.3275, 987.7666, 
+           1046.502, 1108.731, 1174.659, 1244.508, 1318.510, 1396.913, 
+           1479.978, 1567.982, 1661.219, 1760.000, 1864.655, 1975.533, 
+           2093.005};
+
+      while (++i < term.csi_argc)
+        if (term.csi_argv[i] <= 25)
+          win_beep(term.play_tone, vol, freq_C5_C7[term.csi_argv[i]], ms);
+        else if (term.csi_argv[i] >= 41 && term.csi_argv[i] <= 137) {
+          uint freqi = ((term.csi_argv[i] - 41) % 12 + 1);
+          float freq = freq_C5_C7[freqi] * (1 << (term.csi_argv[i] - 41) / 12) / 32;
+          win_beep(term.play_tone, vol, freq, ms);
+        }
+    }
   }
+
   last_char = 0;  // cancel preceding char for REP
 }
 
@@ -4160,6 +4301,33 @@ do_cmd(void)
         else
           free(data);
       }
+    }
+    when 440: {  // Audio / sound file output
+      // experimental, for a proposal see
+      // https://gitlab.freedesktop.org/terminal-wg/specifications/-/issues/14
+      char * p = s;
+      uint opt = 0;
+      while (p) {
+        char * pn = strchr(p, ':');
+        if (pn)
+          *pn++ = 0;
+        if (p != s) {
+          // handle parameter p
+          //printf("OSC 440 <%s> param <%s>\n", s, p);
+#define SND_ASYNC	0x0001
+#define SND_LOOP	0x0008
+#define SND_NOSTOP	0x0010
+          if (0 == strcmp(p, "async"))
+            opt |= SND_ASYNC;
+          if (0 == strcmp(p, "nostop"))
+            opt |= SND_NOSTOP;
+          if (0 == strcmp(p, "loop"))
+            opt |= SND_LOOP | SND_ASYNC;
+        }
+        // proceed to next or end
+        p = pn;
+      }
+      win_sound(s, opt);
     }
     when 9: {
 typedef struct {
@@ -5077,6 +5245,8 @@ term_write(const char *buf, uint len)
     can grow up to a configurable size.
   */
   if (term_selecting() && cfg.suspbuf_max > 0) {
+    // || term.no_scroll ? -> more reliably handled in child_proc
+
     // if buffer size would be exceeded, flush; prevent uint overflow
     if (len > cfg.suspbuf_max - term.suspbuf_pos)
       term_flush();

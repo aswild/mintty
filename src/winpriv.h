@@ -33,7 +33,8 @@ enum {
   WIN_FULLSCREEN = -2,
   WIN_TOP = 1,
   WIN_TITLE = 4,
-  WIN_INIT_POS = 5
+  WIN_INIT_POS = 5,
+  WIN_HIDE = 8,
 };
 // support tabbar
 extern void win_to_top(HWND top_wnd);
@@ -88,7 +89,7 @@ extern bool fill_background(HDC dc, RECT * boxp);
 extern void win_flush_background(bool clearbg);
 extern void win_paint(void);
 
-extern void win_init_fonts(int size);
+extern void win_init_fonts(int size, bool allfonts);
 extern wstring win_get_font(uint findex);
 extern void win_change_font(uint findex, wstring fn);
 extern void win_font_cs_reconfig(bool font_changed);
@@ -105,7 +106,7 @@ extern void win_open_config(void);
 extern void * load_library_func(string lib, string func);
 extern void update_available_version(bool ok);
 extern void set_dpi_auto_scaling(bool on);
-extern void win_update_transparency(bool opaque);
+extern void win_update_transparency(int transparency, bool opaque);
 extern void win_prefix_title(const wstring);
 extern void win_unprefix_title(const wstring);
 extern void win_set_icon(char * s, int icon_index);
@@ -136,6 +137,8 @@ extern void do_win_key_toggle(int vk, bool on);
 extern void win_csi_seq(char * pre, char * suf);
 
 extern void win_led(int led, bool set);
+extern bool get_scroll_lock(void);
+extern void sync_scroll_lock(bool locked);
 
 extern wchar * dewsl(wchar * wpath);
 extern void shell_exec(wstring wpath);

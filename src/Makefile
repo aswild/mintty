@@ -118,7 +118,7 @@ LDLIBS := -mwindows $(extralibs) -lcomctl32 -limm32 -lwinmm -lwinspool -lole32 -
 
 ifdef DEBUG
 #  CPPFLAGS += -Wno-trampolines
-  CFLAGS += -g
+  CFLAGS += -g -Wno-error
 else
   CPPFLAGS += -DNDEBUG
   CFLAGS += -fomit-frame-pointer -O2
@@ -371,7 +371,8 @@ SRCDEBUG:= -e "^(f*printf|\#define debug)" # \# make-escape to #
 SRCDEBUG+= -e "^(if|do|for|while) *[({]"
 SRCDEBUG+= -e "\((false|0) *&"
 SRCDEBUG+= -e "\((true|1) *\|"
-SRCDEBUG+= -e "& 0($|[^bx])"
+#SRCDEBUG+= -e "& 0($|[^bx])"
+SRCDEBUG+= -e "\(0 &"
 SRCDEBUG+= -e "^///"
 checksrc:
 	if egrep -an $(SRCDEBUG) *.[hc]; then false; fi

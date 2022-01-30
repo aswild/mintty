@@ -1,3 +1,59 @@
+### 3.5.2 (13 November 2021) ###
+
+Unicode and Emoji data
+  * Unicode 14.0 update.
+
+Terminal features
+  * Fix (revert back) DECSDM (DECSET 80) Sixel Display mode (#1127, xterm 369).
+  * Sound file playing OSC 440 (#1122).
+  * DECPS tone playing support (#1122).
+  * Fixed LED state glitch when ScrollLock is held in auto-repeat.
+  * Extended scope of area attributes change functions DECCARA and DECRARA.
+  * Unscroll sequence CSI +T, filling lines from scrollback buffer (kitty).
+  * Changed default BracketedPasteByLine=0 for consistent appearance.
+
+Window handling
+  * Fixed -s max... options (#1124).
+  * Tweaked handling of positioning and size options.
+  * Always support negative position offset (#1123).
+  * Avoid position gap after Options Apply (#1126).
+  * Copy text: set proper clipboard timestamp.
+
+### 3.5.1 (4 September 2021) ###
+
+Terminal features
+  * Visual double-width of symbols and emojis with subsequent space (#1104, #892, #1065, #979).
+  * Limit line cursor width by width of lines (underline etc) (#1101).
+  * Alternative escape sequence DECSET 2026 for synchronous screen update (#1098).
+  * Optimise screen display speed on bell sound series (#1102, ~#865).
+  * Italic emojis.
+  * Notify child process via iotcl also when scaling window with font size (xterm 368).
+  * Bracketed paste mode: configurable splitting by line.
+  * New user-definable functions no-scroll, toggle-no-scroll, scroll-mode, toggle-scroll-mode.
+  * Management of the ScrollLock LED for consistence with actual status of special scroll features.
+
+Rendering
+  * Speedup of width detection for auto-narrowing for certain characters (#1065, #979, #892).
+  * Prevent artefacts of large-size underscore cursor (CSI 4 SP q CSI ? 6 c).
+  * Prevent spacing anomaly after U+FD3E and U+FD3F.
+  * Fix emojis selection highlighting (#1116), reverting 3.0.1 tweak for emojis in bidi lines.
+
+Window handling
+  * Ensure -w full to cover taskbar also with -B void (~#1114).
+  * Tab management: Keep tabbar consistent (~#944, #699).
+
+Initialisation
+  * Font initialisation speedup (~#1113).
+  * Avoid duplicate font initialisation (~#1113).
+  * Earlier window display by later setup of drag-and-drop and tabbar (~#1113).
+  * Grab focus before showing the window, reducing focus delay (#1113).
+
+Configuration
+  * New option BracketedPasteByLine.
+  * Transparency button slider (#728, #140).
+  * New user-definable function new-window-cwd to clone window in current directory (~#1106).
+  * New user-definable functions no-scroll, toggle-no-scroll, scroll-mode, toggle-scroll-mode.
+
 ### 3.5.0 (16 April 2021) ###
 
 Terminal features
@@ -173,7 +229,6 @@ Character encoding
   * Do not clear/overwrite all locale categories anymore by option Locale.
   * Do not enforce UTF-8 encoding with WSL anymore.
   * Propagate locale settings with option --WSL (mintty/wsltty#259).
-  * Do not enforce UTF-8 for WSL anymore.
 
 Configuration
   * New option CopyTab (#1037).

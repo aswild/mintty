@@ -1164,7 +1164,7 @@ static void
 cycle_transparency(void)
 {
   cfg.transparency = ((cfg.transparency + 16) / 16 * 16) % 128;
-  win_update_transparency(false);
+  win_update_transparency(cfg.transparency, false);
 }
 
 static void
@@ -1175,7 +1175,7 @@ set_transparency(int t)
   else if (t < 0)
     t = 0;
   cfg.transparency = t;
-  win_update_transparency(false);
+  win_update_transparency(t, false);
 }
 
 static void
@@ -1214,7 +1214,7 @@ transparency_level()
     transparency_tuned = false;
   }
   if (cfg.opaque_when_focused)
-    win_update_transparency(false);
+    win_update_transparency(cfg.transparency, false);
 }
 
 static void
@@ -1391,6 +1391,106 @@ mflags_kb_select()
   return selection_pending;
 }
 
+static void
+no_scroll(uint key, mod_keys mods)
+{
+  (void)mods;
+  (void)key;
+  if (!term.no_scroll) {
+    term.no_scroll = -1;
+    sync_scroll_lock(true);
+    win_prefix_title(_W("[NO SCROLL] "));
+    term_flush();
+  }
+}
+
+static void
+scroll_mode(uint key, mod_keys mods)
+{
+  (void)mods;
+  (void)key;
+  if (!term.scroll_mode) {
+    term.scroll_mode = -1;
+    sync_scroll_lock(true);
+    win_prefix_title(_W("[SCROLL MODE] "));
+    term_flush();
+  }
+}
+
+static void
+refresh_scroll_title()
+{
+  win_unprefix_title(_W("[NO SCROLL] "));
+  win_unprefix_title(_W("[SCROLL MODE] "));
+  win_unprefix_title(_W("[NO SCROLL] "));
+  if (term.no_scroll)
+    win_prefix_title(_W("[NO SCROLL] "));
+  if (term.scroll_mode)
+    win_prefix_title(_W("[SCROLL MODE] "));
+}
+
+static void
+clear_scroll_lock()
+{
+  bool scrlock0 = term.no_scroll || term.scroll_mode;
+  if (term.no_scroll < 0) {
+    term.no_scroll = 0;
+  }
+  if (term.scroll_mode < 0) {
+    term.scroll_mode = 0;
+  }
+  bool scrlock = term.no_scroll || term.scroll_mode;
+  if (scrlock != scrlock0) {
+    sync_scroll_lock(term.no_scroll || term.scroll_mode);
+    refresh_scroll_title();
+  }
+}
+
+static void
+toggle_no_scroll(uint key, mod_keys mods)
+{
+#ifdef debug_vk_scroll
+  printf("toggle_no_scroll\n");
+#endif
+  (void)mods;
+  (void)key;
+  term.no_scroll = !term.no_scroll;
+  sync_scroll_lock(term.no_scroll || term.scroll_mode);
+  if (!term.no_scroll) {
+    refresh_scroll_title();
+    term_flush();
+  }
+  else
+    win_prefix_title(_W("[NO SCROLL] "));
+}
+
+static uint
+mflags_no_scroll()
+{
+  return term.no_scroll ? MF_CHECKED : MF_UNCHECKED;
+}
+
+static void
+toggle_scroll_mode(uint key, mod_keys mods)
+{
+  (void)mods;
+  (void)key;
+  term.scroll_mode = !term.scroll_mode;
+  sync_scroll_lock(term.no_scroll || term.scroll_mode);
+  if (!term.scroll_mode) {
+    refresh_scroll_title();
+    term_flush();
+  }
+  else
+    win_prefix_title(_W("[SCROLL MODE] "));
+}
+
+static uint
+mflags_scroll_mode()
+{
+  return term.scroll_mode ? MF_CHECKED : MF_UNCHECKED;
+}
+
 static uint
 mflags_lock_title()
 {
@@ -1521,6 +1621,7 @@ static struct function_def cmd_defs[] = {
 #endif
 
   {"new-window", {IDM_NEW}, 0},
+  {"new-window-cwd", {IDM_NEW_CWD}, 0},
   //{"new-monitor", {IDM_NEW_MONI}, 0},
 
   //{"default-size", {IDM_DEFSIZE}, 0},
@@ -1583,6 +1684,10 @@ static struct function_def cmd_defs[] = {
   {"super", {.fct_key = super_down}, 0},
   {"hyper", {.fct_key = hyper_down}, 0},
   {"kb-select", {.fct_key = kb_select}, mflags_kb_select},
+  {"no-scroll", {.fct_key = no_scroll}, mflags_no_scroll},
+  {"toggle-no-scroll", {.fct_key = toggle_no_scroll}, mflags_no_scroll},
+  {"scroll-mode", {.fct_key = scroll_mode}, mflags_scroll_mode},
+  {"toggle-scroll-mode", {.fct_key = toggle_scroll_mode}, mflags_scroll_mode},
 
   {"scroll_top", {.fct = scroll_HOME}, 0},
   {"scroll_end", {.fct = scroll_END}, 0},
@@ -1759,9 +1864,26 @@ static struct {
   {VK_ADD, 3, "Add"},
 };
 
+// simulate a key release/press sequence; reverse of win_key_fake()
 static int
 win_key_nullify(uchar vk)
 {
+  if (!cfg.manage_leds || (cfg.manage_leds < 4 && vk == VK_SCROLL))
+    return 0;
+
+#ifdef heuristic_detection_of_ScrollLock_auto_repeat_glitch
+  if (vk == VK_SCROLL) {
+    int st = GetKeyState(VK_SCROLL);
+    //printf("win_key_nullify st %d key %d\n", term.no_scroll || term.scroll_mode, st);
+    // heuristic detection of race condition with auto-repeat
+    // without setting KeyFunctions=ScrollLock:toggle-no-scroll;
+    // handled in common with heuristic compensation in win_key_up
+    if ((st & 1) == (term.no_scroll || term.scroll_mode)) {
+      return 0;  // nothing sent
+    }
+  }
+#endif
+
   INPUT ki[2];
   ki[0].type = INPUT_KEYBOARD;
   ki[1].type = INPUT_KEYBOARD;
@@ -1826,8 +1948,12 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
   printf("key_fun tag <%s> tag0 <%s> mod %X\n", tag ?: "(null)", tag0 ?: "(null)", mod_tag);
 #endif
 
+  int ret = false;
+
   char * paramp;
   while ((tag || n >= 0) && (paramp = strchr(cmdp, ':'))) {
+    ret = false;
+
     *paramp = '\0';
     paramp++;
     char * sepp = strchr(paramp, sepch);
@@ -1857,7 +1983,6 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
 #if defined(debug_def_keys) && debug_def_keys == 1
       printf("tag <%s>: cmd <%s> fct <%s>\n", tag, cmdp, paramp);
 #endif
-      int ret = false;
       wchar * fct = cs__utftowcs(paramp);
 
       if (key == VK_CAPITAL || key == VK_SCROLL || key == VK_NUMLOCK) {
@@ -1872,8 +1997,16 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
         if (!scancode) {
           ret = true;
         }
-        else
-          win_key_nullify(key);
+        else {
+          if (key == VK_SCROLL) {
+#ifdef debug_vk_scroll
+            printf("pick VK_SCROLL\n");
+#endif
+            sync_scroll_lock(term.no_scroll || term.scroll_mode);
+          }
+          else
+            win_key_nullify(key);
+        }
       }
 
       uint code;
@@ -1951,7 +2084,21 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
       }
 
       free(fct);
+#ifdef common_return_handling
+#warning produces bad behaviour; appends "~" input
+      break;
+#endif
       free(ukey_commands);
+
+      if (key == VK_SCROLL) {
+#ifdef debug_vk_scroll
+        printf("pick VK_SCROLL break scn %d ret %d\n", scancode, ret);
+#endif
+        if (scancode && ret == true /*sic!*/)
+          // don't call this if ret == -1
+          sync_scroll_lock(term.no_scroll || term.scroll_mode);
+      }
+
       return ret;
     }
 
@@ -1969,6 +2116,32 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
       break;
   }
   free(ukey_commands);
+
+#ifdef debug_vk_scroll
+  if (key == VK_SCROLL)
+    printf("pick VK_SCROLL return\n");
+#endif
+#ifdef common_return_handling
+  // try to set ScrollLock keyboard LED consistently
+#warning interferes with key functions (see above); does not work anyway
+  if (key == VK_CAPITAL || key == VK_SCROLL || key == VK_NUMLOCK) {
+    // nullify the keyboard state effect implied by the Lock key; 
+    // use fake keyboard events, but avoid the recursion, 
+    // fake events have scancode 0, ignore them also in win_key_up;
+    // alternatively, we could hook the keyboard (low-level) and 
+    // swallow the Lock key, but then it's not handled anymore so 
+    // we'd need to fake its keyboard state effect 
+    // (SetKeyboardState, and handle the off transition...) 
+    // or consider it otherwise, all getting very tricky...
+    if (!scancode) {
+      ret = true;
+    }
+    else
+      if (ret != true)
+        win_key_nullify(key);
+    }
+#endif
+
   return false;
 }
 
@@ -2170,7 +2343,7 @@ static LONG last_key_time = 0;
       when VK_HOME  : set_transparency(previous_transparency);
       when VK_CLEAR : if (win_is_glass_available()) {
                         cfg.transparency = TR_GLASS;
-                        win_update_transparency(false);
+                        win_update_transparency(TR_GLASS, false);
                       }
       when VK_DELETE: set_transparency(0);
       when VK_INSERT: set_transparency(127);
@@ -2515,7 +2688,7 @@ static LONG last_key_time = 0;
                     transparency_tuned = false;
                   }
                   if (cfg.opaque_when_focused)
-                    win_update_transparency(false);
+                    win_update_transparency(cfg.transparency, false);
 #ifdef debug_transparency
                   printf("++%d\n", transparency_pending);
 #endif
@@ -2531,7 +2704,7 @@ static LONG last_key_time = 0;
       if (cfg.pgupdn_scroll && (key == VK_PRIOR || key == VK_NEXT) &&
           !(mods & ~scroll_mod))
         mods ^= scroll_mod;
-      if (mods == scroll_mod) {
+      if (mods == scroll_mod || term.scroll_mode) {
         WPARAM scroll;
         switch (key) {
           when VK_HOME:  scroll = SB_TOP;
@@ -3119,6 +3292,13 @@ static struct {
       if (!vk_special(cfg.key_menu))
         return false;
     when VK_SCROLL:
+#ifdef debug_vk_scroll
+      printf("when VK_SCROLL scn %d\n", scancode);
+#endif
+      if (scancode)  // prevent recursion...
+        // sync_scroll_lock() does not work in this case 
+        // if ScrollLock is not defined in KeyFunctions
+        win_key_nullify(VK_SCROLL);
       if (!vk_special(cfg.key_scrlock))
         return false;
     when VK_F1 ... VK_F24:
@@ -3239,6 +3419,7 @@ static struct {
 
   if (len) {
     //printf("[%ld] win_key_down %02X\n", mtime(), key); kb_trace = key;
+    clear_scroll_lock();
     provide_input(*buf);
     while (count--)
       child_send(buf, len);
@@ -3283,10 +3464,14 @@ win_key_up(WPARAM wp, LPARAM lp)
 
   if (key == VK_CANCEL) {
     // in combination with Control, this may be the KEYUP event 
-    // for VK_PAUSE or VK_SCROLL, so there actual state cannot be 
+    // for VK_PAUSE or VK_SCROLL, so their actual state cannot be 
     // detected properly for use as a modifier; let's try to fix this
     super_key = 0;
     hyper_key = 0;
+  }
+  else if (key == VK_SCROLL) {
+    // heuristic compensation of race condition with auto-repeat
+    sync_scroll_lock(term.no_scroll || term.scroll_mode);
   }
 
   win_update_mouse();
@@ -3370,7 +3555,7 @@ win_key_up(WPARAM wp, LPARAM lp)
     if (!transparency_tuned)
       cycle_transparency();
     if (!transparency_pending && cfg.opaque_when_focused)
-      win_update_transparency(true);
+      win_update_transparency(cfg.transparency, true);
   }
 
   if (key == VK_CONTROL && term.hovering) {
@@ -3413,9 +3598,13 @@ win_key_up(WPARAM wp, LPARAM lp)
   return true;
 }
 
+// simulate a key press/release sequence
 static int
 win_key_fake(int vk)
 {
+  if (!cfg.manage_leds || (cfg.manage_leds < 4 && vk == VK_SCROLL))
+    return 0;
+
   //printf("-> win_key_fake %02X\n", vk);
   INPUT ki[2];
   ki[0].type = INPUT_KEYBOARD;
@@ -3444,9 +3633,12 @@ do_win_key_toggle(int vk, bool on)
   usleep(delay);
   int st = GetKeyState(vk);  // volatile; save in case of debugging
   int ast = GetAsyncKeyState(vk);  // volatile; save in case of debugging
-  //uchar kbd[256];
-  //GetKeyboardState(kbd);
-  //printf("do_win_key_toggle %02X %d (st %02X as %02X kb %02X)\n", vk, on, st, ast, kbd[vk]);
+#define dont_debug_key_state
+#ifdef debug_key_state
+  uchar kbd[256];
+  GetKeyboardState(kbd);
+  printf("do_win_key_toggle %02X %d (st %02X as %02X kb %02X)\n", vk, on, st, ast, kbd[vk]);
+#endif
   if (((st | ast) & 1) != on) {
     win_key_fake(vk);
     usleep(delay);
@@ -3476,5 +3668,22 @@ win_led(int led, bool set)
       win_key_toggle(led_keys[i], set);
   else if (led <= (int)lengthof(led_keys))
     win_key_toggle(led_keys[led - 1], set);
+}
+
+bool
+get_scroll_lock(void)
+{
+  return GetKeyState(VK_SCROLL);
+}
+
+void
+sync_scroll_lock(bool locked)
+{
+  //win_led(3, term.no_scroll);
+  //do_win_key_toggle(VK_SCROLL, locked);
+  int st = GetKeyState(VK_SCROLL);
+  //printf("sync_scroll_lock %d key %d\n", locked, st);
+  if (st ^ locked)
+    win_key_fake(VK_SCROLL);
 }
 
