@@ -68,6 +68,7 @@ extern bool support_wsl;
 extern wchar * wslname;
 extern wstring wsl_basepath;
 extern bool report_child_pid;
+extern bool report_child_tty;
 
 extern int ini_width, ini_height;
 extern bool win_is_fullscreen;
@@ -167,6 +168,6 @@ extern void win_toggle_on_top(void);
 
 extern unsigned long mtime(void);
 
-extern void term_save_image(void);
+extern void term_save_image(bool do_open);
 
 #endif

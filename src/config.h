@@ -71,7 +71,7 @@ typedef struct {
   bool cursor_blinks;
   // Text
   font_spec font;
-  font_spec fontfams[11];
+  font_spec fontfams[12];
   wstring font_choice;
   wstring font_sample;
   bool show_hidden_fonts;
@@ -114,6 +114,7 @@ typedef struct {
   string key_scrlock;	// VK_SCROLL
   wstring key_commands;
   int manage_leds;
+  bool enable_remap_ctrls;
   // Mouse
   bool clicks_place_cursor;
   char middle_click_action;
@@ -140,7 +141,9 @@ typedef struct {
   int selection_show_size;
   // Window
   int cols, rows;
+  bool rewrap_on_resize;
   int scrollback_lines;
+  int max_scrollback_lines;
   char scrollbar;
   char scroll_mod;
   bool pgupdn_scroll;
@@ -219,6 +222,7 @@ typedef struct {
   string menu_title_ctrl_r;
   int geom_sync;
   int tabbar;
+  int new_tabs;
   int col_spacing, row_spacing;
   int auto_leading;
   int padding;

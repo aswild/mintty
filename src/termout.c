@@ -797,6 +797,10 @@ write_char(wchar c, int width)
     if (term.lrmargmode)
       line->lattr &= ~LATTR_MODE;
 #endif
+    if (term.curs.rewrap_on_resize)
+      line->lattr |= LATTR_REWRAP;
+    else
+      line->lattr &= ~LATTR_REWRAP;
     if (!(line->lattr & LATTR_WRAPCONTD))
       line->lattr = (line->lattr & ~LATTR_BIDIMASK) | curs->bidimode;
     //TODO: if changed, propagate mode onto paragraph
@@ -1141,12 +1145,10 @@ write_ucschar(wchar hwc, wchar wc, int width)
 static void
 write_error(void)
 {
-  // Write one of REPLACEMENT CHARACTER or, if that does not exist,
-  // MEDIUM SHADE which looks appropriately erroneous.
-  wchar errch = 0xFFFD;
-  win_check_glyphs(&errch, 1, term.curs.attr.attr);
-  if (!errch)
-    errch = 0x2592;
+  // Write one of REPLACEMENT CHARACTER, MEDIUM SHADE, or other 
+  // replacement character as exists in the font and 
+  // which looks appropriately erroneous. Could be made configurable.
+  wchar errch = get_errch(W("�▒¤¿?"), term.curs.attr.attr);
   write_char(errch, 1);
 }
 
@@ -1211,7 +1213,7 @@ tek_esc(char c)
     when CTRL('O'):   /* LS0: Locking-shift zero */
       tek_alt(false);
     when CTRL('W'):   /* ETB: Make Copy */
-      term_save_image();
+      term_save_image(false);
       tek_bypass = false;
       tek_gin_fin();
     when CTRL('X'):   /* CAN: Set Bypass */
@@ -2039,10 +2041,11 @@ set_modes(bool state)
             move(0, 0, 0);
         when 7:  /* DECAWM: auto wrap */
           term.autowrap = state;
-          term.curs.wrapnext = false;
+          if (!state)
+            term.curs.wrapnext = false;
         when 45:  /* xterm: reverse (auto) wraparound */
           term.rev_wrap = state;
-          term.curs.wrapnext = false;
+          //term.curs.wrapnext = false;
         when 8:  /* DECARM: auto key repeat */
           term.auto_repeat = state;
         when 9:  /* X10_MOUSE */
@@ -2220,6 +2223,8 @@ set_modes(bool state)
             do_update();
             usleep(1000);  // flush update
           }
+        when 2027:
+          term.curs.rewrap_on_resize = state;
       }
     }
     else { /* SM/RM: set/reset mode */
@@ -2379,6 +2384,8 @@ get_mode(bool privatemode, int arg)
         return 2 - !!(term.curs.bidimode & LATTR_BOXMIRROR);
       when 2501: /* bidi direction auto-detection */
         return 2 - !(term.curs.bidimode & LATTR_BIDISEL);
+      when 2027:
+        return 2 - term.curs.rewrap_on_resize;
       otherwise:
         return 0;
     }
@@ -2767,6 +2774,11 @@ do_csi(uchar c)
         bool below = arg0 == 0 || arg0 == 2;
         term_erase(term.esc_mod | term.iso_guarded_area, false, above, below);
       }
+#ifdef debug_selection
+    when CPAIR('!', 'J'):
+      if (arg0 == 3)
+        term_select_all();
+#endif
     when 'K' or CPAIR('?', 'K'):  /* EL/DECSEL: (selective) erase in line */
       if (arg0 <= 2) {
         bool right = arg0 == 0 || arg0 == 2;
@@ -2926,7 +2938,7 @@ do_csi(uchar c)
       }
 #endif
       else if (arg0 == 12 && !term.esc_mod) {
-        term_save_image();
+        term_save_image(false);
       }
       else if (arg0 == 0 && !term.esc_mod) {
         print_screen();
@@ -3578,7 +3590,7 @@ do_dcs(void)
       }
 
       short left = term.curs.x;
-      short top = term.virtuallines + (term.sixel_display ? 0: term.curs.y);
+      short top = term.sixel_display ? 0: term.curs.y;
       int width = (st->image.width -1 ) / st->grid_width + 1;
       int height = (st->image.height -1 ) / st->grid_height + 1;
       int pixelwidth = st->image.width;
@@ -4120,7 +4132,7 @@ do_cmd(void)
           free(fn);
         }
         else {
-          if (ff < lengthof(cfg.fontfams) - 1) {
+          if (ff <= 10) {  // also support changing alternative fonts 1..10
             wstring wfont = cs__mbstowcs(s);  // let this leak...
             win_change_font(ff, wfont);
           }
@@ -4282,7 +4294,7 @@ do_cmd(void)
           // OK
           imglist * img;
           short left = term.curs.x;
-          short top = term.virtuallines + term.curs.y;
+          short top = term.curs.y;
           if (winimg_new(&img, name, data, datalen, left, top, width, height, pixelwidth, pixelheight, pAR, crop_x, crop_y, crop_width, crop_height, term.curs.attr.attr & (ATTR_BLINK | ATTR_BLINK2))) {
             fill_image_space(img);
 

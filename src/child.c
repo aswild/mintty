@@ -1,5 +1,5 @@
 // child.c (part of mintty)
-// Copyright 2008-11 Andy Koppe, 2015-2017 Thomas Wolff
+// Copyright 2008-11 Andy Koppe, 2015-2022 Thomas Wolff
 // Licensed under the terms of the GNU General Public License v3 or later.
 
 #include "child.h"
@@ -220,10 +220,70 @@ child_update_charset(void)
 #endif
 }
 
+/*
+   Trim environment from variables set by launchers, other terminals, 
+   or other shells, in order to avoid confusing behaviour or invalid 
+   information (e.g. LINES, COLUMNS).
+ */
+static void
+trim_environment(void)
+{
+  void trimenv(string e) {
+    if (e[strlen(e) - 1] == '_') {
+#if CYGWIN_VERSION_API_MINOR >= 74
+      for (int ei = 0; environ[ei]; ei++) {
+        if (strncmp(e, environ[ei], strlen(e)) == 0) {
+          char * ee = strchr(environ[ei], '=');
+          if (ee) {
+            char * ev = strndup(environ[ei], ee - environ[ei]);
+            //printf("%s @%d - unsetenv %s: %s\n", e, ei, ev, environ[ei]);
+            unsetenv(ev);
+            free(ev);
+            // recheck current position after deletion
+            --ei;
+          }
+        }
+      }
+#endif
+    }
+    else
+      unsetenv(e);
+  }
+  // clear startup information from desktop launchers
+  trimenv("WINDOWID");
+  trimenv("GIO_LAUNCHED_");
+  trimenv("DESKTOP_STARTUP_ID");
+  // clear optional terminal configuration indications
+  trimenv("LINES");
+  trimenv("COLUMNS");
+  trimenv("TERMCAP");
+  trimenv("COLORFGBG");
+  trimenv("COLORTERM");
+  trimenv("DEFAULT_COLORS");
+  trimenv("WCWIDTH_CJK_LEGACY");
+  // clear identification from other terminals
+  trimenv("ITERM2_");
+  trimenv("MC_");
+  trimenv("PUTTY");
+  trimenv("RXVT_");
+  trimenv("URXVT_");
+  trimenv("VTE_");
+  trimenv("XTERM_");
+  trimenv("TERM_");
+  // clear indications from terminal multiplexers
+  trimenv("STY");
+  trimenv("WINDOW");
+  trimenv("TMUX");
+  trimenv("TMUX_PANE");
+  trimenv("BYOBU_");
+}
+
 void
 child_create(char *argv[], struct winsize *winp)
 {
   trace_dir(asform("child_create: %s", getcwd(malloc(MAX_PATH), MAX_PATH)));
+
+  trim_environment();
 
   prev_winsize = *winp;
 
@@ -349,6 +409,10 @@ child_create(char *argv[], struct winsize *winp)
   else { // Parent process.
     if (report_child_pid) {
       printf("%d\n", pid);
+      fflush(stdout);
+    }
+    if (report_child_tty) {
+      printf("%s\n", ptsname(pty_fd));
       fflush(stdout);
     }
 
@@ -1033,7 +1097,7 @@ setenvi(char * env, int val)
 }
 
 static void
-setup_sync()
+setup_sync(bool in_tabs)
 {
   if (sync_level()) {
     if (win_is_fullscreen) {
@@ -1048,8 +1112,17 @@ setup_sync()
       setenvi("MINTTY_DX", r.right - r.left);
       setenvi("MINTTY_DY", r.bottom - r.top);
     }
-    if (cfg.tabbar)
+    if (cfg.tabbar) {
       setenvi("MINTTY_TABBAR", cfg.tabbar);
+      // enforce proper grouping, i.e. either new tab or window, as requested
+      if (in_tabs && *cfg.class) {
+        char * class = cs__wcstoutf(cfg.class);
+        setenv("MINTTY_CLASS", class, true);
+        free(class);
+      }
+      else if (!in_tabs)
+        setenv("MINTTY_CLASS", "+", true);
+    }
   }
 }
 
@@ -1060,7 +1133,6 @@ static void
 do_child_fork(int argc, char *argv[], int moni, bool launch, bool config_size, bool in_cwd)
 {
   trace_dir(asform("do_child_fork: %s", getcwd(malloc(MAX_PATH), MAX_PATH)));
-  setup_sync();
 
 #ifdef control_AltF2_size_via_token
   void reset_fork_mode()
@@ -1176,6 +1248,11 @@ do_child_fork(int argc, char *argv[], int moni, bool launch, bool config_size, b
     if (!config_size) {
       setenvi("MINTTY_ROWS", term.rows0);
       setenvi("MINTTY_COLS", term.cols0);
+#ifdef support_horizontal_scrollbar_with_tabbar
+      // this does not work, so horizontal scrollbar is disabled with tabbar
+extern int horsqueeze(void);  // should become horsqueeze_cols in win.h
+      setenvi("MINTTY_SQUEEZE", horsqueeze() / cell_width);
+#endif
       // provide environment to maximise window
       if (win_is_fullscreen)
         setenvi("MINTTY_MAXIMIZE", 2);
@@ -1222,9 +1299,12 @@ do_child_fork(int argc, char *argv[], int moni, bool launch, bool config_size, b
   Called from Alt+F2.
  */
 void
-child_fork(int argc, char *argv[], int moni, bool config_size, bool in_cwd)
+child_fork(int argc, char *argv[], int moni, bool config_size, bool in_cwd, bool in_tabs)
 {
+  setup_sync(in_tabs);
   do_child_fork(argc, argv, moni, false, config_size, in_cwd);
+  // prevent wrong control of subsequent child_fork
+  unsetenv("MINTTY_CLASS");
 }
 
 /*
@@ -1248,7 +1328,7 @@ child_launch(int n, int argc, char * argv[], int moni)
         *sepp = '\0';
 
       if (n == 0) {
-        //setup_sync();
+        //setup_sync(false);
         argc = 1;
         char ** new_argv = newn(char *, argc + 1);
         new_argv[0] = argv[0];

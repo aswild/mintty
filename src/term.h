@@ -201,8 +201,10 @@ enum {
   LATTR_PRESRTL   = 0x1000u,
   // enable automatic progress detection
   LATTR_PROGRESS  = 0x0010u,
+  // enable reflow / line rewrap on terminal resize
+  LATTR_REWRAP    = 0x0020u
   // unassigned bits:
-  //                0x0020u
+  // - none
 };
 
 enum {
@@ -385,10 +387,11 @@ typedef struct imglist {
   // image: data size; sixel: 0
   int len;
 
-  // image ref for disposal management
+  // image ref for disposal management and for rebasing after reflow
   int imgi;
-  // position within scrollback (top includes offset term.virtuallines)
-  int top, left;
+  // position within scrollback
+  long long int top;  // includes offset term.virtuallines
+  int left;
 
   // image area (cell units)
   int width, height;
@@ -436,6 +439,7 @@ typedef struct {
   uchar oem_acs;
   bool utf;
   ushort bidimode;
+  bool rewrap_on_resize;
 } term_cursor;
 
 typedef struct {
@@ -457,8 +461,8 @@ struct term {
   term_cursor curs, saved_cursors[2];
 
   uchar **scrollback;     /* lines scrolled off top of screen */
+  int sbsize;             /* buffer size of scrollback buffer */
   int disptop;            /* distance scrolled back (0 or -ve) */
-  int sblen;              /* length of scrollback buffer */
   int sblines;            /* number of lines of scrollback */
   int sbpos;              /* index of next scrollback position to be filled */
   int tempsblines;        /* number of lines of .scrollback that

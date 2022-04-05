@@ -1,5 +1,5 @@
 // winmain.c (part of mintty)
-// Copyright 2008-13 Andy Koppe, 2015-2020 Thomas Wolff
+// Copyright 2008-13 Andy Koppe, 2015-2022 Thomas Wolff
 // Based on code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -109,6 +109,7 @@ static string border_style = 0;
 static string report_geom = 0;
 static bool report_moni = false;
 bool report_child_pid = false;
+bool report_child_tty = false;
 static bool report_winpid = false;
 static int monitor = 0;
 static bool center = false;
@@ -1404,6 +1405,209 @@ search_monitors(int * minx, int * miny, HMONITOR lookup_mon, int get_primary, MO
 
 
 /*
+ * Horizontal scrolling.
+	|1234	...	 56789|	terminal width
+	     |	...	|	view
+	_horclip(5)		view shifted, clipping left terminal screen
+	_horcols(11)		view columns less than terminal columns
+	0 <= _horclip <= _horcols <= term.cols - _horclip
+ */
+static int horbar = false;
+static int _horclip = 0;
+static int _horcols = 0;
+
+#define resize_view_via_horizontal_scrollbar
+
+int
+horclip(void)
+{
+  if (term.on_alt_screen)
+    return 0;
+  else
+    return _horclip * cell_width;
+}
+
+int
+horsqueeze(void)
+{
+  //printf("horsqueeze %d cells\n", _horcols);
+  if (!horbar)
+    return 0;
+
+  // disable horizontal scrollbar in virtual tabs mode as it does not sync
+  if (cfg.tabbar)
+    return 0;
+
+#ifdef disable_horscrollbar_on_alt_screen
+#warning adapting alt screen size to view size (and back) is not implemented
+  if (term.on_alt_screen)
+    return 0;
+#endif
+
+  return _horcols * cell_width;
+}
+
+static int
+horex(char tag)
+{
+  (void)tag;
+
+  if (!horbar)
+    return 0;
+
+  if (horbar == 3 || horsqueeze())
+    return GetSystemMetrics(SM_CXHSCROLL);
+  else
+    return 0;
+}
+
+#ifdef async_horflush
+
+static void
+do_horflush(void)
+{
+  // could limit this to newly visible columns
+  term_invalidate(0, 0, term.cols - 1, term.rows - 1);
+  win_schedule_update();
+
+  SCROLLINFO si = {
+    .cbSize = sizeof si,
+    .fMask = SIF_ALL | SIF_DISABLENOSCROLL,
+    .nMin = 0,
+    .nMax = term.cols - 1,
+#ifdef resize_view_via_horizontal_scrollbar
+    .nPage = term.cols - max(_horcols, 1),
+    .nPos = max(_horclip, 1)
+#else
+    .nPage = term.cols - _horcols,
+    .nPos = _horclip
+#endif
+  };
+  SetScrollInfo(wnd, SB_HORZ, &si, true);
+  //printf("bar %d..%d %d@%d\n", si.nMin, si.nMax, si.nPage, si.nPos);
+
+  // update scrollbar display
+  SendMessage(wnd, WM_NCACTIVATE, GetActiveWindow() == wnd, 0);
+}
+
+static void
+horflush(void)
+{
+  SendMessage(wnd, WM_USER, 0, WIN_HORFLUSH);
+}
+
+#else
+
+static void
+horflush(void)
+{
+  // could limit this to newly visible columns
+  term_invalidate(0, 0, term.cols - 1, term.rows - 1);
+  win_schedule_update();
+
+  SCROLLINFO si = {
+    .cbSize = sizeof si,
+    .fMask = SIF_ALL | SIF_DISABLENOSCROLL,
+    .nMin = 0,
+    .nMax = term.cols - 1,
+#ifdef resize_view_via_horizontal_scrollbar
+    .nPage = term.cols - max(_horcols, 1),
+    .nPos = max(_horclip, 1)
+#else
+    .nPage = term.cols - _horcols,
+    .nPos = _horclip
+#endif
+  };
+  SetScrollInfo(wnd, SB_HORZ, &si, true);
+  //printf("bar %d..%d %d@%d\n", si.nMin, si.nMax, si.nPage, si.nPos);
+
+  // update scrollbar display
+  SendMessage(wnd, WM_NCACTIVATE, GetActiveWindow() == wnd, 0);
+}
+
+#endif
+
+void
+horscroll(int cells)
+{
+  if (!horbar)
+    return;
+
+  _horclip = min(max(_horclip + cells, 0), _horcols);
+  //printf("horscroll %d -> clip %d cols %d\n", cells, _horclip, _horcols);
+  horflush();
+}
+
+void
+horscrollto(int clip)
+{
+  if (!horbar)
+    return;
+
+  if (clip < 0)
+    _horclip = _horcols;
+  else
+    _horclip = min(clip, _horcols);
+  //printf("horscrollto %d%% -> clip %d cols %d\n", clip, _horclip, _horcols);
+  horflush();
+}
+
+static void win_fix_position(bool);
+
+#ifdef try_to_hook_resizing
+static bool hor_resizing = false;
+#endif
+
+void
+horsizing(int cells, bool from_right)
+{
+  if (!horbar)
+    return;
+
+  int prev_horcols = _horcols;
+  //printf("horsizing %d %c (clip %d cols %d)\n", cells, from_right ? 'r' : 'l', _horclip, _horcols);
+  // 0 <= _horclip <= _horcols <= term.cols - _horclip
+  if (from_right) {
+    _horcols = min(max(_horcols - cells, 0), term.cols - 10);
+    _horclip = min(_horclip, _horcols);
+  }
+  else {
+    _horcols = min(max(_horcols - cells, 0), term.cols - 10);
+    _horclip = min(max(_horclip - cells, 0), _horcols);
+  }
+  //printf("horsizing    -> clip %d cols %d\n", _horclip, _horcols);
+
+#if 0
+  // a failed first attempt to adjust the hor. scrollbar dynamically,
+  // apparently without impact now; leaving to document obscureness...
+  if (!!_horcols ^ !!prev_horcols) {
+    if (_horcols)
+      extra_height += GetSystemMetrics(SM_CXHSCROLL);
+    else
+      extra_height -= GetSystemMetrics(SM_CXHSCROLL);
+  }
+#endif
+
+  if (_horcols != prev_horcols) {
+#ifdef try_to_hook_resizing
+    hor_resizing = true;
+#endif
+    RECT r;
+    GetWindowRect(wnd, &r);
+    int narrow = (_horcols - prev_horcols) * cell_width;
+    SetWindowPos(wnd, null,
+                 r.left + (from_right ? 0 : narrow), r.top,
+                 r.right - r.left - narrow, r.bottom - r.top,
+                 SWP_DEFERERASE | SWP_NOSENDCHANGING | SWP_NOREDRAW |
+                 SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOZORDER);
+    //printf("  -> term %d x %d\n", term.rows, term.cols);
+  }
+  horflush();
+  win_fix_position(false);
+}
+
+
+/*
    Window manipulation functions.
  */
 
@@ -1509,7 +1713,7 @@ win_get_pixels(int *height_p, int *width_p, bool with_borders)
   if (with_borders) {
     GetWindowRect(wnd, &r);
     *height_p = r.bottom - r.top;
-    *width_p = r.right - r.left;
+    *width_p = r.right - r.left + horsqueeze();
   }
   else {
     GetClientRect(wnd, &r);
@@ -1518,6 +1722,7 @@ win_get_pixels(int *height_p, int *width_p, bool with_borders)
               //- extra_height
               ;
     *width_p = r.right - r.left - 2 * PADDING
+             + horsqueeze()
              //- extra_width
              //- (cfg.scrollbar ? GetSystemMetrics(SM_CXVSCROLL) : 0)
              //- (win_has_scrollbar() ? GetSystemMetrics(SM_CXVSCROLL) : 0)
@@ -1526,12 +1731,17 @@ win_get_pixels(int *height_p, int *width_p, bool with_borders)
 }
 
 void
-term_save_image(void)
+term_save_image(bool do_open)
 {
   struct timeval now;
   gettimeofday(& now, 0);
   char * copf = save_filename(".png");
   wchar * copyfn = path_posix_to_win_w(copf);
+
+  wchar * browse = 0;
+  if (do_open)
+    browse = cs__mbstowcs(copf);
+
   free(copf);
 
   if (tek_mode)
@@ -1545,6 +1755,9 @@ term_save_image(void)
     free(copyfn);
     ReleaseDC(wnd, dc);
   }
+
+  if (do_open)
+    win_open(browse, false);  // win_open frees its argument
 }
 
 void
@@ -1557,6 +1770,45 @@ win_get_screen_chars(int *rows_p, int *cols_p)
   *cols_p = (fr.right - fr.left - 2 * PADDING) / cell_width;
 }
 
+static void
+win_fix_position(bool scrollbar)
+{
+  // DPI handling V2
+  if (is_in_dpi_change)
+    // window position needs no correction during DPI change, 
+    // avoid position flickering (#695)
+    return;
+
+  RECT wr;
+  GetWindowRect(wnd, &wr);
+  MONITORINFO mi;
+  get_my_monitor_info(&mi);
+  RECT ar = mi.rcWork;
+  //printf("win l/r %d..%d mon l/r %d %d\n", wr.left, wr.right, ar.left, ar.right);
+
+  // Correct edges. Top and left win if the window is too big.
+  if (!scrollbar) {  // skip vertical fixing if just adding scrollbar
+    wr.top -= max(0, wr.bottom - ar.bottom);
+    wr.top = max(wr.top, ar.top);
+  }
+  if (!scrollbar || wr.left > ar.left + GetSystemMetrics(SM_CXVSCROLL)) {
+    // skip fixing for scrollbar near left border of monitor
+    wr.left -= max(0, wr.right - ar.right);
+    wr.left = max(wr.left, ar.left);
+    // could further fine-tune if we're within scrollbar width from left edge..
+  }
+#ifdef workaround_629
+  // attempt to workaround left gap (#629); does not seem to work anymore
+  WINDOWINFO winfo;
+  winfo.cbSize = sizeof(WINDOWINFO);
+  GetWindowInfo(wnd, &winfo);
+  wr.left = max(wr.left, (int)(ar.left - winfo.cxWindowBorders));
+#endif
+
+  SetWindowPos(wnd, 0, wr.left, wr.top, 0, 0,
+               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 void
 win_set_pixels(int height, int width)
 {
@@ -1567,10 +1819,14 @@ win_set_pixels(int height, int width)
 
   int sy = win_search_visible() ? SEARCHBAR_HEIGHT : 0;
   // set window size
+  // horex() included in extra_height here
   SetWindowPos(wnd, null, 0, 0,
-               width + extra_width + 2 * PADDING,
+               width + extra_width + 2 * PADDING - horsqueeze(),
                height + extra_height + OFFSET + 2 * PADDING + sy,
                SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOMOVE | SWP_NOZORDER);
+
+  if (is_init)  // don't spoil negative position (#1123)
+    win_fix_position(false);
 }
 
 bool
@@ -1783,41 +2039,10 @@ win_set_geom(int y, int x, int height, int width)
     term_height = height;
 
   // set window size
+  // don't adjust by horsqueeze()/horex() after GetWindowRect
   SetWindowPos(wnd, null, term_x, term_y,
                term_width, term_height,
                SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOZORDER);
-}
-
-static void
-win_fix_position(void)
-{
-  // DPI handling V2
-  if (is_in_dpi_change)
-    // window position needs no correction during DPI change, 
-    // avoid position flickering (#695)
-    return;
-
-  RECT wr;
-  GetWindowRect(wnd, &wr);
-  MONITORINFO mi;
-  get_my_monitor_info(&mi);
-  RECT ar = mi.rcWork;
-
-  // Correct edges. Top and left win if the window is too big.
-  wr.top -= max(0, wr.bottom - ar.bottom);
-  wr.top = max(wr.top, ar.top);
-  wr.left -= max(0, wr.right - ar.right);
-  wr.left = max(wr.left, ar.left);
-#ifdef workaround_629
-  // attempt to workaround left gap (#629); does not seem to work anymore
-  WINDOWINFO winfo;
-  winfo.cbSize = sizeof(WINDOWINFO);
-  GetWindowInfo(wnd, &winfo);
-  wr.left = max(wr.left, (int)(ar.left - winfo.cxWindowBorders));
-#endif
-
-  SetWindowPos(wnd, 0, wr.left, wr.top, 0, 0,
-               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void
@@ -1832,8 +2057,10 @@ win_set_chars(int rows, int cols)
   // which would remove bottom padding and spoil some Windows magic (#629)
   if (rows != term.rows || cols != term.cols) {
     win_set_pixels(rows * cell_height, cols * cell_width);
+#ifdef win_set_pixels_does_not_win_fix_position
     if (is_init)  // don't spoil negative position (#1123)
-      win_fix_position();
+      win_fix_position(false);
+#endif
   }
   trace_winsize("win_set_chars > win_fix_position");
 }
@@ -2429,8 +2656,10 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
   if (sync_size_with_font && !win_is_fullscreen) {
     // enforced win_set_chars(term.rows, term.cols):
     win_set_pixels(term.rows * cell_height, term.cols * cell_width);
+#ifdef win_set_pixels_does_not_win_fix_position
     if (is_init)  // don't spoil negative position (#1123)
-      win_fix_position();
+      win_fix_position(false);
+#endif
     trace_winsize("win_adapt_term_size > win_fix_position");
 
     win_invalidate_all(false);
@@ -2462,7 +2691,8 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
   if (scale_font_with_size && term.cols != 0 && term.rows != 0) {
     // calc preliminary size (without font scaling), as below
     // should use term_height rather than rows; calc and store in term_resize
-    int cols0 = max(1, term_width / cell_width);
+    // adjust by horsqueeze() but not by horex() here
+    int cols0 = max(1, (term_width + horsqueeze()) / cell_width);
     int rows0 = max(1, term_height / cell_height);
 
     // rows0/term.rows gives a rough scaling factor for cell_height
@@ -2494,7 +2724,8 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
       win_set_font_size(font_size1, false);
   }
 
-  int cols = max(1, term_width / cell_width);
+  // adjust by horsqueeze() but not by horex() here
+  int cols = max(1, (term_width + horsqueeze()) / cell_width);
   int rows = max(1, term_height / cell_height);
   if (rows != term.rows || cols != term.cols) {
     term_resize(rows, cols);
@@ -2514,6 +2745,33 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
 
   term_schedule_search_update();
   win_schedule_update();
+
+  if (horbar == 2) {
+    // adapt horizontal scrollbar dynamically
+    LONG style = GetWindowLong(wnd, GWL_STYLE);
+    LONG newstyle = horsqueeze() ? style | WS_HSCROLL : style & ~WS_HSCROLL;
+    if (newstyle != style) {
+      SetWindowLong(wnd, GWL_STYLE, newstyle);
+
+      RECT wr;
+      GetWindowRect(wnd, &wr);
+      if (newstyle & WS_HSCROLL)
+        wr.bottom += GetSystemMetrics(SM_CXHSCROLL);
+      else
+        wr.bottom -= GetSystemMetrics(SM_CXHSCROLL);
+
+      // set window size and scrollbar
+      SetWindowPos(wnd, null, 
+                   0, 0, wr.right - wr.left, wr.bottom - wr.top,
+                   SWP_NOACTIVATE | SWP_NOMOVE |
+                   SWP_NOZORDER | SWP_FRAMECHANGED);
+
+      // confine to screen borders, except in full size (#1126)
+      if (!(win_is_fullscreen || IsZoomed(wnd)))
+        if (is_init)  // don't spoil negative position (#1123)
+          win_fix_position(false);
+    }
+  }
 }
 
 static int
@@ -2531,7 +2789,9 @@ win_fix_taskbar_max(int show_cmd)
       show_cmd = SW_RESTORE;
       // set window size
       SetWindowPos(wnd, null, 
-                   ar.left, ar.top, ar.right - ar.left, ar.bottom - ar.top, 
+                   ar.left, ar.top, 
+                   ar.right - ar.left - horsqueeze(), 
+                   ar.bottom - ar.top,
                    SWP_NOZORDER);
       win_adapt_term_size(false, false);
     }
@@ -2616,6 +2876,7 @@ win_update_scrollbar(bool inner)
   }
 
   LONG style = GetWindowLong(wnd, GWL_STYLE);
+  bool had_scrollbar = style & WS_VSCROLL;
   SetWindowLong(wnd, GWL_STYLE,
                 scrollbar ? style | WS_VSCROLL : style & ~WS_VSCROLL);
 
@@ -2638,7 +2899,9 @@ win_update_scrollbar(bool inner)
     else if (!scrollbar && (style & WS_VSCROLL))
       wr.right -= GetSystemMetrics(SM_CXVSCROLL);
     // set window size
-    SetWindowPos(wnd, null, 0, 0, wr.right - wr.left, wr.bottom - wr.top,
+    // don't adjust by horsqueeze()/horex() after GetWindowRect
+    SetWindowPos(wnd, null, 
+                 0, 0, wr.right - wr.left, wr.bottom - wr.top,
                  SWP_NOACTIVATE | SWP_NOMOVE |
                  SWP_NOZORDER | SWP_FRAMECHANGED);
   }
@@ -2646,7 +2909,9 @@ win_update_scrollbar(bool inner)
   // confine to screen borders, except in full size (#1126)
   if (!(win_is_fullscreen || IsZoomed(wnd)))
     if (is_init)  // don't spoil negative position (#1123)
-      win_fix_position();
+      if (!inner)  // only adjust if switching outer scrollbar
+        if (scrollbar && !had_scrollbar)  // only if adding outer scrollbar
+          win_fix_position(true);
 }
 
 void
@@ -3177,6 +3442,12 @@ static struct {
       printf("[%8p] WM_USER %d,%d %d,%d\n", wnd, (INT16)LOWORD(lp), (INT16)HIWORD(lp), LOWORD(wp), HIWORD(wp));
 #endif
       wm_user = true;
+#ifdef async_horflush
+      if (!wp && lp == WIN_HORFLUSH) {
+        do_horflush();
+      }
+      else
+#endif
       if (!wp && lp == WIN_TOP) { // Ctrl+Alt or session switcher
         // these do not work:
         // BringWindowToTop(wnd);
@@ -3235,10 +3506,13 @@ static struct {
 
           // (INT16) to handle multi-monitor negative coordinates properly
           // set window size
+          // Likely don't adjust HIWORD(wp) + horex() when cloning tab size,
+          // adjustment by horsqueeze() is questionable;
+          // combination of --horbar and --tabbar currently disabled
           SetWindowPos(wnd, null,
                        //GET_X_LPARAM(lp), GET_Y_LPARAM(lp),
                        (INT16)LOWORD(lp), (INT16)HIWORD(lp),
-                       LOWORD(wp), HIWORD(wp),
+                       LOWORD(wp) - horsqueeze(), HIWORD(wp),
                        SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
         }
       }
@@ -3306,9 +3580,9 @@ static struct {
             tek_page();
         when IDM_TEKCOPY:
           if (tek_mode)
-            term_save_image();
+            term_save_image(GetKeyState(VK_SHIFT) & 0x80);
         when IDM_SAVEIMG:
-          term_save_image();
+          term_save_image(GetKeyState(VK_SHIFT) & 0x80);
         when IDM_DEFSIZE:
           default_size_token = true;
           default_size();
@@ -3354,17 +3628,29 @@ static struct {
           HMONITOR mon = MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST);
           int x, y;
           int moni = search_monitors(&x, &y, mon, true, 0);
-          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT, false);
+          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT, false, false);
         }
         when IDM_NEW_CWD: {
           HMONITOR mon = MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST);
           int x, y;
           int moni = search_monitors(&x, &y, mon, true, 0);
-          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT, true);
+          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT, true, false);
+        }
+        when IDM_TAB: {
+          HMONITOR mon = MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST);
+          int x, y;
+          int moni = search_monitors(&x, &y, mon, true, 0);
+          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT, false, true);
+        }
+        when IDM_TAB_CWD: {
+          HMONITOR mon = MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST);
+          int x, y;
+          int moni = search_monitors(&x, &y, mon, true, 0);
+          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT, true, true);
         }
         when IDM_NEW_MONI: {
           int moni = lp;
-          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT, false);
+          child_fork(main_argc, main_argv, moni, get_mods() & MDK_SHIFT, false, false);
         }
         when IDM_COPYTITLE: win_copy_title();
         when IDM_KEY_DOWN_UP: {
@@ -3388,6 +3674,7 @@ static struct {
           when SB_PAGEUP:   term_scroll(0, -max(1, term.rows - 1));
           when SB_PAGEDOWN: term_scroll(0, +max(1, term.rows - 1));
           when SB_THUMBPOSITION or SB_THUMBTRACK: {
+            //term_scroll(1, HIWORD(wp));
             SCROLLINFO info;
             info.cbSize = sizeof(SCROLLINFO);
             info.fMask = SIF_TRACKPOS;
@@ -3436,6 +3723,71 @@ static struct {
         usleep(5555);
         child_proc();
       }
+
+    when WM_HSCROLL: {
+      // Note: the resize features attached to 
+      // Ctrl/Alt+ clicks on the horizontal scrollbar arrows/empty areas
+      // only work because we enforce the scrollbar position to 
+      // never extend up to the left/right ends:
+      // setting attributes of SCROLLINFO in horflush();
+      // otherwise, if the horizontal scrollbar is set to max width, 
+      // click events (SB_[LINE|PAGE][LEFT|RIGHT]) are not delivered;
+      // Also note that varying with obscure Windows configuration, 
+      // not all combinations of SB_LINE/SB_PAGE events with modifiers 
+      // are delivered, e.g. SB_PAGE events may not be delivered with Shift.
+      mod_keys mods = get_mods();
+      //printf("SB_%d %X\n", LOWORD(wp), mods);
+      switch (LOWORD(wp)) {
+        when SB_LINELEFT:
+#ifdef resize_view_via_horizontal_scrollbar
+          if (mods & (MDK_SHIFT | MDK_ALT))
+            horsizing(1, true);
+          else if (mods & MDK_CTRL)
+            horsizing(-1, true);
+          else
+#endif
+            horscroll(-1);
+        when SB_LINERIGHT:
+#ifdef resize_view_via_horizontal_scrollbar
+          if (mods & (MDK_SHIFT | MDK_ALT))
+            horsizing(1, false);
+          else if (mods & MDK_CTRL)
+            horsizing(-1, false);
+          else
+#endif
+            horscroll(1);
+        when SB_PAGELEFT:
+#ifdef resize_view_via_horizontal_scrollbar
+          if (mods & (MDK_SHIFT | MDK_ALT))
+            horsizing(term.cols / 10, true);
+          else if (mods & MDK_CTRL)
+            horsizing(-term.cols / 10, true);
+          else
+#endif
+            horscroll(-term.cols / 10);
+        when SB_PAGERIGHT:
+#ifdef resize_view_via_horizontal_scrollbar
+          if (mods & (MDK_SHIFT | MDK_ALT))
+            horsizing(term.cols / 10, false);
+          else if (mods & MDK_CTRL)
+            horsizing(-term.cols / 10, false);
+          else
+#endif
+            horscroll(term.cols / 10);
+        when SB_THUMBPOSITION or SB_THUMBTRACK: {
+          //SCROLLINFO info;
+          //info.cbSize = sizeof(SCROLLINFO);
+          //info.fMask = SIF_TRACKPOS;
+          //GetScrollInfo(wnd, SB_HORZ, &info);
+          //horscrollto(info.nTrackPos);
+          horscrollto(HIWORD(wp));  // 0...100
+        }
+        when SB_LEFT:      horscrollto(0);
+        when SB_RIGHT:     horscrollto(100);
+        //when SB_ENDSCROLL: ;
+      }
+      return 0;
+    }
 
 #ifndef WM_MOUSEHWHEEL
 #define WM_MOUSEHWHEEL 0x020E
@@ -3664,6 +4016,7 @@ static struct {
       font_cs_reconfig(true);
 
     when WM_PAINT:
+      //printsb("WS_PAINT");
       win_paint();
 
 #ifdef handle_default_size_asynchronously
@@ -3748,6 +4101,10 @@ static struct {
     when WM_ENTERSIZEMOVE:
       trace_resize(("# WM_ENTERSIZEMOVE VK_SHIFT %02X\n", (uchar)GetKeyState(VK_SHIFT)));
       resizing = true;
+#ifdef resize_view_via_drag_border
+static int olddelta;
+      olddelta = 0;
+#endif
 
     when WM_SIZING: {  // mouse-drag window resizing
       trace_resize(("# WM_SIZING (resizing %d) VK_SHIFT %02X\n", resizing, (uchar)GetKeyState(VK_SHIFT)));
@@ -3780,6 +4137,23 @@ static struct {
       else if (wp == WMSZ_LEFT)
         r->left += ew;
 
+#ifdef resize_view_via_drag_border
+      if (get_mods() & MDK_ALT) {
+        // adjust horizontal scrolling; to make this work:
+        // subsequent WM_SIZING events must be cumulated and merged;
+        // origin size must be remembered and dragged size related to it,
+        // e.g. retrieved at WM_ENTERSIZEMOVE;
+        // terminal resize actions must be skipped,
+        // in WM_SIZE and WM_EXITSIZEMOVE or WM_CAPTURECHANGED
+        RECT wr;
+        GetWindowRect(wnd, &wr);
+        int dw = (r->right - r->left) - (wr.right - wr.left);
+        int newdelta = dw / cell_width ?: dw / abs(dw);
+        horsizing(newdelta - olddelta, wp == WMSZ_RIGHT);
+        olddelta = newdelta;
+      }
+#endif
+
       win_show_tip(r->left + extra_width, r->top + extra_height, cols, rows);
 
       return ew || eh;
@@ -3787,6 +4161,11 @@ static struct {
 
     when WM_SIZE: {
       trace_resize(("# WM_SIZE (resizing %d) VK_SHIFT %02X\n", resizing, (uchar)GetKeyState(VK_SHIFT)));
+#ifdef resize_view_via_drag_border
+      if (get_mods() & MDK_ALT)
+        return 0;
+#endif
+
       if (wp == SIZE_RESTORED && win_is_fullscreen)
         clear_fullscreen();
       else if (wp == SIZE_MAXIMIZED && go_fullscr_on_max) {
@@ -3837,7 +4216,13 @@ static struct {
 
     when WM_EXITSIZEMOVE or WM_CAPTURECHANGED: { // after mouse-drag resizing
       trace_resize(("# WM_EXITSIZEMOVE (resizing %d) VK_SHIFT %02X\n", resizing, (uchar)GetKeyState(VK_SHIFT)));
+#ifdef resize_view_via_drag_border
+      if (get_mods() & MDK_ALT)
+        return 0;
+#endif
+
       bool shift = GetKeyState(VK_SHIFT) & 0x80;
+      //printsb("WM_EXITSIZEMOVE");
 
       //printf("WM_EXITSIZEMOVE resizing %d shift %d\n", resizing, shift);
       if (resizing) {
@@ -3868,9 +4253,38 @@ static struct {
 
 #define WP ((WINDOWPOS *) lp)
 
+#ifdef try_to_hook_resizing
+    when WM_NCCALCSIZE:
+      if (wp && hor_resizing) {
+        // https://stackoverflow.com/questions/53000291 and
+        // https://stackoverflow.com/questions/26700236
+        // suggest this tweak to avoid flicker on horizontal scrolling
+        // but it does not work
+        hor_resizing = false;
+#define NP ((NCCALCSIZE_PARAMS *) lp)
+        //printf("WM_NCCALCSIZE TRUE %d %d %d\n", NP->rgrc[0].left, NP->rgrc[1].left, NP->rgrc[2].left);
+        RECT ocr = NP->rgrc[2];
+        DefWindowProcW(wnd, message, wp, lp);
+        RECT ncr = NP->rgrc[0];
+        NP->rgrc[2] = ocr;
+        NP->rgrc[1] = ncr;
+        NP->rgrc[1].right = NP->rgrc[1].left + 1;
+        NP->rgrc[1].bottom = NP->rgrc[1].top + 1;
+        NP->rgrc[2].right = NP->rgrc[1].left + 1;
+        NP->rgrc[2].bottom = NP->rgrc[1].top + 1;
+        return WVR_VALIDRECTS;
+      }
+#endif
+
     when WM_WINDOWPOSCHANGING:
       poschanging = true;
       trace_resize(("# WM_WINDOWPOSCHANGING %3X (resizing %d) %d %d @ %d %d\n", WP->flags, resizing, WP->cy, WP->cx, WP->y, WP->x));
+      // https://stackoverflow.com/questions/53000291
+      // suggests this tweak to avoid flicker on horizontal scrolling
+      // but it does not work
+      //?DefWindowProcW(wnd, message, wp, lp);
+      //WP->flags |= SWP_NOCOPYBITS;
+      //?return 0;
 
     when WM_WINDOWPOSCHANGED: {
       poschanging = false;
@@ -3939,7 +4353,10 @@ static struct {
 
         int y = term.rows, x = term.cols;
         // set window size
-        SetWindowPos(wnd, 0, r->left, r->top, r->right - r->left, r->bottom - r->top,
+        SetWindowPos(wnd, 0, 
+                     r->left, r->top, 
+                     r->right - r->left - horsqueeze(), 
+                     r->bottom - r->top + horex('d'), 
                      SWP_NOZORDER | SWP_NOACTIVATE);
 
         font_cs_reconfig(true);
@@ -3987,7 +4404,9 @@ static struct {
           long width = (r->right - r->left) * 20 / 19;
           long height = (r->bottom - r->top) * 20 / 19;
           // set window size
-          SetWindowPos(wnd, 0, r->left, r->top, width, height,
+          SetWindowPos(wnd, 0, 
+                       r->left, r->top, 
+                       width - horsqueeze(), height + horex('e'),
                        SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
           int y = term.rows, x = term.cols;
           win_adapt_term_size(false, true);
@@ -5041,6 +5460,8 @@ opts[] = {
   {"title",      required_argument, 0, 't'},
   {"Title",      required_argument, 0, 'T'},
   {"tabbar",     optional_argument, 0, ''},
+  {"horbar",     optional_argument, 0, ''},
+  {"newtabs",    no_argument,       0, ''},
   {"Border",     required_argument, 0, 'B'},
   {"Report",     required_argument, 0, 'R'},
   {"Reportpos",  required_argument, 0, 'R'},  // compatibility variant
@@ -5235,10 +5656,11 @@ main(int argc, char *argv[])
     }
   }
   else {
-    // We should check whether we've inherited a MINTTY_SHORTCUT setting
-    // from a previous invocation, and if so we should check whether the
-    // referred shortcut actually runs the same binary as we're running.
-    // If that's not the case, we should unset MINTTY_SHORTCUT here.
+    // In case we've inherited a MINTTY_SHORTCUT setting 
+    // from a previous invocation, unset it.
+    // We could check whether the referred shortcut actually runs the 
+    // same binary as we're running, and keep it in that case.
+    unsetenv("MINTTY_SHORTCUT");
   }
 
   for (;;) {
@@ -5352,6 +5774,19 @@ main(int argc, char *argv[])
       when '':
         set_arg_option("TabBar", strdup("1"));
         set_arg_option("SessionGeomSync", optarg ?: strdup("2"));
+      when '':
+        if (optarg) {
+          int hb = atoi(optarg);
+          if (hb > 0 && hb <= 3)
+            horbar = hb;
+        }
+        else
+          horbar = 3;  // enable persistent horizontal scrollbar
+      when '':
+        cfg.new_tabs = 2;
+        // -newtabs implies -tabbar
+        set_arg_option("TabBar", strdup("1"));
+        set_arg_option("SessionGeomSync", optarg ?: strdup("2"));
       when 'B':
         border_style = strdup(optarg);
       when 'R':
@@ -5374,6 +5809,8 @@ main(int argc, char *argv[])
             report_child_pid = true;
           when 'P':
             report_winpid = true;
+          when 't':
+            report_child_tty = true;
           otherwise:
             option_error(__("Unknown option '%s'"), optarg, 0);
         }
@@ -5541,6 +5978,14 @@ main(int argc, char *argv[])
       term_cols = cfg.cols;
     unsetenv("MINTTY_COLS");
   }
+#ifdef support_horizontal_scrollbar_with_tabbar
+  if (getenv("MINTTY_SQUEEZE")) {
+    // this does not work, so horizontal scrollbar is disabled with tabbar
+    _horcols = min(max(atoi(getenv("MINTTY_SQUEEZE")), 0), term_cols - 10);
+    unsetenv("MINTTY_SQUEEZE");
+    horbar = 3;
+  }
+#endif
   if (getenv("MINTTY_MONITOR")) {
     monitor = atoi(getenv("MINTTY_MONITOR"));
     unsetenv("MINTTY_MONITOR");
@@ -5553,6 +5998,10 @@ main(int argc, char *argv[])
   if (getenv("MINTTY_TABBAR")) {
     cfg.tabbar = max(cfg.tabbar, atoi(getenv("MINTTY_TABBAR")));
   }
+#ifndef support_horizontal_scrollbar_with_tabbar
+  if (cfg.tabbar)
+    horbar = false;
+#endif
 
   // if started from console, try to detach from caller's terminal (~daemonizing)
   // in order to not suppress signals
@@ -5852,6 +6301,23 @@ main(int argc, char *argv[])
     wclass = cs__utftowcs(asform("%d", getpid()));
 #endif
 
+  char * tabclass = getenv("MINTTY_CLASS");
+  if (tabclass) {
+    unsetenv("MINTTY_CLASS");
+    if (0 == strcmp(tabclass, "+"))
+      cfg.new_tabs = 2;
+    else {
+      set_arg_option("Class", tabclass);
+      wclass = cs__utftowcs(tabclass);
+      cfg.new_tabs = 0;
+    }
+  }
+  if (cfg.new_tabs > 1 || (cfg.new_tabs && invoked_from_shortcut)) {
+    tabclass = asform(APPNAME "-%d", getpid());
+    set_arg_option("Class", tabclass);
+    wclass = cs__utftowcs(tabclass);
+  }
+
   // Put child command line into window title if we haven't got one already.
   wstring wtitle = cfg.title;
   if (!*wtitle) {
@@ -5955,14 +6421,35 @@ static int dynfonts = 0;
     pSetPreferredAppMode(1); /* AllowDark */
   }
 
+  // Figure out whether to setup window with horizontal scrollbar
+  int _horbar = horbar;
+  if (horbar == 1) {
+    horbar = 3;  // temporary setting for initial display
+    _horbar = 2;  // final setting: dynamic horizontal scrollbar
+    _horbar = 3;  // doesn't work, so just enable it
+  }
+  if (horbar == 3)
+    window_style |= WS_HSCROLL;
+  else if (horbar == 2 && horsqueeze())
+    window_style |= WS_HSCROLL;
+
   // Create initial window.
   term.show_scrollbar = cfg.scrollbar;  // hotfix #597
   wnd = CreateWindowExW(cfg.scrollbar < 0 ? WS_EX_LEFTSCROLLBAR : 0,
                         wclass, wtitle,
                         window_style | (cfg.scrollbar ? WS_VSCROLL : 0),
-                        x, y, width, height,
+                        x, y, width - horsqueeze(), height + horex('w'),
                         null, null, inst, null);
   trace_winsize("createwindow");
+  if (horbar) {
+    // fix broken height
+    win_set_chars(term_rows, term_cols);
+    trace_winsize("createwindow with horbar");
+
+    // update scrollbar display
+    horflush();
+    horbar = _horbar;
+  }
 
   // Dark mode support
   win_dark_mode(wnd);
@@ -6029,7 +6516,7 @@ static int dynfonts = 0;
     printpos("fin", x, y, ar);
 
     // set window size
-    SetWindowPos(wnd, NULL, x, y, width, height,
+    SetWindowPos(wnd, NULL, x, y, width - horsqueeze(), height + horex('x'),
                  SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
     trace_winsize("-p");
   }
@@ -6038,11 +6525,11 @@ static int dynfonts = 0;
     if (cfg.x != (int)CW_USEDEFAULT) {
       // The first SetWindowPos actually set x and y;
       // set window size
-      SetWindowPos(wnd, NULL, x, y, width, height,
+      SetWindowPos(wnd, NULL, x, y, width - horsqueeze(), height + horex('m'),
                    SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
       // Then, we have placed the window on the correct monitor
       // and we can now interpret width/height in correct DPI.
-      SetWindowPos(wnd, NULL, x, y, width, height,
+      SetWindowPos(wnd, NULL, x, y, width - horsqueeze(), height + horex('n'),
                    SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
     }
     // retrieve initial monitor DPI
@@ -6098,6 +6585,7 @@ static int dynfonts = 0;
             if (maxheight && ar.bottom - ar.top < h)
               h = ar.bottom - ar.top;
 
+            // don't adjust by horsqueeze()/horex() after GetWindowRect
             SetWindowPos(wnd, null, 0, 0, w, h,
                          SWP_NOCOPYBITS | SWP_NOMOVE | SWP_NOZORDER
                          | SWP_NOACTIVATE);
@@ -6105,6 +6593,7 @@ static int dynfonts = 0;
         }
         else {
           // consider preset size (term_)
+          // this also adjusts extra_height by horex()...
           win_set_chars(term_rows ?: cfg.rows, term_cols ?: cfg.cols);
           trace_winsize("dpi > win_set_chars");
           //?win_set_pixels(term_rows * cell_height, term_cols * cell_width);
@@ -6174,7 +6663,7 @@ static int dynfonts = 0;
       height += cell_height * 3 / 4;
 
     // set window size
-    SetWindowPos(wnd, NULL, x, y, width, height,
+    SetWindowPos(wnd, NULL, x, y, width - horsqueeze(), height + horex('o'),
                  SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
     trace_winsize("-p");
   }
@@ -6252,7 +6741,7 @@ static int dynfonts = 0;
       }
       else if (si == 4) {
         // set window size
-        SetWindowPos(wnd, null, sx, sy, sdx, sdy,
+        SetWindowPos(wnd, null, sx, sy, sdx - horsqueeze(), sdy + horex('y'),
                      SWP_NOZORDER | SWP_NOACTIVATE);
       }
       trace_winsize("launch");
@@ -6267,7 +6756,7 @@ static int dynfonts = 0;
   // Correct autoplacement, which likes to put part of the window under the
   // taskbar when the window size approaches the work area size.
   if (cfg.x == (int)CW_USEDEFAULT) {
-    win_fix_position();
+    win_fix_position(false);
     trace_winsize("fix_pos");
   }
 

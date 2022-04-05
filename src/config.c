@@ -81,6 +81,7 @@ const config default_cfg = {
   .fontfams[8] = {.name = W(""), .weight = 400, .isbold = false},
   .fontfams[9] = {.name = W(""), .weight = 400, .isbold = false},
   .fontfams[10] = {.name = W(""), .weight = 400, .isbold = false},
+  .fontfams[11] = {.name = W("Courier New"), .weight = 400, .isbold = false},
   .font_choice = W(""),
   .font_sample = W(""),
   .show_hidden_fonts = false,
@@ -123,6 +124,7 @@ const config default_cfg = {
   .key_scrlock = "",	// VK_SCROLL
   .key_commands = W(""),
   .manage_leds = 7,
+  .enable_remap_ctrls = false,
   // Mouse
   .clicks_place_cursor = false,
   .middle_click_action = MC_PASTE,
@@ -150,8 +152,10 @@ const config default_cfg = {
   // Window
   .cols = 80,
   .rows = 24,
+  .rewrap_on_resize = false,
   .scrollbar = 1,
   .scrollback_lines = 10000,
+  .max_scrollback_lines = 250000,
   .scroll_mod = MDK_SHIFT,
   .pgupdn_scroll = false,
   .lang = W(""),
@@ -227,6 +231,7 @@ const config default_cfg = {
   .menu_title_ctrl_r = "Ws",
   .geom_sync = 0,
   .tabbar = 0,
+  .new_tabs = 0,
   .col_spacing = 0,
   .row_spacing = 0,
   .auto_leading = 2,
@@ -245,6 +250,7 @@ const config default_cfg = {
   .old_bold = false,
   .ime_cursor_colour = DEFAULT_COLOUR,
   .ansi_colours = {
+#ifdef old_mintty_colour_scheme  // theme "mintty"
     [BLACK_I]        = RGB(0x00, 0x00, 0x00),
     [RED_I]          = RGB(0xBF, 0x00, 0x00),
     [GREEN_I]        = RGB(0x00, 0xBF, 0x00),
@@ -261,6 +267,24 @@ const config default_cfg = {
     [BOLD_MAGENTA_I] = RGB(0xFF, 0x40, 0xFF),
     [BOLD_CYAN_I]    = RGB(0x40, 0xFF, 0xFF),
     [BOLD_WHITE_I]   = RGB(0xFF, 0xFF, 0xFF)
+#else  // theme "helmholtz"
+    [BLACK_I]        = RGB(  0,   0,   0),
+    [RED_I]          = RGB(216,  36,  51),
+    [GREEN_I]        = RGB( 28, 168,   0),
+    [YELLOW_I]       = RGB(192, 160,   0),
+    [BLUE_I]         = RGB(  0,  55, 220),
+    [MAGENTA_I]      = RGB(177,  72, 198),
+    [CYAN_I]         = RGB(  0, 168, 154),
+    [WHITE_I]        = RGB(191, 191, 191),
+    [BOLD_BLACK_I]   = RGB( 96,  96,  96),
+    [BOLD_RED_I]     = RGB(255, 102, 102),
+    [BOLD_GREEN_I]   = RGB(  0, 244,   0),
+    [BOLD_YELLOW_I]  = RGB(240, 240,   0),
+    [BOLD_BLUE_I]    = RGB( 85, 170, 255),
+    [BOLD_MAGENTA_I] = RGB(255, 114, 255),
+    [BOLD_CYAN_I]    = RGB(  0, 240, 240),
+    [BOLD_WHITE_I]   = RGB(255, 255, 255)
+#endif
   },
   .sixel_clip_char = W(" "),
   .baud = 0,
@@ -373,6 +397,8 @@ options[] = {
   {"Font9Weight", OPT_INT, offcfg(fontfams[9].weight)},
   {"Font10", OPT_WSTRING, offcfg(fontfams[10].name)},
   {"Font10Weight", OPT_INT, offcfg(fontfams[10].weight)},
+  {"FontRTL", OPT_WSTRING, offcfg(fontfams[11].name)},
+  {"FontRTLWeight", OPT_INT, offcfg(fontfams[11].weight)},
   {"TekFont", OPT_WSTRING, offcfg(tek_font)},
 
   // Keys
@@ -405,6 +431,7 @@ options[] = {
   {"Pause", OPT_STRING | OPT_LEGACY, offcfg(key_pause)},
   {"KeyFunctions", OPT_WSTRING | OPT_KEEPCR, offcfg(key_commands)},
   {"ManageLEDs", OPT_INT, offcfg(manage_leds)},
+  {"ShootFoot", OPT_BOOL, offcfg(enable_remap_ctrls)},
 
   // Mouse
   {"ClicksPlaceCursor", OPT_BOOL, offcfg(clicks_place_cursor)},
@@ -436,7 +463,9 @@ options[] = {
   // Window
   {"Columns", OPT_INT, offcfg(cols)},
   {"Rows", OPT_INT, offcfg(rows)},
+  {"RewrapOnResize", OPT_BOOL, offcfg(rewrap_on_resize)},
   {"ScrollbackLines", OPT_INT, offcfg(scrollback_lines)},
+  {"MaxScrollbackLines", OPT_INT, offcfg(max_scrollback_lines)},
   {"Scrollbar", OPT_SCROLLBAR, offcfg(scrollbar)},
   {"ScrollMod", OPT_MOD, offcfg(scroll_mod)},
   {"PgUpDnScroll", OPT_BOOL, offcfg(pgupdn_scroll)},
@@ -527,6 +556,7 @@ options[] = {
 
   {"SessionGeomSync", OPT_INT, offcfg(geom_sync)},
   {"TabBar", OPT_BOOL, offcfg(tabbar)},
+  {"NewTabs", OPT_INT, offcfg(new_tabs)},
   {"ColSpacing", OPT_INT, offcfg(col_spacing)},
   {"RowSpacing", OPT_INT, offcfg(row_spacing)},
   {"AutoLeading", OPT_INT, offcfg(auto_leading)},
@@ -1607,6 +1637,18 @@ init_config(void)
   copy_config("init", &cfg, &default_cfg);
 }
 
+static void
+fix_config(void)
+{
+  // Avoid negative sizes.
+  cfg.rows = max(1, cfg.rows);
+  cfg.cols = max(1, cfg.cols);
+  cfg.scrollback_lines = max(0, cfg.scrollback_lines);
+
+  // Limit size of scrollback buffer.
+  cfg.scrollback_lines = min(cfg.scrollback_lines, cfg.max_scrollback_lines);
+}
+
 void
 finish_config(void)
 {
@@ -1621,10 +1663,7 @@ finish_config(void)
   opterror("Täst U %s %s", true, "böh", "büh€");
 #endif
 
-  // Avoid negative sizes.
-  cfg.rows = max(1, cfg.rows);
-  cfg.cols = max(1, cfg.cols);
-  cfg.scrollback_lines = max(0, cfg.scrollback_lines);
+  fix_config();
 
   // Ignore charset setting if we haven't got a locale.
   if (!*cfg.locale)
@@ -1761,6 +1800,7 @@ apply_config(bool save)
      )
     load_messages(&new_cfg);
   win_reconfig();  // copy_config(&cfg, &new_cfg);
+  fix_config();
   if (save)
     save_config();
   bool had_theme = !!*cfg.theme_file;
@@ -4251,6 +4291,12 @@ setup_config_box(controlbox * b)
     //__ Options - Window:
     s, _("C&urrent size"), current_size_handler, 0
   )->column = 4;
+  ctrl_columns(s, 1, 100);
+  ctrl_checkbox(
+    //__ Options - Window:
+    s, _("Re&wrap on resize"),
+    dlg_stdcheckbox_handler, &new_cfg.rewrap_on_resize
+  );
 
   s = ctrl_new_set(b, _("Window"), null, null);
   ctrl_columns(s, 2, 66, 34);
