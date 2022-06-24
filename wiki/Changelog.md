@@ -1,3 +1,21 @@
+### 3.6.1 (24 April 2022) ###
+
+Window handling
+  * Terminal reflow (#82, #219): fixed crash condition on irregular reflow chunks.
+  * Terminal reflow (#82, #219): fixed memory leak.
+
+Terminal features
+  * Visual input feedback: don't obscure text when just pressing Alt.
+  * Separate foreground and background values for ANSI colours (#1151).
+  * OSC 7704 for setting ANSI colours distinct from palette colours (#1151).
+
+Keyboard handling
+  * Support longer multi-char keyboard input (a.k.a. "ligatures" in Windows) (#1155).
+
+Configuration (contributed by Andy Koppe)
+  * ANSI colour specification accepts foreground ; background values (#1151).
+  * Tuned themes helmholtz (default) and kohlrausch for legibility (#1156).
+
 ### 3.6.0 (20 March 2022) ###
 
 Highlights
