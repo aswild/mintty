@@ -116,11 +116,13 @@ typedef struct {
   wstring key_commands;
   int manage_leds;
   bool enable_remap_ctrls;
+  bool old_keyfuncs_keypad;
   // Mouse
   bool clicks_place_cursor;
   char middle_click_action;
   char right_click_action;
   int opening_clicks;
+  char opening_mod;
   bool zoom_mouse;
   char clicks_target_app;
   char click_target_mod;
@@ -154,6 +156,7 @@ typedef struct {
   // Terminal
   string term;
   wstring answerback;
+  int wrap_tab;
   bool old_wrapmodes;
   bool enable_deccolm_init;
   int bell_type;
@@ -245,6 +248,8 @@ typedef struct {
   wstring options_font;
   int options_fontsize;
   string old_options;
+  bool dim_margins;
+  bool status_line;
   bool old_xbuttons;
   // Legacy
   bool use_system_colours;

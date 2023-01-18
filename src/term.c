@@ -303,6 +303,7 @@ term_reset(bool full)
 
   if (full) {
     term.lrmargmode = false;
+    term.dim_margins = cfg.dim_margins;
     term.deccolm_allowed = cfg.enable_deccolm_init;  // not reset by xterm
     term.vt220_keys = vt220(cfg.term);  // not reset by xterm
     term.app_keypad = false;  // xterm only with RIS
@@ -311,6 +312,7 @@ term_reset(bool full)
     term.repeat_rate = 0;
     term.attr_rect = false;
     term.deccolm_noclear = false;
+    term.erase_to_screen = false;
   }
   term.modify_other_keys = 0;  // xterm resets this
 
@@ -371,6 +373,16 @@ term_reset(bool full)
   if (full) {
     term.blink_is_real = cfg.allow_blinking;
     term.hide_mouse = cfg.hide_mouse;
+  }
+
+  term_switch_status(false);
+  if (full) {
+    term_clear_status();
+    // restore initial status line unless type 2 selected
+    if (cfg.status_line && term.st_type == 0)
+      term_set_status_type(1, 0);
+    else if (!cfg.status_line && term.st_type == 1)
+      term_set_status_type(0, 0);
   }
 
   if (full) {
@@ -1543,6 +1555,31 @@ term_resize(int newrows, int newcols)
   term.marg_left = 0;
   term.marg_right = newcols - 1;
 
+  // Disable status area temporarily
+  // to avoid the complexity to consider it during resize or even reflow;
+  // to round up, we will finally clear it explicitly, so we also 
+  // do not need to save status area contents;
+  // ref: DEC clears status line on DECCOLM which we generalize to resize
+  int save_st_rows = term.st_rows;
+  bool save_st_act = term.st_active;
+  // adjust status line state
+  if (term.st_rows) {
+    if (save_st_act) {
+      term_switch_status(false);
+    }
+    for (int i = term.rows; i < term_allrows; i++) {
+      freeline(term.lines[i]);
+      term.lines[i] = newline(newcols, false);
+    }
+    newrows += term.st_rows;
+
+    // remove status area during resize
+    term.rows = term_allrows;
+    term.st_rows = 0;
+  }
+  // remember y of "normal" area
+  short old_term_y = term.curs.y;
+
  /*
   * Resize the screen and scrollback. We only need to shift
   * lines around within our data structures, because lineptr()
@@ -1599,7 +1636,9 @@ term_resize(int newrows, int newcols)
   // Expand the screen if newrows > rows
   if (newrows > term.rows) {
     int added = newrows - term.rows;
+    // determine how many lines to restore from scrollback
     int restore = min(added, term.tempsblines);
+    // determine how many empty lines to add
     int create = added - restore;
 
     // Fill bottom of screen with blank lines
@@ -1680,6 +1719,48 @@ term_resize(int newrows, int newcols)
   term.rows0 = newrows;
   term.cols0 = newcols;
 
+  // Status area handling
+
+  // limit status size
+  // here term.rows still include term.st_rows
+  if (save_st_rows >= term.rows / 2) {
+    save_st_rows = max(0, term.rows / 2 - 1);
+    if (!save_st_rows) {
+      // clear status mode
+      save_st_act = false;
+      term.st_type = 0;
+    }
+  }
+  // restore status geometry
+  term.rows -= save_st_rows;
+  term.st_rows = save_st_rows;
+  // fix bottom margin in case status area got resized
+  newrows = term.rows;
+  term.marg_bot = newrows - 1;
+  // restore status line area
+  if (save_st_rows) {
+    for (int i = term.rows; i < term_allrows; i++) {
+      freeline(term.lines[i]);
+      term.lines[i] = newline(newcols, false);
+    }
+    // scroll cursor position out of status line area
+    int n = old_term_y - term.rows + 1;
+    if (n > 0) {
+      // this adjustment must be done after fixing rows/st_rows
+      // but before restoring st_active
+      term_do_scroll(term.marg_top, term.marg_bot + save_st_rows, n, true);
+      curs->y = max(0, curs->y - n);
+    }
+    // restore status mode
+    // must call after restoring (and adjusting) term.rows
+    term_switch_status(save_st_act);
+  }
+  // clear status area on resize (as DEC clears on DECCOLM);
+  // also this simplifies handling above
+  if (term.st_type == 2)
+    term_clear_status();
+
+  // Return to alternate screen
   term_switch_screen(on_alt_screen, false);
 }
 
@@ -1701,6 +1782,14 @@ term_switch_screen(bool to_alt, bool reset)
   term.lines = term.other_lines;
   term.other_lines = oldlines;
 
+  // keep status area (xterm 373)
+  if (term.st_type == 2)
+    for (int i = term.rows; i < term_allrows; i++) {
+      freeline(term.lines[i]);
+      term.lines[i] = term.other_lines[i];
+      term.other_lines[i] = newline(term.cols, false);
+    }
+
   /* swap image list */
   imglist * first = term.imgs.first;
   imglist * last = term.imgs.last;
@@ -1714,6 +1803,136 @@ term_switch_screen(bool to_alt, bool reset)
 
   if (to_alt && reset)
     term_erase(false, false, true, true);
+}
+
+/*
+ * Clear status area.
+ */
+void
+term_clear_status(void)
+{
+  term_cursor_reset(&term.st_other_curs);
+  term_cursor_reset(&term.st_saved_curs);
+
+  // clear status lines
+  for (int i = term.rows; i < term_allrows; i++) {
+    freeline(term.lines[i]);
+    term.lines[i] = newline(term.cols, false);
+  }
+
+  // home status cursor position
+  if (term.st_active) {
+    term.curs.y = term.rows;
+    term.curs.x = 0;
+  }
+  else {
+    term.st_other_curs.y = 0;  // saved status cursor is normalized to 0
+    term.st_other_curs.x = 0;
+  }
+}
+
+/*
+ * Set status type.
+ */
+void
+term_set_status_type(int type, int lines)
+{
+  /*
+    Unlike xterm, we do not resize the window when changing 
+    status area size; this does not only avoid trouble in full-screen 
+    or maximized mode, it also complies with DEC (VT420 p. 221, VT520 p. 5-147):
+	Notes on DECSSDT
+	• If you select no status line (Ps = 0), the terminal uses the 
+	  line as an additional user window line to display data.
+    As an extension, mintty supports a multi-line status area, 
+    configured with a second parameter to DECSSDT 2.
+    The suggestion of such an option could be interpreted from VT520 p. 2-35:
+	[The number of data display lines visible, not counting any status lines.]
+    although that may just be referring to status lines of multiple sessions.
+  */
+  int old_st_rows = term.st_rows;
+  switch (type) {
+    when 0: 
+            term_clear_status();
+            term.st_rows = 0;
+    when 1: 
+            if (term.st_type == 2)
+              term_clear_status();
+            term.st_type = 1; term.st_rows = 1;
+    when 2: 
+            if (term.st_type != 2)
+              term_clear_status();
+            term.st_type = 2;
+            if (lines) {
+              if (lines >= term_allrows / 2)
+                term.st_rows = max(0, term_allrows / 2 - 1);
+              else
+                term.st_rows = lines;
+            }
+            else
+              term.st_rows = 1;
+    otherwise: return;
+  }
+  if (!term.st_rows) {
+    term.st_type = 0;
+    term_switch_status(false);
+  }
+  if (term.st_type != 2)
+    term_switch_status(false);
+  if (term.st_rows != old_st_rows) {
+    // don't need to win_adapt_term_size(false, false);
+    int newrows = term.rows + old_st_rows - term.st_rows;
+    // scroll cursor position out of status line area
+    int n = term.curs.y - newrows + 1;
+    if (n > 0) {
+      bool old_st_act = term.st_active;
+      term_switch_status(false);
+      term_do_scroll(term.marg_top, term.marg_bot, n, true);
+      // fix up
+      term.curs.y = max(0, term.curs.y - n);
+      term_switch_status(old_st_act);
+    }
+    // don't need to term_resize(newrows, -term.cols);
+    term.rows = newrows;
+    term.marg_top = 0;
+    term.marg_bot = newrows - 1;
+    term.marg_left = 0;
+    term.marg_right = term.cols - 1;
+    // clear status lines
+    for (int i = term.rows; i < term_allrows; i++) {
+      freeline(term.lines[i]);
+      term.lines[i] = newline(term.cols, false);
+    }
+    // notify child process
+    struct winsize ws = {newrows, term.cols, term.cols * cell_width, newrows * cell_height};
+    child_resize(&ws);
+  }
+}
+
+/*
+ * Swap active status line / main display.
+ */
+void
+term_switch_status(bool status_line)
+{
+  if (status_line == term.st_active)
+    return;
+
+  term.st_active = status_line;
+
+  term_cursor oldcurs = term.curs;
+  term.curs = term.st_other_curs;
+  // saved status cursor line is normalized to 0, adjust
+  if (status_line) {
+    term.curs.y += term.rows;
+    if (term.curs.y >= term_allrows)
+      term.curs.y = term_allrows - 1;
+  }
+  else
+    oldcurs.y -= term.rows;
+  term.st_other_curs = oldcurs;
+
+  term_update_cs();
 }
 
 /*
@@ -1838,6 +2057,13 @@ term_do_scroll(int topline, int botline, int lines, bool sb)
   if (term.hovering) {
     term.hovering = false;
     win_update(true);
+  }
+
+  // Support scrolling within (multi-line) status area
+  if (term.st_active) {
+    topline = term.rows;
+    botline = term_allrows - 1;
+    sb = false;
   }
 
   if (term.lrmargmode && (term.marg_left || term.marg_right != term.cols - 1)) {
@@ -1977,6 +2203,10 @@ clear_wrapcontd(termline * line, int y)
   }
 }
 
+// consider status area for erasing
+#define top_y (term.st_active ? term.rows : 0)
+#define bot_y (term.st_active ? term_allrows : term.rows)
+
 /*
  * Erase a large portion of the screen: the whole screen, or the
  * whole line, or parts thereof.
@@ -2002,12 +2232,12 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
   }
 
   if (from_begin)
-    start = (pos){.y = line_only ? curs->y : 0, .x = 0};
+    start = (pos){.y = line_only ? curs->y : top_y, .x = 0};
   else
     start = (pos){.y = curs->y, .x = curs->x};
 
   if (to_end)
-    end = (pos){.y = line_only ? curs->y + 1 : term.rows, .x = 0};
+    end = (pos){.y = line_only ? curs->y + 1 : bot_y, .x = 0};
   else
     end = (pos){.y = curs->y, .x = curs->x}, incpos(end);
 
@@ -2026,7 +2256,7 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
     * we're fully erasing them, erase by scrolling and keep the
     * lines in the scrollback. This behaviour is not compatible with xterm. */
     int scrolllines = end.y;
-    if (end.y == term.rows) {
+    if (end.y == bot_y) {
      /* Shrink until we find a non-empty row. */
       scrolllines = term_last_nonempty_line() + 1;
     }
@@ -2054,11 +2284,12 @@ term_erase(bool selective, bool line_only, bool from_begin, bool to_end)
                !(line->chars[start.x].attr.attr & ATTR_PROTECTED)
               )
       {
-        line->chars[start.x] = term.erase_char;
+        line->chars[start.x] = 
+          term.erase_to_screen ? basic_erase_char : term.erase_char;
         if (!start.x)
           clear_cc(line, -1);
       }
-      if (inclpos(start, cols) && start.y < term.rows)
+      if (inclpos(start, cols) && start.y < bot_y)
         line = term.lines[start.y];
     }
   }
@@ -2609,7 +2840,8 @@ term_paint(void)
     term.cursor_on && !term.show_other_screen
     ? term.curs.y - term.disptop : -1;
 
-  for (int i = 0; i < term.rows; i++) {
+  // Paint all lines, including status area
+  for (int i = 0; i < term_allrows; i++) {
     pos scrpos;
     scrpos.y = i + term.disptop;
     termline *line = fetch_line(scrpos.y);
@@ -3192,6 +3424,24 @@ term_paint(void)
       newchars[j].chr = tchar;
      /* Combining characters are still read from chars */
       newchars[j].cc_next = 0;
+
+     /* Margin indication */
+      if (term.dim_margins &&
+          (// in normal display:
+           i < term.marg_top || (i > term.marg_bot && i < term.rows)
+           // in status display:
+           || (i >= term.rows && i < term.marg_top + term.rows)
+           || (i > term.marg_bot + term.rows)
+           // outside left/right margins:
+           || j < term.marg_left || j > term.marg_right
+          )
+         )
+      {
+        cattr * ca = &newchars[j].attr;
+        ca->attr |= ATTR_DIM;
+        ca->attr ^= ATTR_REVERSE;
+      }
+
     }  // end first loop
 
     if (i == curs_y) {
@@ -3264,7 +3514,10 @@ term_paint(void)
           dispchars[curs_x].attr.attr |= ATTR_INVALID;
           curs_x++;
         }
+        term.st_kb_flag = what;
       }
+      else
+        term.st_kb_flag = 0;
 
      /* Progress indication */
       if (term.detect_progress) {
@@ -3559,7 +3812,16 @@ term_paint(void)
       else if (overlaying) {
         return;
       }
-      else if (attr.attr & (ATTR_ITALIC | TATTR_COMBDOUBL | TATTR_OVERHANG)) {
+      else if (attr.attr
+          & (ATTR_ITALIC | TATTR_COMBDOUBL | TATTR_OVERHANG | TATTR_MARKCURS)
+        )
+      {
+        /* Split output into 2 phases, for background and foreground, 
+           to support overlay display in some cases:
+           * italics and other potential overhang situations (emojis)
+           * combining doubles
+           * cursor position, to support underlay cursor painting
+         */
         win_text(x, y, text, len, attr, textattr, lattr, has_rtl, false, 1);
         flush_text();
         ovl_x = x;

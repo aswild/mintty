@@ -293,8 +293,11 @@ environment (and note that MinGW is not msys in this context), and would
 occur in all pty-based terminals (like xterm, rxvt etc).
 
 Cygwin 3.1.0 compensates for this issue via the ConPTY API of Windows 10.
-On MSYS2, its usage can be enabled by setting MSYS=enable_pcon or 
-changing the default during installation.
+On MSYS2, its usage can be enabled by setting the environment variable 
+MSYS=enable_pcon (or selecting this setting when installing an older version).
+You can also later set `MSYS=enable_pcon` in file `/etc/git-bash.config`.
+MSYS2 releases since 2022-10-28 enable ConPTY by default.
+You can also set mintty option `ConPTY=true` to override the MSYS2 setting.
 
 As a workaround on older versions of Cygwin or Windows, you can use 
 [winpty](https://github.com/rprichard/winpty) as a wrapper to invoke 
@@ -942,7 +945,7 @@ support proportional fonts.
 
 For symbol characters and emojis that are single-width by definition 
 (e.g. locale) but visually double-width, double-width display is supported 
-if the character is following by an adjacent single-width space character.
+if the character is followed by an adjacent single-width space character.
 
 
 ## Font rendering and geometry ##
@@ -1017,8 +1020,8 @@ ECMA-48 sub-parameters are supported.
 | 58:2::R:G:B            | 59                | underline RGB colour          |
 | 58:3:F:C:M:Y           | 59                | underline CMY colour (*)      |
 | 58:4:F:C:M:Y:K         | 59                | underline CMYK colour (*)     |
-| 73                     | 75                | superscript                   |
-| 74                     | 75                | subscript                     |
+| 73 _or_ ?4             | 75 _or_ ?24       | superscript (*)               |
+| 74 _or_ ?5             | 75 _or_ ?24       | subscript (*)                 |
 | _any_                  | 0 _or empty_      |                               |
 
 Note: Alternative fonts are configured with options Font1 ... Font10.
@@ -1045,9 +1048,10 @@ Note: The emoji style attribute sets the display preference for a number
 of characters that have emojis but would be displayed with text style 
 by default (e.g. decimal digits).
 
-Note: SGR codes for superscript and subscript display are subject to change.
-
 Note: Text attributes can be disabled with option SuppressSGR (see manual).
+
+Note: Combined SGR 73;74 results in small characters at normal position.
+This does not apply to the alternative DEC private SGRs ?4 and ?5.
 
 As a fancy add-on feature for text attributes, mintty supports distinct 
 (colour) attributes for combining characters, so a combined character 

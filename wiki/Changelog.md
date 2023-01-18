@@ -1,3 +1,67 @@
+### 3.6.3 (18 Dec 2022) ###
+
+Terminal features
+  * Fixed double-width characters not to wrap if auto-wrap disabled.
+  * TAB may wrap to next line, or cause subsequent wrap, if enabled (#1182).
+  * Fixed auto-wrap behaviour in double-width lines.
+  * Overstriking character writing mode also switched with DECSET 20 (VK100, #1184).
+  * Fixed OSC 7 (set working directory) to handle ~ prefix.
+  * Added XTQMODKEYS state query (xterm 373).
+  * Withdrawn DEC private SGRs (/#1171, conflict with XTQMODKEYS).
+  * Added XTQALLOWED OSC 60 and OSC 61 (xterm 373).
+
+Unicode and Emoji data
+  * Extend emoji information by considering Unicode file emoji-test.txt.
+
+Configuration
+  * Option WrapTab (#1182).
+  * New user-definable function toggle-opaque (#1168), replaces transparency-opaque.
+
+Other
+  * Fixed crash in Options dialog when Printer Service is stopped (#1185).
+
+### 3.6.2 (13 Nov 2022) ###
+
+Unicode and Emoji data
+  * Unicode 15.0 update.
+
+Terminal features
+  * Status line area support (VT320, xterm 371), DECSSDT, DECSASD.
+  * Extended multi-line host-writable status area, DECSSDT 2 N.
+  * Combined sub/superscript attributes render small script (#1171).
+  * Adjusted subscript position (~#1171).
+  * Alternative DEC private SGRs for sub/superscript (#1171).
+  * Revamp line cursor handling, size changeable by CSI ? N c (#1157, #1175).
+  * Support DECSET 117 (DECECM, VT520).
+  * Added DECARR to DECRQSS.
+  * Prevent font zooming for resizing controls like CSI 8.
+  * Optionally visualize margins by dimming.
+
+Keyboard handling
+  * Not suppressing user-defined KeyFunctions for keypad keys in keypad modes (#1161).
+  * Alt+keypad-minus initiates decimal numeric input in case an Alt+numpad-digit key is assigned a user-defined function.
+
+Mouse handling
+  * Configurable modifiers for hovering and link opening (#1169).
+  * Support super and hyper modifiers with mouse functions.
+  * Fixed mouse pixel coordinates limits (DECSET 1016).
+
+Initialisation
+  * Grab focus again after showing the window, reducing focus delay for Windows 11 (#1113).
+
+Configuration
+  * Option OldKeyFunctionsKeypad (~#1161, not listed in manual).
+  * Option OpeningMod (#1169).
+  * New user-definable function reset-noask.
+  * Option DimMargins, user-definable function toggle-dim-margins.
+  * Option StatusLine, user-definable function toggle-status-line.
+  * Background image mode '+' for combined scaling and tiling (#1180).
+  * New user-definable function transparency-opaque (#1168).
+
+Other
+  * Fixed crash condition on user-defined commands (#1174).
+  * Add confirm dialog to Reset triggered by menu or Alt+F8 (#1173).
+
 ### 3.6.1 (24 April 2022) ###
 
 Window handling

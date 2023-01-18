@@ -125,11 +125,13 @@ const config default_cfg = {
   .key_commands = W(""),
   .manage_leds = 7,
   .enable_remap_ctrls = false,
+  .old_keyfuncs_keypad = false,
   // Mouse
   .clicks_place_cursor = false,
   .middle_click_action = MC_PASTE,
   .right_click_action = RC_MENU,
   .opening_clicks = 1,
+  .opening_mod = MDK_CTRL,
   .zoom_mouse = true,
   .clicks_target_app = true,
   .click_target_mod = MDK_SHIFT,
@@ -164,6 +166,7 @@ const config default_cfg = {
   // Terminal
   .term = "xterm",
   .answerback = W(""),
+  .wrap_tab = 0,
   .old_wrapmodes = false,
   .enable_deccolm_init = false,
   .bell_type = 1,
@@ -247,6 +250,8 @@ const config default_cfg = {
   .bold_as_special = false,
   .hover_title = true,
   .progress_bar = 0,
+  .dim_margins = false,
+  .status_line = false,
   .old_bold = false,
   .ime_cursor_colour = DEFAULT_COLOUR,
   .ansi_colours = {
@@ -432,12 +437,14 @@ options[] = {
   {"KeyFunctions", OPT_WSTRING | OPT_KEEPCR, offcfg(key_commands)},
   {"ManageLEDs", OPT_INT, offcfg(manage_leds)},
   {"ShootFoot", OPT_BOOL, offcfg(enable_remap_ctrls)},
+  {"OldKeyFunctionsKeypad", OPT_BOOL, offcfg(old_keyfuncs_keypad)},
 
   // Mouse
   {"ClicksPlaceCursor", OPT_BOOL, offcfg(clicks_place_cursor)},
   {"MiddleClickAction", OPT_MIDDLECLICK, offcfg(middle_click_action)},
   {"RightClickAction", OPT_RIGHTCLICK, offcfg(right_click_action)},
   {"OpeningClicks", OPT_INT, offcfg(opening_clicks)},
+  {"OpeningMod", OPT_MOD, offcfg(opening_mod)},
   {"ZoomMouse", OPT_BOOL, offcfg(zoom_mouse)},
   {"ClicksTargetApp", OPT_BOOL, offcfg(clicks_target_app)},
   {"ClickTargetMod", OPT_MOD, offcfg(click_target_mod)},
@@ -476,6 +483,7 @@ options[] = {
   // Terminal
   {"Term", OPT_STRING, offcfg(term)},
   {"Answerback", OPT_WSTRING, offcfg(answerback)},
+  {"WrapTab", OPT_INT, offcfg(wrap_tab)},
   {"OldWrapModes", OPT_BOOL, offcfg(old_wrapmodes)},
   {"Enable132ColumnSwitching", OPT_BOOL, offcfg(enable_deccolm_init)},
   {"BellType", OPT_INT, offcfg(bell_type)},
@@ -576,6 +584,8 @@ options[] = {
   {"ProgressBar", OPT_BOOL, offcfg(progress_bar)},
   {"Baud", OPT_INT, offcfg(baud)},
   {"Bloom", OPT_INT, offcfg(bloom)},
+  {"DimMargins", OPT_BOOL, offcfg(dim_margins)},
+  {"StatusLine", OPT_BOOL, offcfg(status_line)},
   {"OldXButtons", OPT_BOOL, offcfg(old_xbuttons)},
   {"OptionsFont", OPT_WSTRING, offcfg(options_font)},
   {"OptionsFontSize", OPT_INT | OPT_LEGACY, offcfg(options_fontsize)},

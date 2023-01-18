@@ -102,6 +102,7 @@ static int zoom_token = 0;  // for heuristic handling of Shift zoom (#467, #476)
 static bool default_size_token = false;
 bool clipboard_token = false;
 bool keep_screen_on = false;
+bool force_opaque = false;
 
 // Options
 bool title_settable = true;
@@ -1766,7 +1767,7 @@ win_get_screen_chars(int *rows_p, int *cols_p)
   MONITORINFO mi;
   get_my_monitor_info(&mi);
   RECT fr = mi.rcMonitor;
-  *rows_p = (fr.bottom - fr.top - 2 * PADDING - OFFSET) / cell_height;
+  *rows_p = (fr.bottom - fr.top - 2 * PADDING - OFFSET) / cell_height - term.st_rows;
   *cols_p = (fr.right - fr.left - 2 * PADDING) / cell_width;
 }
 
@@ -1809,8 +1810,8 @@ win_fix_position(bool scrollbar)
                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-void
-win_set_pixels(int height, int width)
+static void
+win_set_pixels_zoom(int height, int width)
 {
   trace_resize(("--- win_set_pixels %d %d\n", height, width));
   // avoid resizing if no geometry yet available (#649?)
@@ -2045,8 +2046,8 @@ win_set_geom(int y, int x, int height, int width)
                SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOZORDER);
 }
 
-void
-win_set_chars(int rows, int cols)
+static void
+win_set_chars_zoom(int rows, int cols)
 {
   trace_resize(("--- win_set_chars %d×%d\n", rows, cols));
 
@@ -2056,7 +2057,7 @@ win_set_chars(int rows, int cols)
   // prevent resizing to same logical size
   // which would remove bottom padding and spoil some Windows magic (#629)
   if (rows != term.rows || cols != term.cols) {
-    win_set_pixels(rows * cell_height, cols * cell_width);
+    win_set_pixels((rows + term.st_rows) * cell_height, cols * cell_width);
 #ifdef win_set_pixels_does_not_win_fix_position
     if (is_init)  // don't spoil negative position (#1123)
       win_fix_position(false);
@@ -2064,6 +2065,26 @@ win_set_chars(int rows, int cols)
   }
   trace_winsize("win_set_chars > win_fix_position");
 }
+
+void
+win_set_pixels(int height, int width)
+{
+  // prevent font zooming if called from termout.c, for CSI 4
+  default_size_token = true;
+  win_set_pixels_zoom(height, width);
+}
+
+void
+win_set_chars(int rows, int cols)
+{
+  // prevent font zooming if called from termout.c, for CSI 8 etc
+  default_size_token = true;
+  win_set_chars_zoom(rows, cols);
+}
+
+// allow font zooming if called below
+#define win_set_pixels(height, width) win_set_pixels_zoom(height, width)
+#define win_set_chars(rows, cols) win_set_chars_zoom(rows, cols)
 
 
 void
@@ -2655,7 +2676,7 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
 
   if (sync_size_with_font && !win_is_fullscreen) {
     // enforced win_set_chars(term.rows, term.cols):
-    win_set_pixels(term.rows * cell_height, term.cols * cell_width);
+    win_set_pixels(term_allrows * cell_height, term.cols * cell_width);
 #ifdef win_set_pixels_does_not_win_fix_position
     if (is_init)  // don't spoil negative position (#1123)
       win_fix_position(false);
@@ -2693,7 +2714,7 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
     // should use term_height rather than rows; calc and store in term_resize
     // adjust by horsqueeze() but not by horex() here
     int cols0 = max(1, (term_width + horsqueeze()) / cell_width);
-    int rows0 = max(1, term_height / cell_height);
+    int rows0 = max(1, term_height / cell_height - term.st_rows);
 
     // rows0/term.rows gives a rough scaling factor for cell_height
     // cols0/term.cols gives a rough scaling factor for cell_width
@@ -2726,9 +2747,17 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
 
   // adjust by horsqueeze() but not by horex() here
   int cols = max(1, (term_width + horsqueeze()) / cell_width);
-  int rows = max(1, term_height / cell_height);
+  int rows = max(1, term_height / cell_height - term.st_rows);
+  int save_st_rows = term.st_rows;
   if (rows != term.rows || cols != term.cols) {
     term_resize(rows, cols);
+    if (save_st_rows) {
+      // handle potentially resized status area;
+      // better, rows would be calculated already considering 
+      // possible shrink of status area, to allow resizing smaller than it
+      rows = max(1, term_height / cell_height - term.st_rows);
+      //term.marg_bot is getting fixed in term_resize
+    }
     struct winsize ws = {rows, cols, cols * cell_width, rows * cell_height};
     child_resize(&ws);
   }
@@ -2854,6 +2883,8 @@ win_update_transparency(int trans, bool opaque)
   SetWindowLong(wnd, GWL_EXSTYLE, style);
   if (trans) {
     if (opaque && term.has_focus)
+      trans = 0;
+    if (force_opaque)
       trans = 0;
     SetLayeredWindowAttributes(wnd, 0, 255 - (uchar)trans, LWA_ALPHA);
   }
@@ -3077,6 +3108,19 @@ confirm_exit(void)
               null
             );
   free(wmsg);
+
+  // Treat failure to show the dialog as confirmation.
+  return !ret || ret == IDOK;
+}
+
+static bool
+confirm_reset(void)
+{
+  int ret = message_box_w(
+              wnd, _W("Reset terminal?"),
+              W(APPNAME), MB_ICONWARNING | MB_OKCANCEL | MB_DEFBUTTON2,
+              null
+            );
 
   // Treat failure to show the dialog as confirmation.
   return !ret || ret == IDOK;
@@ -3569,9 +3613,14 @@ static struct {
         when IDM_TOGVT220KB: toggle_vt220();
         when IDM_PASTE: win_paste();
         when IDM_SELALL: term_select_all(); win_update(false);
-        when IDM_RESET: winimgs_clear(); term_reset(true); win_update(false);
-          if (tek_mode)
-            tek_reset();
+        when IDM_RESET or IDM_RESET_NOASK:
+          if ((wp & ~0xF) == IDM_RESET_NOASK || confirm_reset()) {
+            winimgs_clear();
+            term_reset(true);
+            win_update(false);
+            if (tek_mode)
+              tek_reset();
+          }
         when IDM_TEKRESET:
           if (tek_mode)
             tek_reset();
@@ -3997,7 +4046,7 @@ static struct {
       //     -> Windows sends WM_THEMECHANGED and WM_SYSCOLORCHANGE
       // and in both case a couple of WM_WININICHANGE
 
-      win_adjust_borders(cell_width * cfg.cols, cell_height * cfg.rows);
+      win_adjust_borders(cell_width * cfg.cols, cell_height * (cfg.rows + term.st_rows));
       RedrawWindow(wnd, null, null, 
                    RDW_FRAME | RDW_INVALIDATE |
                    RDW_UPDATENOW | RDW_ALLCHILDREN);
@@ -4118,10 +4167,10 @@ static int olddelta;
       int width = r->right - r->left - extra_width - 2 * PADDING;
       int height = r->bottom - r->top - extra_height - 2 * PADDING - OFFSET;
       int cols = max(1, (float)width / cell_width + 0.5);
-      int rows = max(1, (float)height / cell_height + 0.5);
+      int rows = max(1, (float)height / cell_height - term.st_rows + 0.5);
 
       int ew = width - cols * cell_width;
-      int eh = height - rows * cell_height;
+      int eh = height - (rows + term.st_rows) * cell_height;
 
       if (wp >= WMSZ_BOTTOM) {
         wp -= WMSZ_BOTTOM;
@@ -4595,7 +4644,7 @@ report_pos(void)
     int cols = term.cols;
     int rows = term.rows;
     cols = (placement.rcNormalPosition.right - placement.rcNormalPosition.left - norm_extra_width - 2 * PADDING) / cell_width;
-    rows = (placement.rcNormalPosition.bottom - placement.rcNormalPosition.top - norm_extra_height - 2 * PADDING - OFFSET) / cell_height;
+    rows = (placement.rcNormalPosition.bottom - placement.rcNormalPosition.top - norm_extra_height - 2 * PADDING - OFFSET) / cell_height - term.st_rows;
 
     printf("%s", main_argv[0]);
     printf(*report_geom == 'o' ? " -o Columns=%d -o Rows=%d" : " -s %d,%d", cols, rows);
@@ -6397,7 +6446,7 @@ static int dynfonts = 0;
 
   // Determine window sizes.
   win_prepare_tabbar();
-  win_adjust_borders(cell_width * term_cols, cell_height * term_rows);
+  win_adjust_borders(cell_width * term_cols, cell_height * (term_rows + term.st_rows));
 
   // Having x == CW_USEDEFAULT but not y still triggers default positioning,
   // whereas y == CW_USEDEFAULT but not x results in an invisible window,
@@ -6864,6 +6913,9 @@ static int dynfonts = 0;
 
   // Finally show the window.
   ShowWindow(wnd, show_cmd);
+  // and grab focus again, just in case and for Windows 11
+  // (https://github.com/mintty/mintty/issues/1113#issuecomment-1210278957)
+  SetFocus(wnd);
   // Cloning fullscreen window
   if (run_max == 2)
     win_maximise(2);

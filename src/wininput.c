@@ -882,11 +882,15 @@ get_mods(void)
   inline bool is_key_down(uchar vk) { return GetKeyState(vk) & 0x80; }
   lctrl_time = 0;
   lctrl = is_key_down(VK_LCONTROL) && (lctrl || !is_key_down(VK_RMENU));
+  bool super = super_key && is_key_down(super_key);
+  bool hyper = hyper_key && is_key_down(hyper_key);
   return
     is_key_down(VK_SHIFT) * MDK_SHIFT
     | is_key_down(VK_MENU) * MDK_ALT
     | (lctrl | is_key_down(VK_RCONTROL)) * MDK_CTRL
     | (is_key_down(VK_LWIN) | is_key_down(VK_RWIN)) * MDK_WIN
+    | super * MDK_SUPER
+    | hyper * MDK_HYPER
     ;
 }
 
@@ -897,6 +901,12 @@ static void
 update_mouse(mod_keys mods)
 {
 static bool last_app_mouse = false;
+
+  // unhover (end hovering) if hover modifiers are withdrawn
+  if (term.hovering && (char)(mods & ~cfg.click_target_mod) != cfg.opening_mod) {
+    term.hovering = false;
+    win_update(false);
+  }
 
   bool new_app_mouse =
     (term.mouse_mode || term.locator_1_enabled)
@@ -946,11 +956,16 @@ hide_mouse(void)
 static pos
 translate_pos(int x, int y)
 {
+  int rows = term.rows;
+  if (term.st_active) {
+    rows = term.st_rows;
+    y = max(0, y - term.rows * cell_height);
+  }
   return (pos){
     .x = floorf((x - PADDING) / (float)cell_width),
     .y = floorf((y - PADDING - OFFSET) / (float)cell_height),
-    .pix = min(max(0, x - PADDING), term.rows * cell_height - 1),
-    .piy = min(max(0, y - PADDING - OFFSET), term.cols * cell_width - 1),
+    .pix = min(max(0, x - PADDING), term.cols * cell_width - 1),
+    .piy = min(max(0, y - PADDING - OFFSET), rows * cell_height - 1),
     .r = (cfg.elastic_mouse && !term.mouse_mode)
          ? (x - PADDING) % cell_width > cell_width / 2
          : 0
@@ -1137,7 +1152,12 @@ win_get_locator_info(int *x, int *y, int *buttons, bool by_pixels)
         p.y = 0;
       else
         p.y -= OFFSET + PADDING;
-      if (p.y >= term.rows * cell_height)
+      if (term.st_active) {
+        p.y = max(0, p.y - term.rows * cell_height);
+        if (p.y >= term.st_rows * cell_height)
+          p.y = term.st_rows * cell_height - 1;
+      }
+      else if (p.y >= term.rows * cell_height)
         p.y = term.rows * cell_height - 1;
 
       if (by_pixels) {
@@ -1237,6 +1257,13 @@ transparency_level()
 }
 
 static void
+toggle_opaque()
+{
+  force_opaque = !force_opaque;
+  win_update_transparency(cfg.transparency, force_opaque);
+}
+
+static void
 newwin_begin(uint key, mod_keys mods)
 {
   if (key) {
@@ -1306,6 +1333,21 @@ void
 toggle_bidi()
 {
   term.disable_bidi = !term.disable_bidi;
+}
+
+void
+toggle_dim_margins()
+{
+  term.dim_margins = !term.dim_margins;
+}
+
+void
+toggle_status_line()
+{
+  if (term.st_type == 1)
+    term_set_status_type(0, 0);
+  else
+    term_set_status_type(1, 0);
 }
 
 static void scroll_HOME()
@@ -1574,6 +1616,12 @@ mflags_scrollbar_inner()
 }
 
 static uint
+mflags_opaque()
+{
+  return force_opaque ? MF_CHECKED : MF_UNCHECKED;
+}
+
+static uint
 mflags_open()
 {
   return term.selected ? MF_ENABLED : MF_GRAYED;
@@ -1612,6 +1660,18 @@ mflags_bidi()
          || (cfg.bidi == 1 && (term.on_alt_screen ^ term.show_other_screen))
          ) ? MF_GRAYED
            : term.disable_bidi ? MF_UNCHECKED : MF_CHECKED;
+}
+
+static uint
+mflags_dim_margins()
+{
+  return term.dim_margins ? MF_CHECKED : MF_UNCHECKED;
+}
+
+static uint
+mflags_status_line()
+{
+  return term.st_type == 1 ? MF_CHECKED : MF_UNCHECKED;
 }
 
 static uint
@@ -1695,6 +1755,7 @@ static struct function_def cmd_defs[] = {
   {"scrollbar-inner", {.fct = toggle_scrollbar}, mflags_scrollbar_inner},
   {"cycle-pointer-style", {.fct = cycle_pointer_style}, 0},
   {"cycle-transparency-level", {.fct = transparency_level}, 0},
+  {"toggle-opaque", {.fct = toggle_opaque}, mflags_opaque},
 
   {"copy", {IDM_COPY}, mflags_copy},
   {"copy-text", {IDM_COPY_TEXT}, mflags_copy},
@@ -1713,6 +1774,7 @@ static struct function_def cmd_defs[] = {
   {"lock-title", {.fct = lock_title}, mflags_lock_title},
   {"clear-title", {.fct = clear_title}, 0},
   {"reset", {IDM_RESET}, 0},
+  {"reset-noask", {IDM_RESET_NOASK}, 0},
   {"tek-reset", {IDM_TEKRESET}, mflags_tek_mode},
   {"tek-page", {IDM_TEKPAGE}, mflags_tek_mode},
   {"tek-copy", {IDM_TEKCOPY}, mflags_tek_mode},
@@ -1728,6 +1790,8 @@ static struct function_def cmd_defs[] = {
   {"toggle-auto-repeat", {.fct = toggle_auto_repeat}, mflags_auto_repeat},
   {"toggle-bidi", {.fct = toggle_bidi}, mflags_bidi},
   {"refresh", {.fct = refresh}, 0},
+  {"toggle-dim-margins", {.fct = toggle_dim_margins}, mflags_dim_margins},
+  {"toggle-status-line", {.fct = toggle_status_line}, mflags_status_line},
 
   {"super", {.fct_key = super_down}, 0},
   {"hyper", {.fct_key = hyper_down}, 0},
@@ -2654,10 +2718,11 @@ static LONG last_key_time = 0;
                       ? !extended
                       : vktab[vki].unmod == 3;
       bool editpad = !keypad && vktab[vki].unmod >= 2;
+      //printf("found %d ext %d kp %d ep %d\n", vki, extended, keypad, editpad);
       if (vki >= 0 && !altgr
           && (mods || vktab[vki].unmod || extended)
-          && (!editpad || !term.app_cursor_keys)
-          && (!keypad || !term.app_keypad)
+          && (!cfg.old_keyfuncs_keypad || !editpad || !term.app_cursor_keys)
+          && (!cfg.old_keyfuncs_keypad || !keypad || !term.app_keypad)
          )
       {
         tag = asform("%s%s%s%s%s%s%s%s%s",
@@ -2814,7 +2879,7 @@ static LONG last_key_time = 0;
         when 'I': open_popup_menu(true, "ls", mods);
         when 'N': send_syscommand(IDM_TAB);  // deprecated default assignment
         when 'W': send_syscommand(SC_CLOSE);
-        when 'R': send_syscommand(IDM_RESET);
+        when 'R': send_syscommand(IDM_RESET_NOASK);
         when 'D': send_syscommand(IDM_DEFSIZE);
         when 'F': send_syscommand(cfg.zoom_font_with_window ? IDM_FULLSCREEN_ZOOM : IDM_FULLSCREEN);
         when 'S': send_syscommand(IDM_FLIPSCREEN);
@@ -3509,8 +3574,12 @@ static struct {
     when VK_MULTIPLY ... VK_DIVIDE:
       if (term.vt52_mode && term.app_keypad)
         len = sprintf(buf, "\e?%c", key - VK_MULTIPLY + 'j');
+      // initiate hex numeric input
       else if (key == VK_ADD && old_alt_state == ALT_ALONE)
         alt_state = ALT_HEX, alt_code = 0, alt_uni = false;
+      // initiate decimal numeric input; override user-assigned functions
+      else if (key == VK_SUBTRACT && old_alt_state == ALT_ALONE)
+        alt_state = ALT_DEC, alt_code = 0, alt_uni = false;
       else if (alt_code_ignore()) {
       }
       else if (mods || (term.app_keypad && !numlock) || !layout())
@@ -3756,10 +3825,13 @@ win_key_up(WPARAM wp, LPARAM lp)
       win_update_transparency(cfg.transparency, true);
   }
 
+#if 0
+  // "unhovering" is now handled in update_mouse, based on configured mods
   if (key == VK_CONTROL && term.hovering) {
     term.hovering = false;
     win_update(false);
   }
+#endif
 
   if (key == VK_MENU) {
     if (alt_state > ALT_ALONE && alt_code) {

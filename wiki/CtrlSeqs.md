@@ -26,7 +26,7 @@ These escape sequences cause mintty to report its identification.
 | **request** | **response**                      | **comment** |
 |:------------|:----------------------------------|:------------|
 | `^[[>0c`    | `^[[>77;`_version_`;`_unicode_`c` | secondary devices attributes (DEC); _version_ like 30105, _unicode_ version when using built-in data |
-| `^[[>0q`    | `^[P>|mintty `_version_`^[\`      | terminal identification query (xterm 354); _version_ like 3.1.5 |
+| `^[[>0q`    | `^[P>\|mintty `_version_`^[\`     | terminal identification query (xterm 354); _version_ like 3.1.5 |
 
 
 ## Escape keycode ##
@@ -136,6 +136,23 @@ This sequence scrolls down screen lines like SD (CSI T) but fills the
 empty lines from the end of the scrollback buffer.
 
 > `^[[`_N_`+T`
+
+
+## Status line / area ##
+
+Mintty implements the DEC VT320 status line and extends the feature to 
+support a multi-line host-writable status area.
+It is configured with a proprietary second parameter to DECSSDT 2.
+Its height is limited to be smaller than half the screen height.
+
+| **sequence**          | **function**                              |
+|:----------------------|:------------------------------------------|
+| `^[[0$~` _or_ `^[[$~` | disable status line                       |
+| `^[[1$~`              | enable indicator status line              |
+| `^[[2$~`              | enable host-writable status line          |
+| `^[[2;`_N_`$~`        | enable host-writable status area, N lines |
+| `^[[0$}` _or_ `^[[$}` | select normal display (for writing)       |
+| `^[[1$}`              | select status display (for writing)       |
 
 
 ## Bidirectional rendering ##
@@ -402,6 +419,19 @@ with one extension:
 | `^[[2;2 Z`   | like `^[[22 Z`                                |
 
 
+## Overstrike ##
+
+Mintty supports overstriking characters, with either an SGR attribute 
+or the VK100-compatible DECSET 20.
+
+| **sequence** | **effect**                                    |
+|:-------------|:----------------------------------------------|
+| `^[[8:7m`    | overstriking character writing mode           |
+| `^[[28m`     | overwriting character writing mode            |
+| `^[[?20h`    | overstriking character writing mode           |
+| `^[[?20l`    | overwriting character writing mode            |
+
+
 ## Font size ##
 
 The following _OSC_ ("operating system command") sequences can be used to change and query font size:
@@ -453,12 +483,13 @@ For values, see setting `Emojis` in the manual.
 
 OSC 11 semantics is extended to set or change image background.
 
-| **sequence**         | **locale**                                       |
-|:---------------------|:-------------------------------------------------|
-| `^[]11;_`_image_`^G` | set terminal size background image               |
-| `^[]11;%`_image_`^G` | set image and scale terminal to its aspect ratio |
-| `^[]11;*`_image_`^G` | set tiled background                             |
-| `^[]11;=^G`          | set background to desktop image (if tiled)       |
+| **sequence**         | **locale**                                        |
+|:---------------------|:--------------------------------------------------|
+| `^[]11;_`_image_`^G` | set terminal size background image                |
+| `^[]11;%`_image_`^G` | set image and scale terminal to its aspect ratio  |
+| `^[]11;*`_image_`^G` | set tiled background                              |
+| `^[]11;+`_image_`^G` | set background scaled with aspect ratio and tiled |
+| `^[]11;=^G`          | set background to desktop image (if tiled)        |
 
 If the background filename is followed by a comma and a number between 1 and 254, 
 the background image will be dimmed towards the background colour;
@@ -708,6 +739,7 @@ Furthermore, the following Linux console sequence can be used to set the
 size of the active underscore cursor.
 (Note that the second and third parameters from the Linux sequence are not 
 supported; cursor colour can be set with the OSC 12 sequence.)
+The sequence also affects the vertical line cursor.
 
 > `^[[?` _arg_ `c`
 

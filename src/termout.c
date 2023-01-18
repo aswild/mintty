@@ -32,9 +32,9 @@
 
 static string primary_da1 = "\e[?1;2c";
 static string primary_da2 = "\e[?62;1;2;4;6;9;15;22;29c";
-static string primary_da3 = "\e[?63;1;2;4;6;9;15;22;29c";
-static string primary_da4 = "\e[?64;1;2;4;6;9;15;21;22;28;29c";
-static string primary_da5 = "\e[?65;1;2;4;6;9;15;21;22;28;29c";
+static string primary_da3 = "\e[?63;1;2;4;6;9;11;15;22;29c";
+static string primary_da4 = "\e[?64;1;2;4;6;9;11;15;21;22;28;29c";
+static string primary_da5 = "\e[?65;1;2;4;6;9;11;15;21;22;28;29c";
 /* Registered Extensions to the Character Cell Display Service Class
 	1	132 Column Display
 	2	Printer Port
@@ -42,6 +42,7 @@ static string primary_da5 = "\e[?65;1;2;4;6;9;15;21;22;28;29c";
 	4	Sixels Display
 	6	Selectively Erasable Characters
 	9	National Replacement Character Sets
+	11	Status Line (DEC STD 070)
 	15	Technical Character Set
 	21	Horizontal Scrolling
 	22	Color Text
@@ -111,10 +112,19 @@ move(int x, int y, int marg_clip)
     x = 0;
   if (x >= term.cols)
     x = term.cols - 1;
-  if (y < 0)
-    y = 0;
-  if (y >= term.rows)
-    y = term.rows - 1;
+
+  if (term.st_active) {
+    if (curs->y < term.rows)
+      y = term.rows;
+    if (y >= term_allrows)
+      y = term_allrows - 1;
+  }
+  else {
+    if (y < 0)
+      y = 0;
+    if (y >= term.rows)
+      y = term.rows - 1;
+  }
 
   curs->x = x;
   curs->y = y;
@@ -123,11 +133,21 @@ move(int x, int y, int marg_clip)
 
 /*
  * Save the cursor and SGR mode.
+   About status line save/restore cursor, refer to DEC VT420 p. 271, VT520 p. 5-92:
+	Notes on DECSC and DECRC
+	• The terminal maintains a separate DECSC buffer for the main 
+	  display and the status line. This feature lets you save a 
+	  separate operating state for the main display and the status line.
  */
 static void
 save_cursor(void)
 {
-  term.saved_cursors[term.on_alt_screen] = term.curs;
+  if (term.st_active) {
+    term.st_saved_curs = term.curs;
+    term.st_saved_curs.y -= term.rows;
+  }
+  else
+    term.saved_cursors[term.on_alt_screen] = term.curs;
 }
 
 /*
@@ -137,16 +157,24 @@ static void
 restore_cursor(void)
 {
   term_cursor *curs = &term.curs;
-  *curs = term.saved_cursors[term.on_alt_screen];
-  term.erase_char.attr = curs->attr;
-  term.erase_char.attr.attr &= (ATTR_FGMASK | ATTR_BGMASK);
-  term.erase_char.attr.attr |= TATTR_CLEAR;
+
+  if (term.st_active) {
+    *curs = term.st_saved_curs;
+    curs->y += term.rows;
+  }
+  else {
+    *curs = term.saved_cursors[term.on_alt_screen];
+    term.erase_char.attr = curs->attr;
+    term.erase_char.attr.attr &= (ATTR_FGMASK | ATTR_BGMASK);
+    term.erase_char.attr.attr |= TATTR_CLEAR;
+  }
 
  /* Make sure the window hasn't shrunk since the save */
   if (curs->x >= term.cols)
     curs->x = term.cols - 1;
-  if (curs->y >= term.rows)
-    curs->y = term.rows - 1;
+  short rows = term.st_active ? term_allrows : term.rows;
+  if (curs->y >= rows)
+    curs->y = rows - 1;
 
  /* In origin mode, make sure the cursor position is within margins */
   if (curs->origin) {
@@ -154,10 +182,12 @@ restore_cursor(void)
       curs->x = term.marg_left;
     else if (curs->x > term.marg_right)
       curs->x = term.marg_right;
-    if (curs->y < term.marg_top)
-      curs->y = term.marg_top;
-    else if (curs->y > term.marg_bot)
-      curs->y = term.marg_bot;
+    if (!term.st_active) {
+      if (curs->y < term.marg_top)
+        curs->y = term.marg_top;
+      else if (curs->y > term.marg_bot)
+        curs->y = term.marg_bot;
+    }
   }
 
  /*
@@ -225,10 +255,18 @@ charwidth(xchar chr)
 #endif
 }
 
+#define top_y (term.st_active ? term.rows : 0)
+#define bot_y (term.st_active ? term_allrows : term.rows)
+#define marg_y (term.st_active ? term_allrows - 1 : term.marg_bot)
+
 static void
 attr_rect(cattrflags add, cattrflags sub, cattrflags xor, short y0, short x0, short y1, short x1)
 {
   //printf("attr_rect %d,%d..%d,%d +%llX -%llX ^%llX\n", y0, x0, y1, x1, add, sub, xor);
+  if (term.st_active) {
+    y0 += term.rows;
+    y1 += term.rows;
+  }
   y0--; x0--; y1--; x1--;
 
   if (term.curs.origin) {
@@ -237,12 +275,12 @@ attr_rect(cattrflags add, cattrflags sub, cattrflags xor, short y0, short x0, sh
     y1 += term.marg_top;
     x1 += term.marg_left;
   }
-  if (y0 < 0)
-    y0 = 0;
+  if (y0 < top_y)
+    y0 = top_y;
   if (x0 < 0)
     x0 = 0;
-  if (y1 >= term.rows)
-    y1 = term.rows - 1;
+  if (y1 >= bot_y)
+    y1 = bot_y - 1;
   if (x1 >= term.cols)
     x1 = term.cols - 1;
   //printf("%d,%d..%d,%d\n", y0, x0, y1, x1);
@@ -275,12 +313,29 @@ attr_rect(cattrflags add, cattrflags sub, cattrflags xor, short y0, short x0, sh
 }
 
 //static void write_char(wchar c, int width);
-static void term_do_write(const char *buf, uint len);
+static void term_do_write(const char *buf, uint len, bool fix_status);
+
+/*
+   Fix cursor position with respect to status area;
+   this final fix saves a lot of detailed checks elsewhere.
+ */
+static void
+term_fix_status(void)
+{
+  if (term.st_active && term.curs.y < term.rows)
+    term.curs.y = term.rows;
+  else if (!term.st_active && term.curs.y >= term.rows)
+    term.curs.y = term.rows - 1;
+}
 
 static void
 fill_rect(xchar chr, cattr attr, bool sel, short y0, short x0, short y1, short x1)
 {
   //printf("fill_rect %d,%d..%d,%d\n", y0, x0, y1, x1);
+  if (term.st_active) {
+    y0 += term.rows;
+    y1 += term.rows;
+  }
   int width = charwidth(chr);
   if (chr == UCSWIDE || width < 1)
     return;
@@ -298,12 +353,12 @@ fill_rect(xchar chr, cattr attr, bool sel, short y0, short x0, short y1, short x
     y1 += term.marg_top;
     x1 += term.marg_left;
   }
-  if (y0 < 0)
-    y0 = 0;
+  if (y0 < top_y)
+    y0 = top_y;
   if (x0 < 0)
     x0 = 0;
-  if (y1 >= term.rows)
-    y1 = term.rows - 1;
+  if (y1 >= bot_y)
+    y1 = bot_y - 1;
   if (x1 >= term.cols)
     x1 = term.cols - 1;
   //printf("%d,%d..%d,%d\n", y0, x0, y1, x1);
@@ -348,11 +403,11 @@ fill_rect(xchar chr, cattr attr, bool sel, short y0, short x0, short y1, short x
         term.curs.cset_single = csav.cset_single;
         if (chr > 0xFF) {
           //write_char(chr, 1); // would skip NRCS handling in term_do_write
-          term_do_write(cbuf, strlen(cbuf));
+          term_do_write(cbuf, strlen(cbuf), false);
         }
         else {
           char c = chr;
-          term_do_write(&c, 1);
+          term_do_write(&c, 1, false);
         }
       }
     }
@@ -409,6 +464,11 @@ static void
 copy_rect(short y0, short x0, short y1, short x1, short y2, short x2)
 {
   //printf("copy_rect %d,%d..%d,%d -> %d,%d\n", y0, x0, y1, x1, y2, x2);
+  if (term.st_active) {
+    y0 += term.rows;
+    y1 += term.rows;
+    y2 += term.rows;
+  }
   y0--; x0--; y1--; x1--; y2--; x2--;
 
   if (term.curs.origin) {
@@ -419,21 +479,21 @@ copy_rect(short y0, short x0, short y1, short x1, short y2, short x2)
     y2 += term.marg_top;
     x2 += term.marg_left;
   }
-  if (y0 < 0)
-    y0 = 0;
+  if (y0 < top_y)
+    y0 = top_y;
   if (x0 < 0)
     x0 = 0;
-  if (y1 >= term.rows)
-    y1 = term.rows - 1;
+  if (y1 >= bot_y)
+    y1 = bot_y - 1;
   if (x1 >= term.cols)
     x1 = term.cols - 1;
 
-  if (y2 < 0)
-    y2 = 0;
+  if (y2 < top_y)
+    y2 = top_y;
   if (x2 < 0)
     x2 = 0;
-  if (y2 + y1 - y0 >= term.rows)
-    y1 = term.rows + y0 - y2 - 1;
+  if (y2 + y1 - y0 >= bot_y)
+    y1 = bot_y + y0 - y2 - 1;
   if (x2 + x1 - x0 >= term.cols)
     x1 = term.cols + x0 - x2 - 1;
   //printf("%d,%d..%d,%d -> %d,%d\n", y0, x0, y1, x1, y2, x2);
@@ -532,11 +592,11 @@ insdel_column(int col, bool del, int n)
   }
   x0++; x1++; x2++; e0++; e1++;
   int yt = term.marg_top + 1;
-  int yb = term.marg_bot + 1;
+  int yb = marg_y + 1;
   if (term.curs.origin) {
     // compensate for the originmode applied in the functions called below
     yt = 1;
-    yb = term.marg_bot - term.marg_top + 1;
+    yb = marg_y - term.marg_top + 1;
     x0 -= term.marg_left;
     x1 -= term.marg_left;
     x2 -= term.marg_left;
@@ -551,6 +611,10 @@ static uint
 sum_rect(short y0, short x0, short y1, short x1)
 {
   //printf("sum_rect %d,%d..%d,%d\n", y0, x0, y1, x1);
+  if (term.st_active) {
+    y0 += term.rows;
+    y1 += term.rows;
+  }
 
   y0--; x0--; y1--; x1--;
 
@@ -560,12 +624,12 @@ sum_rect(short y0, short x0, short y1, short x1)
     y1 += term.marg_top;
     x1 += term.marg_left;
   }
-  if (y0 < 0)
-    y0 = 0;
+  if (y0 < top_y)
+    y0 = top_y;
   if (x0 < 0)
     x0 = 0;
-  if (y1 >= term.rows)
-    y1 = term.rows - 1;
+  if (y1 >= bot_y)
+    y1 = bot_y - 1;
   if (x1 >= term.cols)
     x1 = term.cols - 1;
   //printf("%d,%d..%d,%d\n", y0, x0, y1, x1);
@@ -601,6 +665,64 @@ sum_rect(short y0, short x0, short y1, short x1)
 
 
 static void
+do_linefeed(void)
+{
+  term_cursor *curs = &term.curs;
+  if (curs->y == marg_y)
+    term_do_scroll(term.marg_top, term.marg_bot, 1, true);
+  else if (curs->y < bot_y - 1)
+    curs->y++;
+}
+
+static void
+wrapparabidi(ushort parabidi, termline * line, int y)
+{
+  line->lattr = (line->lattr & ~LATTR_BIDIMASK) | parabidi | LATTR_WRAPCONTD;
+
+#ifdef determine_parabidi_during_output
+  if (parabidi & (LATTR_BIDISEL | LATTR_AUTOSEL))
+    return;
+
+  // if direction autodetection pending:
+  // from current line, extend backward and forward to adjust 
+  // "paragraph" bidi attributes (esp. direction) to wrapped lines
+  termline * paraline = line;
+  int paray = y;
+  while ((paraline->lattr & LATTR_WRAPCONTD) && paray > -sblines()) {
+    paraline = fetch_line(--paray);
+    paraline->lattr = (paraline->lattr & ~LATTR_BIDIMASK) | parabidi;
+    release_line(paraline);
+  }
+  paraline = line;
+  paray = y;
+  while ((paraline->lattr & LATTR_WRAPPED) && paray < term.rows) {
+    paraline = fetch_line(++paray);
+    paraline->lattr = (paraline->lattr & ~LATTR_BIDIMASK) | parabidi;
+    release_line(paraline);
+  }
+#else
+  (void)y;
+#endif
+}
+
+static termline *
+do_wrap(termline * line, ushort lattr)
+{
+  term_cursor * curs = &term.curs;
+
+  line->lattr |= lattr;
+  line->wrappos = curs->x;
+  ushort parabidi = getparabidi(line);
+  do_linefeed();
+  curs->x = term.marg_left;
+  curs->wrapnext = false;
+  line = term.lines[curs->y];
+  wrapparabidi(parabidi, line, curs->y);
+
+  return line;
+}
+
+static void
 write_bell(void)
 {
   if (cfg.bell_flash)
@@ -622,7 +744,7 @@ write_backspace(void)
   else if (curs->x == 0 && (curs->y == term.marg_top || !term.autowrap
                        || (!cfg.old_wrapmodes && !term.rev_wrap)))
     /* skip */;
-  else if (curs->x == term.marg_left && curs->y > term.marg_top) {
+  else if (curs->x == term.marg_left && curs->y > term.marg_top && !term.st_active) {
     curs->y--;
     curs->x = term.marg_right;
   }
@@ -639,6 +761,11 @@ static void
 write_tab(void)
 {
   term_cursor *curs = &term.curs;
+
+  if (cfg.wrap_tab && curs->wrapnext && term.autowrap) {
+    termline * line = term.lines[curs->y];
+    (void)do_wrap(line, LATTR_WRAPPED);
+  }
 
   int last = -1;
   do {
@@ -660,10 +787,15 @@ write_tab(void)
   if ((term.lines[curs->y]->lattr & LATTR_MODE) != LATTR_NORM) {
     if (curs->x >= term.cols / 2)
       curs->x = term.cols / 2 - 1;
+    if (cfg.wrap_tab > 1 && curs->x == term.cols / 2 - 1)
+      curs->wrapnext = true;
   }
   else {
     if (curs->x >= term.cols)
       curs->x = term.cols - 1;
+    if (cfg.wrap_tab > 1 && 
+        (curs->x == term.cols - 1 || curs->x == term.marg_right))
+      curs->wrapnext = true;
   }
 }
 
@@ -686,10 +818,7 @@ write_linefeed(void)
     return;
 
   clear_wrapcontd(term.lines[curs->y], curs->y);
-  if (curs->y == term.marg_bot)
-    term_do_scroll(term.marg_top, term.marg_bot, 1, true);
-  else if (curs->y < term.rows - 1)
-    curs->y++;
+  do_linefeed();
   curs->wrapnext = false;
 }
 
@@ -722,7 +851,7 @@ static int last_width = 0;
 cattr last_attr = {.attr = ATTR_DEFAULT,
                    .truefg = 0, .truebg = 0, .ulcolr = (colour)-1};
 
-static void
+void
 write_char(wchar c, int width)
 {
   //if (kb_trace) printf("[%ld] write_char 'q'\n", mtime());
@@ -752,36 +881,6 @@ write_char(wchar c, int width)
   last_char = c;
   last_attr = curs->attr;
 
-  void wrapparabidi(ushort parabidi, termline * line, int y)
-  {
-    line->lattr = (line->lattr & ~LATTR_BIDIMASK) | parabidi | LATTR_WRAPCONTD;
-
-#ifdef determine_parabidi_during_output
-    if (parabidi & (LATTR_BIDISEL | LATTR_AUTOSEL))
-      return;
-
-    // if direction autodetection pending:
-    // from current line, extend backward and forward to adjust 
-    // "paragraph" bidi attributes (esp. direction) to wrapped lines
-    termline * paraline = line;
-    int paray = y;
-    while ((paraline->lattr & LATTR_WRAPCONTD) && paray > -sblines()) {
-      paraline = fetch_line(--paray);
-      paraline->lattr = (paraline->lattr & ~LATTR_BIDIMASK) | parabidi;
-      release_line(paraline);
-    }
-    paraline = line;
-    paray = y;
-    while ((paraline->lattr & LATTR_WRAPPED) && paray < term.rows) {
-      paraline = fetch_line(++paray);
-      paraline->lattr = (paraline->lattr & ~LATTR_BIDIMASK) | parabidi;
-      release_line(paraline);
-    }
-#else
-    (void)y;
-#endif
-  }
-
   void put_char(wchar c)
   {
     if (term.ring_enabled && curs->x == term.marg_right + 1 - 8) {
@@ -809,17 +908,7 @@ write_char(wchar c, int width)
   }
 
   if (curs->wrapnext && term.autowrap && width > 0) {
-    line->lattr |= LATTR_WRAPPED;
-    line->wrappos = curs->x;
-    ushort parabidi = getparabidi(line);
-    if (curs->y == term.marg_bot)
-      term_do_scroll(term.marg_top, term.marg_bot, 1, true);
-    else if (curs->y < term.rows - 1)
-      curs->y++;
-    curs->x = term.marg_left;
-    curs->wrapnext = false;
-    line = term.lines[curs->y];
-    wrapparabidi(parabidi, line, curs->y);
+    line = do_wrap(line, LATTR_WRAPPED);
   }
 
   bool overstrike = false;
@@ -908,25 +997,30 @@ write_char(wchar c, int width)
       */
       term_check_boundary(curs->x, curs->y);
       term_check_boundary(curs->x + width, curs->y);
-      if (curs->x == term.marg_right || curs->x == term.cols - 1) {
+      if (curs->x == term.marg_right || curs->x == term.cols - 1
+       || ((line->lattr & LATTR_MODE) != LATTR_NORM && curs->x >= (term.cols - 1) / 2)
+         )
+      {
         line->chars[curs->x] = term.erase_char;
-        line->lattr |= LATTR_WRAPPED | LATTR_WRAPPED2;
-        line->wrappos = curs->x;
-        ushort parabidi = getparabidi(line);
-        if (curs->y == term.marg_bot)
-          term_do_scroll(term.marg_top, term.marg_bot, 1, true);
-        else if (curs->y < term.rows - 1)
-          curs->y++;
-        curs->x = term.marg_left;
-        line = term.lines[curs->y];
-        wrapparabidi(parabidi, line, curs->y);
-       /* Now we must term_check_boundary again, of course. */
-        term_check_boundary(curs->x, curs->y);
-        term_check_boundary(curs->x + width, curs->y);
+        if (term.autowrap) {
+          line = do_wrap(line, LATTR_WRAPPED | LATTR_WRAPPED2);
+         /* Now we must term_check_boundary again, of course. */
+          term_check_boundary(curs->x, curs->y);
+          term_check_boundary(curs->x + width, curs->y);
+
+          put_char(c);
+          curs->x++;
+          put_char(UCSWIDE);
+        }
+        else {
+         /* drop character that does not fit into last column */
+        }
       }
-      put_char(c);
-      curs->x++;
-      put_char(UCSWIDE);
+      else {
+        put_char(c);
+        curs->x++;
+        put_char(UCSWIDE);
+      }
 #ifdef support_triple_width
       if (width > 2) {
         for (int i = 2; i < width; i++) {
@@ -978,6 +1072,14 @@ write_char(wchar c, int width)
   }
 
   curs->x++;
+  if ((line->lattr & LATTR_MODE) != LATTR_NORM) {
+    if (curs->x >= term.cols / 2) {
+      curs->x --;
+      if (term.autowrap)
+        curs->wrapnext = true;
+    }
+  }
+  else
   if (curs->x == term.marg_right + 1 || curs->x == term.cols) {
     curs->x--;
     if (term.autowrap || cfg.old_wrapmodes)
@@ -1112,7 +1214,7 @@ scriptfont(ucschar ch)
   return 0;
 }
 
-static void
+void
 write_ucschar(wchar hwc, wchar wc, int width)
 {
   cattrflags attr = term.curs.attr.attr;
@@ -1245,7 +1347,7 @@ tek_esc(char c)
       tek_font(c - '8');
     when '?':
       if (term.state == TEK_ADDRESS0 || term.state == TEK_ADDRESS)
-        term_do_write("", 1);
+        term_do_write("", 1, false);
     when CTRL('C'):
       tek_mode = TEKMODE_OFF;
       term.state = NORMAL;
@@ -1391,7 +1493,7 @@ do_vt52(uchar c)
     when 'I':  /* Reverse line feed. */
       if (curs->y == term.marg_top)
         term_do_scroll(term.marg_top, term.marg_bot, -1, false);
-      else if (curs->y > 0)
+      else if (curs->y > top_y)
         curs->y--;
       curs->wrapnext = false;
     when 'J':  /* Erase from the cursor to the end of the screen. */
@@ -1595,7 +1697,7 @@ do_esc(uchar c)
     when 'M':  /* RI: reverse index - backwards LF */
       if (curs->y == term.marg_top)
         term_do_scroll(term.marg_top, term.marg_bot, -1, false);
-      else if (curs->y > 0)
+      else if (curs->y > top_y)
         curs->y--;
       curs->wrapnext = false;
     when 'Z':  /* DECID: terminal type query */
@@ -2007,6 +2109,8 @@ set_modes(bool state)
           term.app_keypad = state;
         when 2:  /* DECANM: VT100/VT52 mode */
           if (state) {
+            if (term.st_active)
+              return;
             // Designate USASCII for character sets G0-G3
             for (uint i = 0; i < lengthof(term.curs.csets); i++)
               term.curs.csets[i] = CSET_ASCII;
@@ -2055,6 +2159,11 @@ set_modes(bool state)
           term.cursor_blinkmode = state;
           term.cursor_invalid = true;
           term_schedule_cblink();
+        when 20: /* DEC VK100 overstrike */
+          if (state)
+            term.curs.attr.attr |= ATTR_OVERSTRIKE;
+          else
+            term.curs.attr.attr &= ~ATTR_OVERSTRIKE;
         when 25: /* DECTCEM: enable/disable cursor */
           term.cursor_on = state;
           // Should we set term.cursor_invalid or call term_invalidate ?
@@ -2098,6 +2207,8 @@ set_modes(bool state)
           }
         when 80: /* DECSDM: SIXEL display mode */
           term.sixel_display = state;
+        when 117: /* DECECM: erase to default colour */
+          term.erase_to_screen = state;
         when 1000: /* VT200_MOUSE */
           term.mouse_mode = state ? MM_VT200 : 0;
           win_update_mouse();
@@ -2296,6 +2407,8 @@ get_mode(bool privatemode, int arg)
         return 2 - (term.mouse_mode == MM_X10);
       when 12: /* AT&T 610 blinking cursor */
         return 2 - term.cursor_blinkmode;
+      when 20: /* DEC VK100 overstrike */
+        return 2 - !!(term.curs.attr.attr & ATTR_OVERSTRIKE);
       when 25: /* DECTCEM: enable/disable cursor */
         return 2 - term.cursor_on;
       when 30: /* Show/hide scrollbar */
@@ -2312,6 +2425,8 @@ get_mode(bool privatemode, int arg)
         return 2 - term.lrmargmode;
       when 80: /* DECSDM: SIXEL display mode */
         return 2 - term.sixel_display;
+      when 117: /* DECECM: erase to default colour */
+        return 2 - term.erase_to_screen;
       when 1000: /* VT200_MOUSE */
         return 2 - (term.mouse_mode == MM_VT200);
       when 1002: /* BTN_EVENT_MOUSE */
@@ -2754,11 +2869,11 @@ do_csi(uchar c)
     }
     when 'd':        /* VPA: set vertical position */
       move(curs->x,
-           (curs->origin ? term.marg_top : 0) + arg0_def1 - 1,
+           (curs->origin ? term.marg_top : 0) + arg0_def1 + top_y - 1,
            curs->origin ? 2 : 0);
     when 'H' or 'f':  /* CUP or HVP: set horiz. and vert. positions at once */
       move((curs->origin ? term.marg_left : 0) + (arg1 ?: 1) - 1,
-           (curs->origin ? term.marg_top : 0) + arg0_def1 - 1,
+           (curs->origin ? term.marg_top : 0) + arg0_def1 + top_y - 1,
            curs->origin ? 2 : 0);
     when 'I':  /* CHT: move right N TABs */
       for (int i = 0; i < arg0_def1; i++)
@@ -2803,7 +2918,7 @@ do_csi(uchar c)
       }
     }
     when 'L':        /* IL: insert lines */
-      if (curs->y >= term.marg_top && curs->y <= term.marg_bot
+      if (curs->y >= term.marg_top && curs->y <= marg_y
        && curs->x >= term.marg_left && curs->x <= term.marg_right
          )
       {
@@ -2811,7 +2926,7 @@ do_csi(uchar c)
         curs->x = term.marg_left;
       }
     when 'M':        /* DL: delete lines */
-      if (curs->y >= term.marg_top && curs->y <= term.marg_bot
+      if (curs->y >= term.marg_top && curs->y <= marg_y
        && curs->x >= term.marg_left && curs->x <= term.marg_right
          )
       {
@@ -2907,6 +3022,9 @@ do_csi(uchar c)
       win_invalidate_all(false);  // refresh
     when CPAIR('#', 'R'):  /* Report colours stack entry (XTREPORTCOLORS) */
       child_printf("\e[?%d;%d#Q", colours_cur, colours_num);
+    when CPAIR('"', 'p'):  /* DECSCL: set conformance level */
+      term_switch_status(false);
+      // ignore otherwise
     when CPAIR('$', 'p'): { /* DECRQM: request (private) mode */
       int arg = term.csi_argv[0];
       child_printf("\e[%s%u;%u$y",
@@ -2978,6 +3096,17 @@ do_csi(uchar c)
       restore_cursor();
     when 'm':        /* SGR: set graphics rendition */
       do_sgr();
+#if 0
+    /* added in 3.6.2 (#1171), withdrawn in 3.6.3 (conflict with XTQMODKEYS */
+    when CPAIR('?', 'm'):  /* DEC private SGR (EK-PPLV2-PM-B01) */
+      switch (arg0) {
+        when 4: term.curs.attr.attr &= ~ATTR_SUBSCR;
+                term.curs.attr.attr |= ATTR_SUPERSCR;
+        when 5: term.curs.attr.attr &= ~ATTR_SUPERSCR;
+                term.curs.attr.attr |= ATTR_SUBSCR;
+        when 24: term.curs.attr.attr &= ~(ATTR_SUPERSCR | ATTR_SUBSCR);
+      }
+#endif
     when 't':
      /*
       * VT340/VT420 sequence DECSLPP, for setting the height of the window.
@@ -3045,12 +3174,16 @@ do_csi(uchar c)
           }
         child_printf("\e\\");
       }
-    when CPAIR('>', 'm'):     /* xterm: modifier key setting */
+    when CPAIR('>', 'm'):     /* xterm XTMODKEYS: modifier key setting */
       /* only the modifyOtherKeys setting is implemented */
       if (!arg0)
         term.modify_other_keys = 0;
       else if (arg0 == 4)
         term.modify_other_keys = arg1;
+    when CPAIR('?', 'm'):     /* xterm XTQMODKEYS: query XTMODKEYS */
+      /* only the modifyOtherKeys setting is implemented */
+      if (arg0 == 4)
+        child_printf("\e[>4;%dm", term.modify_other_keys);
     when CPAIR('>', 'p'):     /* xterm: pointerMode */
       if (arg0 == 0)
         term.hide_mouse = false;
@@ -3081,7 +3214,7 @@ do_csi(uchar c)
     when 'n':        /* DSR: device status report */
       if (arg0 == 6)  // CPR
         child_printf("\e[%d;%dR",
-                     curs->y + 1 - (curs->origin ? term.marg_top : 0),
+                     curs->y + 1 - (curs->origin ? term.marg_top : 0) - top_y,
                      curs->x + 1 - (curs->origin ? term.marg_left : 0));
       else if (arg0 == 5)
         child_write("\e[0n", 4);  // "in good operating condition"
@@ -3089,7 +3222,7 @@ do_csi(uchar c)
       switch (arg0) {
         when 6:  // DECXCPR
           child_printf("\e[?%d;%dR",  // VT420: third parameter "page"...
-                       curs->y + 1 - (curs->origin ? term.marg_top : 0),
+                       curs->y + 1 - (curs->origin ? term.marg_top : 0) - top_y,
                        curs->x + 1 - (curs->origin ? term.marg_left : 0));
         when 15:
           child_printf("\e[?%un", 11 - !!*cfg.printer);
@@ -3342,22 +3475,22 @@ do_csi(uchar c)
     }
     when CPAIR('\'', '}'):  /* DECIC: VT420 Insert Columns */
       if (curs->x >= term.marg_left && curs->x <= term.marg_right
-       && curs->y >= term.marg_top && curs->y <= term.marg_bot
+       && curs->y >= term.marg_top && curs->y <= marg_y
          )
         insdel_column(curs->x, false, arg0_def1);
     when CPAIR('\'', '~'):  /* DECDC: VT420 Delete Columns */
       if (curs->x >= term.marg_left && curs->x <= term.marg_right
-       && curs->y >= term.marg_top && curs->y <= term.marg_bot
+       && curs->y >= term.marg_top && curs->y <= marg_y
          )
         insdel_column(curs->x, true, arg0_def1);
     when CPAIR(' ', 'A'):     /* SR: ECMA-48 shift columns right */
       if (curs->x >= term.marg_left && curs->x <= term.marg_right
-       && curs->y >= term.marg_top && curs->y <= term.marg_bot
+       && curs->y >= term.marg_top && curs->y <= marg_y
          )
         insdel_column(term.marg_left, false, arg0_def1);
-    when CPAIR(' ', '@'):     /* SR: ECMA-48 shift columns left */
+    when CPAIR(' ', '@'):     /* SL: ECMA-48 shift columns left */
       if (curs->x >= term.marg_left && curs->x <= term.marg_right
-       && curs->y >= term.marg_top && curs->y <= term.marg_bot
+       && curs->y >= term.marg_top && curs->y <= marg_y
          )
         insdel_column(term.marg_left, true, arg0_def1);
     when CPAIR('#', 't'):  /* application scrollbar */
@@ -3466,6 +3599,15 @@ static float freq_C5_C7[26] =
           float freq = freq_C5_C7[freqi] * (1 << (term.csi_argv[i] - 41) / 12) / 32;
           win_beep(term.play_tone, vol, freq, ms);
         }
+    }
+    when CPAIR('$', '~'): {  /* DECSSDT: select status line type */
+      term_set_status_type(arg0, arg1);
+    }
+    when CPAIR('$', '}'): {  /* DECSASD: select active status display */
+      bool status_line = arg0;
+      if (term.st_type == 2) {
+        term_switch_status(status_line);
+      }
     }
   }
 
@@ -3802,8 +3944,14 @@ do_dcs(void)
         child_printf("\eP1$r%u$|\e\\", term.cols);
       } else if (!strcmp(s, "*|")) {  // DECSNLS (lines)
         child_printf("\eP1$r%u*|\e\\", term.rows);
+      } else if (!strcmp(s, "$~")) {  // DECSSDT (status line type)
+        child_printf("\eP1$r%u$~\e\\", term.st_type);
+      } else if (!strcmp(s, "$}")) {  // DECSASD (active status)
+        child_printf("\eP1$r%u$}\e\\", term.st_active);
+      } else if (!strcmp(s, "-p")) {  // DECARR (auto repeat rate)
+        child_printf("\eP1$r%u-p\e\\", term.repeat_rate);
       } else {
-        child_printf("\eP0$r%s\e\\", s);
+        child_printf("\eP0$r\e\\");
       }
     }
     otherwise:
@@ -4070,7 +4218,7 @@ do_cmd(void)
     when 104: do_colour_osc(true, 4, true);
     when 105: do_colour_osc(true, 5, true);
     when 10:  do_colour_osc(false, FG_COLOUR_I, false);
-    when 11:  if (strchr("*_%=", *term.cmd_buf)) {
+    when 11:  if (strchr("*_%=+", *term.cmd_buf)) {
                 wchar * bn = cs__mbstowcs(term.cmd_buf);
                 wstrset(&cfg.background, bn);
                 free(bn);
@@ -4102,7 +4250,12 @@ do_cmd(void)
         s += 11;
       else if (!strncmp(s, "///", 3))
         s += 2;
-      if (!*s || *s == '/')
+      if (s[0] == '~' && (!s[1] || s[1] == '/')) {
+        char * dir = asform("%s%s", home, s + 1);
+        child_set_fork_dir(dir);
+        free(dir);
+      }
+      else if (!*s || *s == '/')
         child_set_fork_dir(s);
     when 701:  // Set/get locale (from urxvt).
       if (!strcmp(s, "?"))
@@ -4218,6 +4371,74 @@ do_cmd(void)
       }
       else
         term.curs.attr.link = -1;
+    }
+    when 60: {  // xterm XTQALLOWED: query allowed runtime features
+      child_printf("\e]62;%s%s%s%s%s", 
+        // check foreground/background colour setting as an approximation
+        contains(cfg.suppress_osc, 10) || contains(cfg.suppress_osc, 11) 
+          ? "" : ",allowColorOps",
+        contains(cfg.suppress_osc, 50) ? "" : ",allowFontOps",
+        contains(cfg.suppress_osc, 2) ? "" : ",allowTitleOps",
+        *cfg.filter_paste ? "" : ",allowPasteControls",
+        //allowWindowOps
+        osc_fini());
+    }
+    when 61: {  // xterm XTQALLOWED: query disallowed runtime subfeatures
+      if (!strcasecmp(s, "allowColorOps"))
+        child_printf("\e]62%s%s",
+          contains(cfg.suppress_osc, 4) ? ";GetAnsiColor,SetAnsiColor" : "",
+          osc_fini());
+      else if (!strcasecmp(s, "allowFontOps"))
+        child_printf("\e]62;GetFont,SetFont%s", osc_fini());
+      else if (!strcasecmp(s, "allowMouseOps"))
+        child_printf("\e]62;VT200Hilite%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+          strstr(cfg.suppress_wheel, "scrollwin") ? ",Scrollback" : "",
+          strstr(cfg.suppress_wheel, "zoom") ? ",ZoomMouse" : "",
+          strstr(cfg.suppress_wheel, "report") ? ",WheelEvent" : "",
+          //(strstr(cfg.suppress_wheel, "scrollapp") || !term.wheel_reporting_xterm) ? ",AlternateScroll" : "",
+          (strstr(cfg.suppress_wheel, "scrollapp") ||
+           (contains(cfg.suppress_dec, 1007) && !contains(cfg.suppress_dec, 7786))
+          ) ? ",AlternateScroll" : "",
+          contains(cfg.suppress_dec, 9) ? ",X10" : "",
+          contains(cfg.suppress_dec, 1000) ? ",VT200Click" : "",
+          contains(cfg.suppress_dec, 1002) ? ",AnyButton" : "",
+          contains(cfg.suppress_dec, 1003) ? ",AnyEvent" : "",
+          contains(cfg.suppress_dec, 1005) ? ",Extended" : "",
+          contains(cfg.suppress_dec, 1006) ? ",SGR" : "",
+          contains(cfg.suppress_dec, 1015) ? ",URXVT" : "",
+          contains(cfg.suppress_dec, 1016) ? ",PixelPosition" : "",
+          contains(cfg.suppress_dec, 1004) ? ",FocusEvent" : "",
+          osc_fini());
+      else if (!strcasecmp(s, "allowTitleOps"))
+        child_printf("\e]62%s", osc_fini());
+      else if (!strcasecmp(s, "allowWindowOps"))
+        child_printf("\e]62;SetChecksum,SetXprop,GetIconTitle,GetWinTitle%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+          contains(cfg.suppress_osc, 52) ? ",GetSelection" : "",
+          (contains(cfg.suppress_osc, 52) || !cfg.allow_set_selection)
+            ? "SetSelection" : "",
+          contains(cfg.suppress_win, 24) ? ",SetWinLines" : "",
+          contains(cfg.suppress_win, 19) ? ",GetScreenSizeChars" : "",
+          contains(cfg.suppress_win, 13) ? ",GetWinPosition" : "",
+          contains(cfg.suppress_win, 18) ? ",GetWinSizeChars" : "",
+          contains(cfg.suppress_win, 14) ? ",GetWinSizePixels" : "",
+          contains(cfg.suppress_win, 11) ? ",GetWinState" : "",
+          contains(cfg.suppress_win, 6) ? ",LowerWin" : "",
+          contains(cfg.suppress_win, 9) ? ",MaximizeWin" : "",
+          contains(cfg.suppress_win, 10) ? ",FullscreenWin" : "",
+          contains(cfg.suppress_win, 2) ? ",MinimizeWin" : "",
+          contains(cfg.suppress_win, 23) ? ",PopTitle" : "",
+          contains(cfg.suppress_win, 22) ? ",PushTitle" : "",
+          contains(cfg.suppress_win, 5) ? ",RaiseWin" : "",
+          contains(cfg.suppress_win, 7) ? ",RefreshWin" : "",
+          contains(cfg.suppress_win, 1) ? ",RestoreWin" : "",
+          contains(cfg.suppress_win, 3) ? ",SetWinPosition" : "",
+          contains(cfg.suppress_win, 8) ? ",SetWinSizeChars" : "",
+          contains(cfg.suppress_win, 4) ? ",SetWinSizePixels" : "",
+          osc_fini());
+      else if (!strcasecmp(s, "allowTcapOps"))
+        child_printf("\e]62;SetTcap,GetTcap%s", osc_fini());
+      else if (!strcasecmp(s, "allowPasteControls"))
+        child_printf("\e]62;%s%s", cfg.filter_paste, osc_fini());
     }
     when 1337: {  // iTerm2 image protocol
                   // https://www.iterm2.com/documentation-images.html
@@ -4486,7 +4707,7 @@ term_print_finish(void)
 }
 
 static void
-term_do_write(const char *buf, uint len)
+term_do_write(const char *buf, uint len, bool fix_status)
 {
   //check e.g. if progress indication is following by CR
   //printf("[%ld] write %02X...%02X\n", mtime(), *buf, buf[len - 1]);
@@ -5273,6 +5494,9 @@ term_do_write(const char *buf, uint len)
           do_esc(c);
         }
     }
+
+    if (fix_status)
+      term_fix_status();
   }
 
   if (term.ring_enabled && term.curs.y != oldy)
@@ -5302,7 +5526,7 @@ void
 term_flush(void)
 {
   if (term.suspbuf) {
-    term_do_write(term.suspbuf, term.suspbuf_pos);
+    term_do_write(term.suspbuf, term.suspbuf_pos, true);
     free(term.suspbuf);
     term.suspbuf = 0;
     term.suspbuf_pos = 0;
@@ -5340,6 +5564,6 @@ term_write(const char *buf, uint len)
     // in this case, we've either flushed already or didn't need to
   }
 
-  term_do_write(buf, len);
+  term_do_write(buf, len, true);
 }
 
