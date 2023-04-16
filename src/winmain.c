@@ -109,6 +109,7 @@ bool title_settable = true;
 static string border_style = 0;
 static string report_geom = 0;
 static bool report_moni = false;
+bool report_config = false;
 bool report_child_pid = false;
 bool report_child_tty = false;
 static bool report_winpid = false;
@@ -666,7 +667,7 @@ update_tab_titles()
     refresh_tab_titles(true);
     // support tabbar
     win_update_tabbar();
-    // tell the others to update their's
+    // tell the others to update theirs
     EnumWindows(wnd_enum_tabs, 0);
   }
 }
@@ -3672,6 +3673,7 @@ static struct {
           win_update_scrollbar(false);
         when IDM_SEARCH: win_open_search();
         when IDM_FLIPSCREEN: term_flip_screen();
+        when IDM_STATUSLINE: toggle_status_line();
         when IDM_OPTIONS: win_open_config();
         when IDM_NEW: {
           HMONITOR mon = MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST);
@@ -5556,6 +5558,8 @@ main(int argc, char *argv[])
   main_argv = argv;
   main_argc = argc;
   mintty_debug = getenv("MINTTY_DEBUG") ?: "";
+  if (strchr(mintty_debug, 'C'))
+    report_config = true;
 #ifdef debuglog
   mtlog = fopen("/tmp/mtlog", "a");
   {
@@ -6230,7 +6234,22 @@ main(int argc, char *argv[])
 
     // prevent HOME from being propagated back to Windows applications 
     // if called from WSL (mintty/wsltty#76)
-    unsetenv("HOME");
+    wchar * HOME = getregstr(HKEY_CURRENT_USER, W("Environment"), W("HOME"));
+    if (HOME && *HOME){
+      char * _HOME = cs__wcstoutf(HOME);
+      if (*_HOME == '%') {
+        char * varend = strchr(&_HOME[1], '%');
+        if (varend) {
+          *varend = 0;
+          char * varval = getenv(&_HOME[1]);
+          if (varval)
+            _HOME = asform("%s%s", varval, varend + 1);
+        }
+      }
+      setenv("HOME", _HOME, true);
+    }
+    else
+      unsetenv("HOME");
   }
   else if (*argv && (argv[1] || strcmp(*argv, "-")))  // argv is a command
     cmd = *argv;
@@ -6653,7 +6672,7 @@ static int dynfonts = 0;
   disable_poschange = false;
 
   // Adapt window position (and maybe size) to special parameters,
-  // we need to reconsider maxwidth/maxheight here to accomodate 
+  // we need to reconsider maxwidth/maxheight here to accommodate 
   // circular dependencies of 
   // positioning, monitor selection, DPI adjustment and window size
   if (center || right || bottom || left || top || maxwidth || maxheight) {

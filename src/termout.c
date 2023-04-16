@@ -2269,11 +2269,17 @@ set_modes(bool state)
           }
         when 1061:       /* VT220 keyboard emulation */
           term.vt220_keys = state;
+        when 2001:       /* Readline mouse button-1 */
+          term.readline_mouse_1 = state;
+        when 2002:       /* Readline mouse button-2 */
+          term.readline_mouse_2 = state;
+        when 2003:       /* Readline mouse button-3 */
+          term.readline_mouse_3 = state;
         when 2004:       /* xterm bracketed paste mode */
           term.bracketed_paste = state;
 
         /* Mintty private modes */
-        when 7700:       /* CJK ambigous width reporting */
+        when 7700:       /* CJK ambiguous width reporting */
           term.report_ambig_width = state;
         when 7711:       /* Scroll marker in current line */
           if (state)
@@ -2463,7 +2469,7 @@ get_mode(bool privatemode, int arg)
         return 2 - term.bracketed_paste;
 
       /* Mintty private modes */
-      when 7700:       /* CJK ambigous width reporting */
+      when 7700:       /* CJK ambiguous width reporting */
         return 2 - term.report_ambig_width;
       when 7711:       /* Scroll marker in current line */
         return 2 - !!(term.lines[term.curs.y]->lattr & LATTR_MARKED);
@@ -3097,7 +3103,7 @@ do_csi(uchar c)
     when 'm':        /* SGR: set graphics rendition */
       do_sgr();
 #if 0
-    /* added in 3.6.2 (#1171), withdrawn in 3.6.3 (conflict with XTQMODKEYS */
+    /* added in 3.6.2 (#1171), withdrawn in 3.6.3 (conflict with XTQMODKEYS) */
     when CPAIR('?', 'm'):  /* DEC private SGR (EK-PPLV2-PM-B01) */
       switch (arg0) {
         when 4: term.curs.attr.attr &= ~ATTR_SUBSCR;
@@ -4263,7 +4269,8 @@ do_cmd(void)
       else
         cs_set_locale(s);
     when 7721:  // Copy window title to clipboard.
-      win_copy_title();
+      if (cfg.allow_set_selection)
+        win_copy_title();
     when 7704:  // Change ANSI foreground/background colours.
       do_ansi_colour_osc();
     when 7773: {  // Change icon.
@@ -4373,7 +4380,7 @@ do_cmd(void)
         term.curs.attr.link = -1;
     }
     when 60: {  // xterm XTQALLOWED: query allowed runtime features
-      child_printf("\e]62;%s%s%s%s%s", 
+      child_printf("\e]60;%s%s%s%s%s", 
         // check foreground/background colour setting as an approximation
         contains(cfg.suppress_osc, 10) || contains(cfg.suppress_osc, 11) 
           ? "" : ",allowColorOps",
@@ -4383,15 +4390,15 @@ do_cmd(void)
         //allowWindowOps
         osc_fini());
     }
-    when 61: {  // xterm XTQALLOWED: query disallowed runtime subfeatures
+    when 61: {  // xterm XTQDISALLOWED: query disallowed runtime subfeatures
       if (!strcasecmp(s, "allowColorOps"))
-        child_printf("\e]62%s%s",
+        child_printf("\e]61%s%s",
           contains(cfg.suppress_osc, 4) ? ";GetAnsiColor,SetAnsiColor" : "",
           osc_fini());
       else if (!strcasecmp(s, "allowFontOps"))
-        child_printf("\e]62;GetFont,SetFont%s", osc_fini());
+        child_printf("\e]61;GetFont,SetFont%s", osc_fini());
       else if (!strcasecmp(s, "allowMouseOps"))
-        child_printf("\e]62;VT200Hilite%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+        child_printf("\e]61;VT200Hilite%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
           strstr(cfg.suppress_wheel, "scrollwin") ? ",Scrollback" : "",
           strstr(cfg.suppress_wheel, "zoom") ? ",ZoomMouse" : "",
           strstr(cfg.suppress_wheel, "report") ? ",WheelEvent" : "",
@@ -4410,9 +4417,9 @@ do_cmd(void)
           contains(cfg.suppress_dec, 1004) ? ",FocusEvent" : "",
           osc_fini());
       else if (!strcasecmp(s, "allowTitleOps"))
-        child_printf("\e]62%s", osc_fini());
+        child_printf("\e]61%s", osc_fini());
       else if (!strcasecmp(s, "allowWindowOps"))
-        child_printf("\e]62;SetChecksum,SetXprop,GetIconTitle,GetWinTitle%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+        child_printf("\e]61;SetChecksum,SetXprop,GetIconTitle,GetWinTitle%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
           contains(cfg.suppress_osc, 52) ? ",GetSelection" : "",
           (contains(cfg.suppress_osc, 52) || !cfg.allow_set_selection)
             ? "SetSelection" : "",
@@ -4436,9 +4443,9 @@ do_cmd(void)
           contains(cfg.suppress_win, 4) ? ",SetWinSizePixels" : "",
           osc_fini());
       else if (!strcasecmp(s, "allowTcapOps"))
-        child_printf("\e]62;SetTcap,GetTcap%s", osc_fini());
+        child_printf("\e]61;SetTcap,GetTcap%s", osc_fini());
       else if (!strcasecmp(s, "allowPasteControls"))
-        child_printf("\e]62;%s%s", cfg.filter_paste, osc_fini());
+        child_printf("\e]61;%s%s", cfg.filter_paste, osc_fini());
     }
     when 1337: {  // iTerm2 image protocol
                   // https://www.iterm2.com/documentation-images.html
@@ -4676,8 +4683,15 @@ typedef struct {
                                  {"4", 2},
                                  {"2", 3},
                                  {"3", 8},
+                                 {"single", -1},
+                                 {"multiple", -2},
                                  {0, 0}},
                      false);
+      if (len < 0) {
+        term.progress_scan = - len;
+        return;
+      }
+
       if (!len)
         return;
       s += len;

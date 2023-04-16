@@ -27,7 +27,9 @@ An additional directory for a configuration file and configuration resources
 can be given with command-line parameter ```--configdir```.
 
 
-## Using desktop shortcuts to start mintty ##
+## Desktop integration ##
+
+### Using desktop shortcuts to start mintty ###
 
 The Cygwin [setup.exe](http://cygwin.com/setup.exe) package for mintty 
 installs a shortcut in the Windows start menu under _All Programs/Cygwin_.
@@ -114,6 +116,35 @@ which can be done using the `winappid` utility available in
 the mintty [utils repository](https://github.com/mintty/utils).
 As noted above, since mintty 2.9.6, the mintty AppID does not need to be set 
 anymore in this case.
+
+### Taskbar launch commands ###
+
+Launch commands from the taskbar icon and its menu can be configured 
+with settings `AppName`, `AppLaunchCmd` and `TaskCommands` ("jump list").
+This can be made persistent with command line setting `--store-taskbar-properties`.
+
+#### Tab sessions ####
+
+See also the section on [Virtual Tabs and Tabbar](#virtual-tabs-and-tabbar) 
+for configuration of session invocations from the context menu 
+with setting `SessionCommands`.
+
+### Taskbar pinning ###
+
+Taskbar pinning of a mintty window can be prevented with command line setting `--nopin`.
+
+### Taskbar bell indication ###
+
+Bell highlighting of the taskbar icon is enabled by default and can be 
+disabled with option `BellTaskbar`.
+
+### Taskbar progress indication ###
+
+Progress indication on the taskbar icon can be switched dynamically 
+or pre-configured with options `ProgressBar` and `ProgressScan`.
+To enable progress indication e.g. for the MSYS2 package manager pacman:
+* `ProgressBar=1`
+* `ProgressScan=2`
 
 
 ## Window session grouping ##
@@ -324,7 +355,7 @@ In addition, from mintty 3.1.5, an additional escape sequence causes mintty
 to report its name and version; furthermore, although using 
 environment variables for this purpose is not reliable (see 
 [issue #776](https://github.com/mintty/mintty/issues/776) for a discussion), 
-mintty sets environment variables TERM_PROGRAM and TERM_PROGRAM_VERION 
+mintty sets environment variables TERM_PROGRAM and TERM_PROGRAM_VERSION 
 as various other terminals do.
 
 
@@ -420,6 +451,13 @@ and based on the resulting setting of the environment variable TERM,
 the application expects other key sequences than mintty sends.
 (While mintty could be changed to send VT100 application keypad codes in 
 that case, the current behaviour is compatible with xterm.)
+
+### Control+H in emacs ###
+
+If you configure the Backarrow key to send a Backspace character rather 
+than the Linux default DEL character (setting `BackspaceSendsBS=yes`), 
+emacs will not be able to recognize an explicit Ctrl+h command anymore.
+It is recommended to leave this setting at its default.
 
 ### Shift+up/down for text selection in emacs ###
 
@@ -543,6 +581,18 @@ See the manual page for options and details about
 * user-definable key functions
 
 See also the [[Keycodes]] wiki page.
+
+### Backarrow key configuration ###
+
+By default, mintty sends `^?` (ASCII DEL) as the keycode for the Backarrow key.
+This is the Linux default (as opposed to sending `^H` which was the 
+default in many Unix environments).
+This can be changed with setting `BackspaceSendsBS=yes`.
+The tty setting `ERASE character` will be aligned accordingly 
+(see `man termios` and command `stty erase`).
+
+Mind that this may affect certain applications, for example emacs which 
+cannot interpret the explicit Control+h command anymore.
 
 ### Windows-style copy/paste key assignments ###
 
@@ -1067,6 +1117,9 @@ and blinking; background colours and inverse mode are ignored.
 Mintty supports display of emojis as defined by Unicode using 
 emoji presentation, emoji style variation and emoji sequences.
 (Note that the tty must be in a UTF-8 locale to support emoji codes.)
+Extended flag emojis (not listed by Unicode) are supported dynamically.
+
+<img align=right src=https://github.com/mintty/mintty/wiki/mintty-emojis.png>
 
 The option `Emojis` can choose among sets of emoji graphics if 
 deployed in a mintty configuration directory.
@@ -1088,6 +1141,8 @@ You can use the escape sequence PEC to tune emoji width.
 
 Mintty does not bundle actual emoji graphics with its package.
 You will have to download and deploy them yourself.
+Expert options are described here, see also the next section 
+for a Quick Guide to emoji installation.
 
 Emoji data can be found at the following sources:
 * [Unicode.org](http://www.unicode.org/emoji/charts/) Full Emoji List (~50MB)
@@ -1109,7 +1164,14 @@ Emoji data can be found at the following sources:
   * Deploy the preferred subdirectory (e.g. png/unicode/128) as `joypixels`
 * Zoom (with an installed Zoom meeting client)
   * Deploy $APPDATA/Zoom/data/Emojis/*.png into `zoom`
-<img align=right src=https://github.com/mintty/mintty/wiki/mintty-emojis.png>
+
+Emoji flags graphics (extending Unicode) can be found at the following sources:
+* [Google region flags](https://github.com/google/region-flags.git)
+* [Puellanivis’ emoji flags](https://github.com/puellanivis/emoji.git)
+
+  * Use the script [`getflags`](getflags) to download the repositories 
+  and extract emoji data (call it without parameters for instructions).
+  * Deploy common/*.png into `common`
 
 To “Clone” with limited download volume, use the command `git clone --depth 1`.
 To download only the desired subdirectory from `github.com`, use `subversion`, 
@@ -1126,6 +1188,27 @@ into mintty configuration resource subdirectory `emojis`, e.g.
 Use your preferred configuration directory, e.g.
 * `cp -rl noto-emoji/png/128 "$APPDATA"/mintty/emojis/noto`
 * `cp -rl noto-emoji/png/128 /usr/share/mintty/emojis/noto`
+
+### Quick Guide to emoji installation ###
+
+In the cygwin or MSYS2 mintty packages, the emoji download and deployment 
+scripts are installed in /usr/share/mintty/emojis, so do this for a common 
+all-users deployment of the emojis listed at Unicode.org and the flags emojis:
+* `cd /usr/share/mintty/emojis`
+* `./getemojis -d`
+* `./getflags -de`
+
+You may also use the scripts for deployment in your preferred config directory.
+
+To deploy in your personal local resource folder:
+* `mkdir -p ~/.config//mintty/emojis; cd ~/.config/mintty/emojis`
+* `/usr/share/mintty/emojis/getemojis -d`
+* `/usr/share/mintty/emojis/getflags -de`
+
+To deploy in your personal common resource folder (shared e.g. by cygwin/MSYS2):
+* `mkdir -p "$APPDATA"/mintty/emojis; cd "$APPDATA"/mintty/emojis`
+* `/usr/share/mintty/emojis/getemojis -d`
+* `/usr/share/mintty/emojis/getflags -de`
 
 
 ## Searching in the text and scrollback buffer ##
@@ -1317,8 +1400,9 @@ The localization language can be selected with the option `Language`,
 see manual page for details.
 
 Example:
-`Language=*`, environment variables `LANGUAGE=de_CH:français:de:fr_FR` and 
-`LC_MESSAGES=en_GB.UTF-8`, `LC_ALL` not set:
+Assume setting `Language=*`, environment variables 
+`LANGUAGE=de_CH:français:de:fr_FR` and `LC_MESSAGES=en_GB.UTF-8`, 
+environment variable `LC_ALL` not set:
 mintty tries to find localization files (in this order) for 
 `de_CH`, `français`, `de`, `fr_FR`, `en_GB`, 
 then (as generic fallback) `fr` and `en`, 
@@ -1326,9 +1410,8 @@ each in all resource configuration folders (subfolder `lang`).
 
 Note that Windows may already have localized the default entries of the 
 system menu, which makes the system menu language inconsistent because 
-mintty adds a few items here. Choose `Language=en` to 
+mintty adds a few items here. Choose `Language=en` or `en_US` to 
 “reverse-localize” this, as well as the font and colour chooser dialogs.
-
 Choose `Language=en_US` to change `Colour` to `Color` in the menus.
 
 ### Adding translations to localization ###
@@ -1345,6 +1428,13 @@ be used but remember to use UTF-8 encoding.
 Check the translations for strings that may be too long and get clipped 
 by a careful walkthrough of the Options dialog, opening all popups and 
 sub-dialogs (colours and font) and also checking `mintty -o FontMenu=0`.
+
+_Note:_ For setting values in popup menus of some of the options 
+in the Options dialog, localization is also supported. Note however 
+that the corresponding values in the config file or on the command line 
+must not be localized, so apparent inconsistencies may arise.
+It is therefore suggested _not_ to localize these values 
+(marked “(localization optional)” in the localization template `messages.pot`).
 
 _Note:_ There is one special pseudo-string in the localization template which 
 facilitates scaling of the Options dialog width. It is labelled 
@@ -1415,7 +1505,9 @@ ExitCommands=bash:exit^M;mined:^[q;emacs:^X^C
 To install mintty outside a cygwin environment, follow a few rules:
 * Compile mintty statically.
 * Install mintty.exe together with cygwin1.dll and cygwin-console-helper.exe.
-* Call the directory in which to install mintty and libraries ‘bin’.
+* Call the directory in which to install mintty and libraries `bin` (optional).
+* The parent directory of `bin` will be considered the mintty root directory.
+* Aside the `bin` directory (in the root directory), install folder tree `usr/share/mintty` with subdirectories for mintty resources, e.g. `lang/*.po`, `themes/*`, `sounds/*` etc.
 
 ### Bundling mintty with dedicated software ###
 

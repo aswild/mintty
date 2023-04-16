@@ -210,7 +210,7 @@ const config default_cfg = {
   .printable_controls = 0,
   .char_narrowing = 75,
   .emojis = 0,
-  .emoji_placement = 0,
+  .emoji_placement = EMPL_STRETCH,
   .save_filename = W("mintty.%Y-%m-%d_%H-%M-%S"),
   .app_id = W(""),
   .app_name = W(""),
@@ -250,6 +250,7 @@ const config default_cfg = {
   .bold_as_special = false,
   .hover_title = true,
   .progress_bar = 0,
+  .progress_scan = 1,
   .dim_margins = false,
   .status_line = false,
   .old_bold = false,
@@ -582,6 +583,7 @@ options[] = {
   {"BoldAsRainbowSparkles", OPT_BOOL, offcfg(bold_as_special)},
   {"HoverTitle", OPT_BOOL, offcfg(hover_title)},
   {"ProgressBar", OPT_BOOL, offcfg(progress_bar)},
+  {"ProgressScan", OPT_INT, offcfg(progress_scan)},
   {"Baud", OPT_INT, offcfg(baud)},
   {"Bloom", OPT_INT, offcfg(bloom)},
   {"DimMargins", OPT_BOOL, offcfg(dim_margins)},
@@ -622,12 +624,18 @@ typedef const struct {
 
 static opt_val * const opt_vals[] = {
   [OPT_BOOL] = (opt_val[]) {
-    {"no", false},
-    {"yes", true},
-    {"false", false},
-    {"true", true},
-    {"off", false},
-    {"on", true},
+    //__ Setting false for Boolean options (localization optional)
+    {__("no"), false},
+    //__ Setting true for Boolean options (localization optional)
+    {__("yes"), true},
+    //__ Setting false for Boolean options (localization optional)
+    {__("false"), false},
+    //__ Setting true for Boolean options (localization optional)
+    {__("true"), true},
+    //__ Setting false for Boolean options (localization optional)
+    {__("off"), false},
+    //__ Setting true for Boolean options (localization optional)
+    {__("on"), true},
     {0, 0}
   },
   [OPT_CHARWIDTH] = (opt_val[]) {
@@ -655,13 +663,13 @@ static opt_val * const opt_vals[] = {
     {0, 0}
   },
   [OPT_EMOJI_PLACEMENT] = (opt_val[]) {
-    //__ Options - Text - Emojis - Placement
+    //__ Options - Text - Emojis - Placement (localization optional)
     {__("stretch"), EMPL_STRETCH},
-    //__ Options - Text - Emojis - Placement
+    //__ Options - Text - Emojis - Placement (localization optional)
     {__("align"), EMPL_ALIGN},
-    //__ Options - Text - Emojis - Placement
+    //__ Options - Text - Emojis - Placement (localization optional)
     {__("middle"), EMPL_MIDDLE},
-    //__ Options - Text - Emojis - Placement
+    //__ Options - Text - Emojis - Placement (localization optional)
     {__("full"), EMPL_FULL},
     {0, 0}
   },
@@ -1557,6 +1565,9 @@ load_config(string filename, int to_save)
     to_save = false;
 
   FILE * file = fopen(filename, "r");
+  //printf("load_config <%s> ok %d save %d\n", filename, !!file, to_save);
+  if (report_config && file)
+    printf("loading config <%s>\n", filename);
 
   if (to_save) {
     if (file || (!rc_filename && to_save == 2) || to_save == 3) {
@@ -1564,6 +1575,8 @@ load_config(string filename, int to_save)
 
       delete(rc_filename);
       rc_filename = path_posix_to_win_w(filename);
+      if (report_config)
+        printf("save to config <%ls>\n", rc_filename);
     }
   }
 
@@ -2283,10 +2296,13 @@ charset_handler(control *ctrl, int event)
 static void
 lang_handler(control *ctrl, int event)
 {
-  //__ UI language
+  //__ UI localization disabled
   const wstring NONE = _W("– None –");
+  //__ UI localization: use Windows desktop setting
   const wstring WINLOC = _W("@ Windows language @");
+  //__ UI localization: use environment variable setting (LANGUAGE, LC_*)
   const wstring LOCENV = _W("* Locale environm. *");
+  //__ UI localization: use mintty configuration setting (Text - Locale)
   const wstring LOCALE = _W("= cfg. Text Locale =");
   switch (event) {
     when EVENT_REFRESH:
@@ -4294,8 +4310,8 @@ setup_config_box(controlbox * b)
     ctrl_columns(s, 2, 100, 0);
     // window-related
     ctrl_editbox(
-      //__ Options - Selection:
-      s, _("Show size while selecting (0..12)"), 24,
+      //__ Options - Selection: clock position of info popup for text size
+      s, _("Show size while selecting (0..12)"), 15,
       dlg_stdintbox_handler, &new_cfg.selection_show_size
     );
 #define dont_config_suspbuf
@@ -4317,7 +4333,7 @@ setup_config_box(controlbox * b)
                       _("Window properties"), 
   //__ Options - Window: section title
                       _("Default size"));
-  ctrl_columns(s, 5, 35, 3, 28, 4, 30);
+  ctrl_columns(s, 5, 35, 4, 28, 3, 30);
   (cols_box = ctrl_editbox(
     //__ Options - Window:
     s, _("Colu&mns"), 44, dlg_stdintbox_handler, &new_cfg.cols
@@ -4431,7 +4447,7 @@ setup_config_box(controlbox * b)
     s, _("&Type"), 100, term_handler, 0
   )->column = 0;
   ctrl_editbox(
-    //__ Options - Terminal:
+    //__ Options - Terminal: answerback string for ^E request
     s, _("&Answerback"), 100, dlg_stdstringbox_handler, &new_cfg.answerback
   )->column = 1;
 
@@ -4454,7 +4470,7 @@ setup_config_box(controlbox * b)
   )->column = 0;
   ctrl_columns(s, 1, 100);  // reset column stuff so we can rearrange them
   // balance column widths of the following 3 fields 
-  // to accomodate different length of localized labels
+  // to accommodate different length of localized labels
   int strwidth(string s0) {
     int len = 0;
     unsigned char * sp = (unsigned char *)s0;
@@ -4515,5 +4531,10 @@ setup_config_box(controlbox * b)
     //__ Options - Terminal:
     s, _("Prompt about running processes on &close"),
     dlg_stdcheckbox_handler, &new_cfg.confirm_exit
+  );
+  ctrl_checkbox(
+    //__ Options - Terminal:
+    s, _("Status Line"),
+    dlg_stdcheckbox_handler, &new_cfg.status_line
   );
 }
