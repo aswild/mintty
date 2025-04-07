@@ -105,7 +105,7 @@ CFLAGS += -std=gnu99 -include std.h -Wall -Wextra -Wundef -Werror
 CFLAGS += -Wformat-security
 
 ifeq ($(shell VER=`$(CC) -dumpversion`; expr $${VER%%.*} '>=' 5), 1)
-  CFLAGS += -mtune=atom $(SECUR)
+  CFLAGS += -march=x86-64-v3 $(SECUR)
 endif
 
 scriptlib=-lusp10
