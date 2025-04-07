@@ -143,9 +143,6 @@ enum {
   ATTR_PROTECTED  = 0x20000000u,
   ATTR_FRAMED     = 0x0010000000000000u,
 
-  GRAPH_MASK      = 0x00000F0000000000u,
-  ATTR_GRAPH_SHIFT = 40,
-
   FONTFAM_MASK    = 0x000F000000000000u,
   ATTR_FONTFAM_SHIFT = 48,
 
@@ -172,11 +169,23 @@ enum {
   TATTR_CLEAR     = 0x4000000000000000u, /* erased / unwritten */
   TATTR_OVERHANG  = 0x0080000000000000u, /* visual double-width overhang */
 
+  TATTR_JOINED    = 0x0000080000000000u, /* LAM/ALEF joined as combining */
+
   DATTR_STARTRUN  = 0x8000000000000000u, /* start of redraw run */
   DATTR_MASK      = TATTR_RIGHTCURS | TATTR_PASCURS | TATTR_ACTCURS
-                    | DATTR_STARTRUN
+                    | DATTR_STARTRUN,
+
+#ifdef configured_glyph_shift
+  GLYPHSHIFT_MASK = 0x0000070000000000u,
+  ATTR_GLYPHSHIFT_SHIFT = 40,
+#define GLYPHSHIFT_MAX (GLYPHSHIFT_MASK >> ATTR_GLYPHSHIFT_SHIFT)
+#else
+  ATTR_GLYPHSHIFT = 0x0000040000000000u, /* alternative font glyph shift */
+#endif
+
   // unassigned bits:
-  // - none
+  //              = 0x0000020000000000u,
+  //              = 0x0000010000000000u,
 };
 
 /* Line attributes.
@@ -506,7 +515,7 @@ struct term {
   int marg_left, marg_right; /* horizontal margins */
   bool lrmargmode;           /* enable horizontal margins */
   bool dim_margins;
-  bool attr_rect;            /* rectangular attribute change extent */
+  uint attr_rect;            /* rectangular attribute change extent */
   bool printing, only_printing;  /* Are we doing ANSI printing? */
   int  print_state;       /* state of print-end-sequence scan */
   char *printbuf;         /* buffered data for printer */
@@ -548,7 +557,8 @@ struct term {
   bool bell_popup;   // xterm: popOnBell;    switchable with CSI ? 1043 h/l
   bool wheel_reporting_xterm; // xterm: alternateScroll
   bool wheel_reporting;       // similar, but default true
-  bool app_wheel;             // format for wheel_reporting
+  bool app_wheel;             // dedicated wheel codes instead of cursor codes
+  bool alt_wheel;             // add Alt modifier to wheel cursor codes
   int  modify_other_keys;
   bool newline_mode;
   bool report_focus;
@@ -560,6 +570,7 @@ struct term {
   bool wide_indic;
   bool wide_extra;
   bool disable_bidi;
+  bool join_lam_alef;
   bool enable_bold_colour;
   bool enable_blink_colour;
   bool readline_mouse_1;
@@ -567,6 +578,7 @@ struct term {
   bool readline_mouse_3;
 
   bool sixel_display;        // true if sixel scrolling mode is off
+  bool image_display;        // true if image scrolling is disabled
   bool sixel_scrolls_right;  // on: sixel scrolling leaves cursor to right of graphic
                              // off(default): the position after sixel depends on sixel_scrolls_left
   bool sixel_scrolls_left;   // on: sixel scrolling moves cursor to beginning of the line
@@ -583,6 +595,9 @@ struct term {
   uchar esc_mod;  // Modifier character in escape sequences
 
   uchar vt52_mode;
+  bool save_autowrap;
+  bool save_rev_wrap;
+  bool emoji_width;
 
   uint csi_argc;
   uint csi_argv[32];
@@ -691,8 +706,8 @@ extern struct term term;
 
 extern void scroll_rect(int topline, int botline, int lines);
 
-extern void term_resize(int, int);
-extern void term_scroll(int, int);
+extern void term_resize(int rows, int cols, bool quick_reflow);
+extern void term_scroll(int relative_to, int where);
 extern void term_reset(bool full);
 extern void term_clear_scrollback(void);
 extern bool term_mouse_click(mouse_button, mod_keys, pos, int count);

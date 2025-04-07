@@ -109,7 +109,7 @@ Keyboard auto-repeat can also be disabled with DECSET 8 (DECARM).
 | **sequence**   | **comment**         |
 |:---------------|:--------------------|
 | `^[[`_cps_`-p` | max 30              |
-| `^[[-p       ` | unlimited           |
+| `^[[-p`        | unlimited           |
 | `^[[?8l`       | disable auto-repeat |
 | `^[[?8h`       | enable auto-repeat  |
 
@@ -196,6 +196,17 @@ and Block Elements (U+2580-U+259F). Others may be added in future versions.
 
 Note: SPD is a deprecated fun feature.
 
+### LAM/ALEF joining ###
+
+In Arabic LAM/ALEF single-cell joining mode, output of Arabic LAM followed 
+by either of ALEF, ALEF WITH MADDA ABOVE, ALEF WITH HAMZA ABOVE or BELOW 
+will be rendered in only one terminal cell.
+
+| **sequence**  | **ouput rendering** |
+|:--------------|:--------------------|
+| `^[[?2521l`   | LAM/ALEF ligatures take two cells (default)    |
+| `^[[?2521h`   | LAM/ALEF single-cell width (Arabic typography) |
+
 
 ## Reflow / Rewrap / Line rebreaking on resize ##
 
@@ -203,10 +214,12 @@ Mintty supports reflow of wrapped lines if the terminal is resized and its
 width is changed. This feature, applicable with setting `RewrapOnResize`, 
 can be disabled per line, usable for example for prompt lines.
 
-| **sequence**  | **rewrap on resize** |
-|:--------------|:---------------------|
-| `^[[?2027l`   | disabled             |
-| `^[[?2027h`   | enabled (default)    |
+| **sequence**    | **rewrap on resize** |
+|:----------------|:---------------------|
+| `^[[?7723l`     | disabled             |
+| `^[[?7723h`     | enabled (default)    |
+
+Note: Previous alternative mode 2027 was DEPRECATED and now dropped.
 
 
 ## Scrollbar hiding ##
@@ -320,7 +333,24 @@ to private sequences (see below). To support these subtle differences,
 both can be switched independently.
 
 By default, mousewheel events are reported as cursor key presses, which enables
-mousewheel scrolling in applications such as **[less](http://www.greenwoodsoftware.com/less)** without requiring any configuration. Alternatively, mousewheel reporting can be switched to _application mousewheel mode_, where the mousewheel sends its own separate keycodes that allow an application to treat the mousewheel differently from cursor keys:
+mousewheel scrolling in applications such as
+**[less](http://www.greenwoodsoftware.com/less)** without requiring any
+configuration.
+
+The cursor keycodes sent for mousewheel events can optionally have the Alt
+modifier applied, to distinguish them from plain Up/Down key presses.
+For example, in the nano editor, Alt+Up/Down scrolls the window immediately,
+whereas plain Up/Down moves the cursor.
+
+_Alt-modified mousewheel mode_ exchanges plain mousewheel events with 
+Alt-modified mousewheel events; it is controlled by these sequences:
+
+| **sequence**  | **mode**      |
+|:--------------|:--------------|
+| `^[[?7765l`   | unmodified    |
+| `^[[?7765h`   | Alt-modified  |
+
+Alternatively, mousewheel reporting can be switched to _application mousewheel mode_, where the mousewheel sends its own separate keycodes that allow an application to treat the mousewheel differently from cursor keys:
 
 | **event**   | **code**    |
 |:------------|:------------|
@@ -441,6 +471,8 @@ with one extension:
 | `^[[22 Z`    | zoom down to single-cell display (like setting `Charwidth=single`) |
 | `^[[2;2 Z`   | like `^[[22 Z`                                |
 
+Note: There is one space character before the `Z`.
+
 
 ## Overstrike ##
 
@@ -499,7 +531,54 @@ it changes the font that is currently selected (and keeps that setting).
 Like OSC 50 for font style, this sequence can change the emojis style.
 For values, see setting `Emojis` in the manual.
 
-> `^[]7750;_emojis-style_`^G`
+> `^[]7750;`_emojis-style_`^G`
+
+
+## Emoji width mode ##
+
+— EXPERIMENTAL —
+
+By default, mintty displays emojis, particularly emoji sequences, in a 
+grid cell width as defined by the locale function wcswidth. 
+This can yield emoji display in variable width, from 1 cell up to 8 cells, 
+for sequences composed of as many components.
+
+In order to select a preferred design-oriented constant width 
+rendering of emojis, an application can choose to display emojis 
+always in 2-cell width, matching the appearance of emoji graphics, 
+albeit compromising system-defined string width.
+
+| **sequence**  | **emoji width**                          |
+|:--------------|:-----------------------------------------|
+| `^[[?2027l`   | wcwidth/wcswidth                         |
+| `^[[?2027h`   | 2-cell (mode setting of other terminals) |
+| `^[[?7769l`   | wcwidth/wcswidth                         |
+| `^[[?7769h`   | 2-cell (mintty mode setting)             |
+
+The following rules describe the character sequences to be handled as 
+2-cell emojis:
+
+0. The rules below are applied to any character sequence 
+   that begins with a potential emoji base character, 
+   regardless of whether it has a Unicode emoji definition, and 
+   regardless of whether it has a glyph in the current glyph set.
+1. Appending variation selector U+FE0F as a combining character changes any 
+   character to double-width.
+2. Appending a zero-width joiner U+200D or a Fitzpatrick modifier 
+   or a TAG (U+E0020..U+E007F) also forces any character to double-width.
+3. Fitzpatrick modifiers have zero width except at line beginning.
+4. The zero-width joiner U+200D forces the subsequent character to 
+   also be treated like a combining character, thus not add any width.
+
+Note that by rule 0 neither actual glyph availabilty nor the listing 
+of an emoji sequence in Unicode data is required; this is important to 
+keep screen width predictable for applications; otherwise screen 
+positioning would be hardly manageable with respect to changing 
+Unicode versions and emoji graphic resources.
+
+Note that other terminals support a “Unicode width” mode which may deviate 
+from the rules applied by mintty; a common specification is not yet agreed.
+For this reason, there are currently 2 mode setting sequences.
 
 
 ## Background image ##
@@ -555,7 +634,7 @@ This sequence is disabled by default setting `AllowSetSelection=no`.
 The following _OSC_ ("operating system command") sequence can be used to 
 set the window title (alternatively to OSC 2):
 
-> `^[]l;1^G`
+> `^[]l;`_title_`^G`
 
 
 ## Window icon ##
@@ -563,7 +642,7 @@ set the window title (alternatively to OSC 2):
 The following _OSC_ ("operating system command") sequence can be used to 
 set the window icon from the given file and optional icon index:
 
-> `^[]I;icon_file,index^G`
+> `^[]I;` _icon_file_ [ `,` _index_ ] `^G`
 
 
 ## Working directory ##
@@ -645,6 +724,7 @@ via iTerm2 controls:
 | **width=**               | size (*)           | cell/pixel/percentage     |
 | **height=**              | size (*)           | cell/pixel/percentage     |
 | **preserveAspectRatio=** | 1 _(default) or_ 0 | only used if **width** and **height** are given |
+| **doNotMoveCursor**      | 0 _(default) or_ 1 | no-scroll, no-move        |
 | _image_                  |                    | base64-encoded image data |
 
 The width or height size arguments use cell units by default. Optionally, 
@@ -657,6 +737,11 @@ select whether to fit the image in the denoted area or stretch it to fill it.
 If only one of width or height are given, the other dimension is scaled so 
 that the aspect ratio is preserved.
 If none of width or height are given, the image pixel size is used.
+
+Parameter **doNotMoveCursor** prevents scrolling if the image output would 
+extend below the bottom margin, and also keeps the cursor at its beginning 
+position after image output. Its effect is the same as DECSET 7780 mode 
+but can be controlled case-by-case on a per-image base.
 
 Image formats supported comprise PNG, JPEG, GIF, TIFF, BMP, Exif.
 
@@ -677,12 +762,24 @@ below the image (like xterm). The mintty private sequence 7730 chooses
 between the latter two options and is overridden by the xterm 
 control sequence 8452.
 
-| **sequence**  | **exit position**    |
-|:--------------|:---------------------|
-| `^[[?7730h`   | line beginning below |
-| `^[[?7730l`   | below left bottom    |
-| `^[[?8452h`   | next to right bottom |
-| `^[[?8452l`   | below image          |
+Image output near the bottom margin may scroll the terminal contents 
+if the image would otherwise extend below the margin. 
+This may be undesirable, so the new mode 7780 can prevent scrolling 
+(but start at the current cursor position, unlike "Sixel display mode");
+the image will be cropped instead at the bottom margin. It also keeps 
+the cursor at its beginning position after image output. This affects 
+both sixel and iTerm2 image output.
+For iTerm2-style image output, see also image parameter **doNotMoveCursor** 
+to achieve the same effect case-by-case per image.
+
+| **sequence**  | **exit position or scrolling behaviour**   |
+|:--------------|:-------------------------------------------|
+| `^[[?7730h`   | line beginning below                       |
+| `^[[?7730l`   | below left bottom                          |
+| `^[[?8452h`   | next to right bottom                       |
+| `^[[?8452l`   | below image                                |
+| `^[[?7780h`   | do not scroll, keep cursor position        |
+| `^[[?7780l`   | scroll as needed to fit image (default)    |
 
 
 ## Audio support ##
@@ -743,9 +840,9 @@ can be used to control cursor type (shape) and blinking.
 It takes an optional second parameter (proprietary extension) to set the 
 blinking interval in milliseconds.
 
-> `^[[` _arg_ _SP_ `q`
+> `^[[` _arg_ SP `q`
 
-> `^[[` _arg_ `;` _blink_ _SP_ `q`
+> `^[[` _arg_ `;` _blink_ SP `q`
 
 | **arg** | **shape**    | **blink** |
 |:--------|:-------------|:----------|
@@ -758,6 +855,8 @@ blinking interval in milliseconds.
 | **6**   | line         | no        |
 | **7**   | box          | yes       |
 | **8**   | box          | no        |
+
+Note: There is one space character before the `q`.
 
 Furthermore, the following Linux console sequence can be used to set the 
 size of the active underscore cursor.
@@ -782,10 +881,10 @@ The sequence also affects the vertical line cursor.
 
 The following _OSC_ ("operating system command") sequence (xterm 367) 
 can be used to set the mouse pointer shape of the current mouse mode 
-(mintty maintains two different mouse pointer shapes, to distinguish 
+(mintty maintains three different mouse pointer shapes, to distinguish 
 application mouse reporting modes).
 Valid values are Windows predefined cursor names 
-(appstarting, arrow, cross, hand, help, ibeam, icon, no, size, sizeall, sizenesw, sizens, sizenwse, sizewe, uparrow, wait).
+(appstarting, arrow, cross, hand, help, ibeam, icon, no, size, sizeall, sizenesw, sizens, sizenwse, sizewe, uparrow, wait) 
 or cursor file names which are looked up in subdirectory `pointers` of 
 a mintty resource directory; supported file types are .cur, .ico, .ani.
 
@@ -799,7 +898,7 @@ a mintty resource directory; supported file types are .cur, .ico, .ani.
 The following _OSC_ sequences can be used to set or query the foreground and
 background variants of the ANSI colours.
 
-| **sequence**                        | ** effect **                         |
+| **sequence**                        | **effect**                           |
 |:------------------------------------|:-------------------------------------|
 | `^[]7704;`_index_`;`_colour_`^G`    | set fg and bg variants to same value |
 | `^[]7704;`_index_`;`_fg_`;`_bg_`^G` | set fg and bg to separate values     |

@@ -1,5 +1,5 @@
 // winclip.c (part of mintty)
-// Copyright 2008-12 Andy Koppe, 2018 Thomas Wolff
+// Copyright 2008-23 Andy Koppe, 2018 Thomas Wolff
 // Adapted from code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -21,9 +21,9 @@
 
 
 #ifdef check_cygdrive
-// adapt /cygdrive prefix to actual configured one (like / or anything else);
-// this experimental approach is not enabled as it is 
-// only used for WSL and dynamic adaptation is hardly useful
+// Adapt /cygdrive prefix to actual configured one (like / or anything else);
+// this experimental approach is not enabled as it is only used for WSL and
+// dynamic adaptation is hardly useful.
 
 static char * _cygdrive = 0;
 static wchar * _wcygdrive = 0;
@@ -69,7 +69,8 @@ shell_exec_thread(void *data)
   cygwin_internal(CW_SYNC_WINENV);
 #endif
 
-  if ((INT_PTR)ShellExecuteW(wnd, 0, wpath, 0, 0, SW_SHOWNORMAL) <= 32) {
+  SetLastError(ERROR_PATH_NOT_FOUND);  // in case !*wpath
+  if (!*wpath || (INT_PTR)ShellExecuteW(wnd, 0, wpath, 0, 0, SW_SHOWNORMAL) <= 32) {
     uint error = GetLastError();
     if (error != ERROR_CANCELLED) {
       int msglen = 1024;
@@ -119,22 +120,6 @@ ispathprefix(string pref, string path)
     path++;
   int len = strlen(pref);
   if (0 == strncmp(pref, path, len)) {
-    path += len;
-    if (!*path || *path == '/')
-      return true;
-  }
-  return false;
-}
-
-static bool
-ispathprefixw(wstring pref, wstring path)
-{
-  if (*pref == '/')
-    pref++;
-  if (*path == '/')
-    path++;
-  int len = wcslen(pref);
-  if (0 == wcsncmp(pref, path, len)) {
     path += len;
     if (!*path || *path == '/')
       return true;
@@ -330,46 +315,6 @@ wslmntmapped(void)
 }
 
 static char *
-unwslpath(wchar * wpath)
-{
-  char * res = null;
-  if (wslmntmapped()) {
-    char * wslpath = cs__wcstoutf(wpath);
-    if (wsl_conf_mnt && ispathprefix(wsl_conf_mnt, wslpath))
-      res = asform("/cygdrive%s", &wslpath[strlen(wsl_conf_mnt)]);
-    else
-      for (int i = 0; i < wsl_fstab_len; i++) {
-#if defined(debug_wslpath) && debug_wslpath > 2
-        printf("unwslpath <%s> <%s> (%s)\n", wslpath, wsl_fstab[i].mount_point, wsl_fstab[i].dev_fs);
-#endif
-        if (ispathprefix(wsl_fstab[i].mount_point, wslpath)) {
-          if (wsl_fstab[i].dev_fs[1] == ':') {
-            res = asform(
-#if defined(__MSYS__) || defined(__MINGW32)
-#else
-                         "/cygdrive"
-#endif
-                         "/%c%s%s", 
-                         tolower((int)wsl_fstab[i].dev_fs[0]), 
-                         &wsl_fstab[i].dev_fs[2], 
-                         &wslpath[strlen(wsl_fstab[i].mount_point)]);
-            break;
-          }
-          else {  // handle UNC path mount
-            res = asform("%s%s", wsl_fstab[i].dev_fs, wslpath + strlen(wsl_fstab[i].mount_point));
-            for (char * r = res; *r; r++)
-              // cygwin path conversion fails on backslash UNC paths
-              if (*r == '\\')
-                *r = '/';
-          }
-        }
-      }
-    free(wslpath);
-  }
-  return res;
-}
-
-static char *
 wslpath(char * path)
 {
   char * res = null;
@@ -426,6 +371,64 @@ wslpath(char * path)
     }
   }
   // cygwin-internal paths not supported
+  return res;
+}
+
+#ifdef pathname_conversion_here
+
+static bool
+ispathprefixw(wstring pref, wstring path)
+{
+  if (*pref == '/')
+    pref++;
+  if (*path == '/')
+    path++;
+  int len = wcslen(pref);
+  if (0 == wcsncmp(pref, path, len)) {
+    path += len;
+    if (!*path || *path == '/')
+      return true;
+  }
+  return false;
+}
+
+static char *
+unwslpath(wchar * wpath)
+{
+  char * res = null;
+  if (wslmntmapped()) {
+    char * wslpath = cs__wcstoutf(wpath);
+    if (wsl_conf_mnt && ispathprefix(wsl_conf_mnt, wslpath))
+      res = asform("/cygdrive%s", &wslpath[strlen(wsl_conf_mnt)]);
+    else
+      for (int i = 0; i < wsl_fstab_len; i++) {
+#if defined(debug_wslpath) && debug_wslpath > 2
+        printf("unwslpath <%s> <%s> (%s)\n", wslpath, wsl_fstab[i].mount_point, wsl_fstab[i].dev_fs);
+#endif
+        if (ispathprefix(wsl_fstab[i].mount_point, wslpath)) {
+          if (wsl_fstab[i].dev_fs[1] == ':') {
+            res = asform(
+#if defined(__MSYS__) || defined(__MINGW32)
+#else
+                         "/cygdrive"
+#endif
+                         "/%c%s%s", 
+                         tolower((int)wsl_fstab[i].dev_fs[0]), 
+                         &wsl_fstab[i].dev_fs[2], 
+                         &wslpath[strlen(wsl_fstab[i].mount_point)]);
+            break;
+          }
+          else {  // handle UNC path mount
+            res = asform("%s%s", wsl_fstab[i].dev_fs, wslpath + strlen(wsl_fstab[i].mount_point));
+            for (char * r = res; *r; r++)
+              // cygwin path conversion fails on backslash UNC paths
+              if (*r == '\\')
+                *r = '/';
+          }
+        }
+      }
+    free(wslpath);
+  }
   return res;
 }
 
@@ -495,65 +498,95 @@ dewsl(wchar * wpath)
   return wpath;
 }
 
+#endif
+
+#if CYGWIN_VERSION_API_MINOR < 206
+#define wcsncasecmp wcsncmp
+#define wmemcpy(t, s, n)	memcpy(t, s, 2 * n)
+#endif
+
 void
 win_open(wstring wpath, bool adjust_dir)
 // frees wpath
 {
-  // unescape
-  int wl = wcslen(wpath);
-  if ((*wpath == '"' || *wpath == '\'') && wpath[wl - 1] == *wpath) {
-    // don't wpath++ (later delete!)
-    wchar * p0 = (wchar *)wpath;
-    for (int i = 0; i < wl - 2; i++)
-      p0[i] = p0[i + 1];
-    p0[wl - 2] = 0;
+  size_t wl = wcslen(wpath);
+  wchar *wbuf = newn(wchar, wl + 1);
+
+  if (wl > 2 && (*wpath == '"' || *wpath == '\'') && wpath[wl - 1] == *wpath) {
+    // Remove pair of leading and trailing quotes.
+    wl -= 2;
+    wmemcpy(wbuf, wpath + 1, wl);
+  }
+  else if (!wcsncmp(wpath, W("\\\\"), 2)) {
+    // Assume that a path starting with two backslashes is a Windows UNC path
+    // and copy it unmodified.
+    wmemcpy(wbuf, wpath, wl);
   }
   else {
-    wchar * p0 = (wchar *)wpath;
-    wchar * p1 = p0;
-    while (*p0) {
-      if (*p0 == '\\')
-        p0++;
-      if (*p0)
-        *p1++ = *p0++;
+    // Remove backslashes, but only if they precede shell special characters.
+    // Other backslashes are more likely to be Windows path separators.
+    wstring p = wpath;
+    wl = 0;
+    while (*p) {
+      if (*p == '\\' && wcschr(W(" \t\n|&;<>()$`\\\"'*?![]#~=%^"), p[1]))
+        p++;
+      wbuf[wl++] = *p++;
     }
-    *p1 = 0;
+  }
+  wbuf[wl] = 0;
+  //printf("win_open %ls wbuf %ls\n", wpath, wbuf);
+  delete(wpath);
+
+  // check for URL
+  wchar *p = wbuf;
+  while (iswalpha(*p)) p++;
+  if (*p == ':' && p - wbuf > 2) {
+    shell_exec(wbuf); // frees wbuf
+    return;
   }
 
-  wstring p = wpath;
-  while (iswalpha(*p)) p++;
-  if (*wpath == '\\' || *p == ':' || wcsncmp(W("www."), wpath, 4) == 0) {
-    // Looks like it's a Windows path or URI
-    shell_exec(wpath); // frees wpath
-  }
-  else {
+  // guard file opening against foreign network access
+  char * buf = cs__wcstoutf(wbuf);
+  char * gbuf = guardpath(buf, 4);
+  //printf("win_open buf %s grd %s\n", buf, gbuf);
+  free(buf);
+  if (!gbuf)
+    return;
+
+  {
+#ifdef pathname_conversion_here
+#warning now deprecated; handled via guardpath
     // Need to convert POSIX path to Windows first
     if (support_wsl) {
-      // First, we need to replicate some of the handling of relative paths 
-      // as implemented in child_conv_path,
-      // because the dewsl functionality would actually go in between 
-      // the workflow of child_conv_path.
-      // We cannot determine the WSL foreground process and its 
-      // current directory, so we can only consider the working directory 
-      // explicitly communicated via the OSC 7 escape sequence here.
-      if (*wpath != '/' && wcsncmp(wpath, W("~/"), 2) != 0) {
+      // First, we need to replicate some of the handling of relative paths
+      // as implemented in child_conv_path, because the dewsl functionality
+      // would actually go in between the workflow of child_conv_path.
+      // We cannot determine the WSL foreground process and its current
+      // directory, so we can only consider the working directory explicitly
+      // communicated via the OSC 7 escape sequence here.
+      if (*wbuf != '/' && wcsncmp(wbuf, W("~/"), 2)) {
         if (child_dir && *child_dir) {
           wchar * cd = cs__mbstowcs(child_dir);
-          cd = renewn(cd, wcslen(cd) + wcslen(wpath) + 2);
+          cd = renewn(cd, wcslen(cd) + wl + 2);
           cd[wcslen(cd)] = '/';
-          wcscpy(&cd[wcslen(cd) + 1], wpath);
-          delete(wpath);
-          wpath = cd;
+          wcscpy(&cd[wcslen(cd) + 1], wbuf);
+          delete(wbuf);
+          wbuf = cd;
         }
       }
 
-      wpath = dewsl((wchar *)wpath);
+      wbuf = dewsl(wbuf);
     }
-    wstring conv_wpath = child_conv_path(wpath, adjust_dir);
-#ifdef debug_wslpath
-    printf("win_open <%ls> <%ls>\n", wpath, conv_wpath);
+    wstring conv_wpath = child_conv_path(wbuf, adjust_dir);
+#else
+    (void)adjust_dir;
+    wchar *conv_wpath = path_posix_to_win_w(gbuf);
+    free(gbuf);
 #endif
-    delete(wpath);
+#ifdef debug_wslpath
+    printf("win_open <%ls> <%ls>\n", wbuf, conv_wpath);
+#endif
+    delete(wbuf);
     if (conv_wpath)
       shell_exec(conv_wpath); // frees conv_wpath
     else
@@ -607,6 +640,22 @@ apply_attr_colour_rtf(cattr ca, attr_colour_mode mode, int * pfgi, int * pbgi)
     *pbgi = rgb_to_x256(red(ca.truebg), green(ca.truebg), blue(ca.truebg));
 
   return ca.attr;
+}
+
+void
+win_copy_text(const char *s)
+{
+  unsigned int size;
+  wchar *text = cs__mbstowcs(s);
+
+  if (text == NULL) {
+    return;
+  }
+  size = wcslen(text);
+  if (size > 0) {
+    win_copy(text, 0, size + 1);
+  }
+  free(text);
 }
 
 void
@@ -1296,6 +1345,36 @@ do_win_paste(bool do_path)
   }
 
   CloseClipboard();
+}
+
+char *
+get_clipboard(void)
+{
+  if (!OpenClipboard(null))
+    return 0;
+
+  HGLOBAL data;
+  char * res;
+  if ((data = GetClipboardData(CF_UNICODETEXT))) {
+    wchar *s = GlobalLock(data);
+    //printf("CF_UNICODETEXT <%ls>\n", s);
+    res = cs__wcstombs(s);
+    GlobalUnlock(data);
+  }
+  else if ((data = GetClipboardData(CF_TEXT))) {
+    char *cs = GlobalLock(data);
+    //printf("CF_TEXT <%s>\n", cs);
+    uint l = MultiByteToWideChar(CP_ACP, 0, cs, -1, 0, 0) - 1;
+    wchar s[l];
+    MultiByteToWideChar(CP_ACP, 0, cs, -1, s, l);
+    res = cs__wcstombs(s);
+    GlobalUnlock(data);
+  }
+  else
+    res = 0;
+
+  CloseClipboard();
+  return res;
 }
 
 void

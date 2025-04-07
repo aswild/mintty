@@ -187,7 +187,7 @@ installed, mintty can be called from cygwin to run a WSL terminal session:
 * `mintty --WSL` (for the Default distribution as set with `wslconfig /s` or `wsl -s`)
 
 Note, the `wslbridge2` gateways need to be installed in `/bin` for this purpose 
-(see below for details).
+(see below for details). (Fallback to legacy wslbridge on older Windows is supported.)
 
 A WSL terminal session can be configured for the mintty session launcher 
 in the config file, like:
@@ -334,6 +334,32 @@ As a workaround on older versions of Cygwin or Windows, you can use
 [winpty](https://github.com/rprichard/winpty) as a wrapper to invoke 
 the Windows program.
 
+### Text attribute handling from WSL and other Windows programs ###
+
+When running native Windows programs, like `wsl` access program to WSL, 
+or `cmd` and `powershell`, the `conhost` console layer of Windows interferes 
+with escape sequence controls; even for WSL, it does not pass them through 
+transparently but imposes its own idea of terminal capabilities, mangling 
+basic controls like bold and reverse attributes, so bold text is enforced 
+to appear white. This broken behaviour was fixed for Windows 11 but not 
+back-ported to Windows 10.
+
+You can however fix the issue by updating your conhost layer to its update 
+as distributed with the Windows Terminal project.
+From the [release area](https://github.com/microsoft/terminal/releases), 
+among the Assets, download the WindowsTerminalPreview zip file of your 
+architecture, extract its `OpenConsole.exe`, rename it to `conhost.exe` 
+and replace the conhost program in your Windows System32 folder with it.
+Make a backup copy of conhost.exe first, just in case.
+(Do **not** copy conhost.exe from Windows 11 into Windows 10.)
+
+### Line end copy/paste from WSL and other console-based programs ###
+
+Under the same conditions that cause broken text attribute handling, 
+copying text that wrapped around the terminal width during output 
+would get explicit lineends (CRLF) embedded.
+Also the workaround is the same as above.
+
 ### Signal processing with alien programs ###
 
 The same workaround handles interrupt signals, particularly Control+C, 
@@ -357,6 +383,12 @@ environment variables for this purpose is not reliable (see
 [issue #776](https://github.com/mintty/mintty/issues/776) for a discussion), 
 mintty sets environment variables TERM_PROGRAM and TERM_PROGRAM_VERSION 
 as various other terminals do.
+
+### WSL terminal type ###
+
+In WSL mode, since 3.7.8, mintty does not propagate its TERM setting 
+to WSL anymore, in order to allow WSL local preferences 
+(often xterm-256color). Instead it sets environment variable HOSTTERM.
 
 
 ## Terminal line settings ##
@@ -441,6 +473,24 @@ buggy as of bash 4.4.12 / readline 7.0.3.
 set enable-bracketed-paste on
 # do not map "\e[": skip-csi-sequence
 ```
+
+
+## Paste protection ##
+
+Paste control can be tuned with these options, and used dynamically 
+via Bracketed paste mode (DECSET 2004, see above how to enable its 
+_usage_ for readline).
+
+### Ignore bracketed paste mode ###
+
+To disable the effect of bracketed paste mode, it can be ignored by setting
+`SuppressDEC=2004`.
+
+### Enhance paste control ###
+
+To enhance protection against malicious paste contents, setting 
+`ConfirmMultiLinePasting=yes` supports interactive control, while
+option `FilterPasteControls` can drop control characters from paste contents.
 
 
 ## Unexpected behaviour with certain applications (e.g. vim) ##
@@ -631,13 +681,22 @@ Mintty uses the Windows keyboard layout system with its “dead key” mechanism
 for entering accented characters, enhanced by self-composed characters 
 for dead-key combinations that Windows does not support (e.g. ẃ).
 
-Mintty also provides a Compose key, configurable to Control, Shift or Alt,
-using X11 compose data. For example, if the compose key is configured 
-to be Control, pressing and release the Control key, followed by letters 
+Mintty also provides a Compose key, using X11 compose data.
+(See also wiki page [Versions](https://github.com/mintty/mintty/wiki/Versions).)
+It is configurable to Control, Shift, Alt, Super or Hyper, or CapsLock, 
+or to any key combination with user-definable function `compose` in 
+setting `KeyFunctions`.
+For example, if the Compose key is configured to be Control, 
+pressing and releasing the Control key, followed by letters 
 `a` and `e`, will enter `æ`; Control-`-`-`,` will enter `¬`, 
 Control-`C`-`o` will enter `©`, Control-`<`-`<` will enter `«`, 
 Control-`c`-`,` will enter `ç`, Control-`s`-`s` will enter `ß`, 
 Control-`!`-`!` will enter `¡`, Control-`!`-`?` will enter `‽`, etc.
+
+The user-definable function `compose` can be used to assign the Compose 
+function to other keys, e.g.
+* `KeyFunctions=CapsLock:compose`
+* `KeyFunctions=NumLock:compose`
 
 For a separate compose key solution, the most seamless and stable 
 **Compose Key for Windows** is 
@@ -703,32 +762,25 @@ Different notations are accepted for colour specifications:
 Colour schemes (that redefine ANSI colours and possibly foreground/background 
 colours) can be loaded with the option ```-C``` (capital C) or ```--loadconfig``` 
 which loads a configuration file read-only, i.e. configuration changes 
-are not saved to this file, or with the new setting _ThemeFile_.
+are not saved to this file, or with setting `ThemeFile`.
 
 In the Options menu, section _Looks_, the _Theme_ popup offers theme files 
 as stored in a resource directory for selection.
 This dialog field (or the “Color Scheme Designer” button for drag-and-drop) 
 can be used in different ways:
-* (*) Popup the selection to choose a theme configured in your resource directory
+* Popup the selection to choose a theme configured in your resource directory
 * Insert a file name (e.g. by pasting or drag-and-drop from Windows Explorer)
-* (*) Drag-and-drop a theme file from the Internet (may be embedded in HTML page)
-* (*) Drag-and-drop a colour scheme directly from the Color Scheme Designer (see below)
+* Download a theme file from the Internet (may be embedded in HTML page)
+* Download a generated theme from the Color Scheme Designer (see below)
+* Drag-and-drop a theme directly from a link as supported on some sites
 
-(* Option 1) 
 The default theme (since 3.6.0) is 
 [helmholtz](https://raw.githubusercontent.com/mintty/mintty/master/themes/helmholtz) 
 which provides a colour scheme of well-balanced appearance and luminance;
 see the comments in the theme file about its crafting principles.
 
-(* Option 3) 
-A number of colour schemes have been published for mintty, also 
-mintty supports direct drag-and-drop import of theme files in 
-iTerm2 or Windows terminal formats.
-Look for the following repositories:
-* https://iterm2colorschemes.com/
-* https://github.com/oumu/mintty-color-schemes
-* https://github.com/goreliu/wsl-terminal/tree/master/src/etc/themes
-
+Downloaded theme files may either be installed in a resource directory 
+or copied into the dialog field and saved when you decide to keep them:
 After drag-and-drop of a colour scheme, it is automatically applied 
 to the current terminal session for quick and easy testing;
 to keep the scheme in your popup selection, assign a name to it by typing it 
@@ -737,20 +789,27 @@ theme file, the name will be filled with its basename as a suggestion.
 As long as a colour scheme is loaded but not yet stored, and a name is 
 available in the Theme field, the “Store” button will be enabled.
 
-(* Option 4) The 
-[4bit Terminal Color Scheme Designer](http://ciembor.github.io/4bit/#) 
-lets you download a tuned colour scheme (top-right button “Get Scheme”).
-Click on the button “Color Scheme Designer” below the Theme field 
-to open the designer page and start your design. You can either download 
-the scheme file (“Get Scheme” – “mintty”) or drag-and-drop the download link 
-directly to the mintty Options menu, to either the Theme field or the 
-Color Scheme Designer button. If you like the scheme, you can enter a 
-theme name in the Theme field and then click the “Store” button to 
-store the colour scheme.
+A number of colour schemes have been published for mintty, also 
+mintty supports direct drag-and-drop import of theme files in 
+iTerm2 format, Windows terminal format, or JSON-embedded mintty format.
+Look for the following repositories:
+* https://iterm2colorschemes.com/
+* https://github.com/oumu/mintty-color-schemes
+* https://github.com/goreliu/wsl-terminal/tree/master/src/etc/themes
+* [4bit Terminal Color Scheme Designer](http://ciembor.github.io/4bit/#)
+
+The [4bit Terminal Color Scheme Designer](http://ciembor.github.io/4bit/#) 
+lets you nicely craft and tune a colour scheme in various dimensions 
+(like hue, saturation, lightness) that affect colours consistently.
+Select “Download Scheme” – “mintty” for the mintty format.
 
 Mintty also provides the command-line script ```mintheme``` which can 
 display the themes available in the mintty configuration directories or 
 activate one of them in the current mintty window.
+
+Note that some theme files also define foreground/background or cursor colours, 
+which overrides manually changed settings of those. If you do not want that, 
+simply make a copy of the theme file with those settings removed.
 
 ### Background image ###
 
@@ -884,6 +943,16 @@ specifications preceding over the more general script specifications.
 FontChoice=Greek:3;|Greek Extended:4
 ```
 
+For Box Drawing characters (U+2500..U+257F), most fonts do not provide 
+proper glyphs for seamless box drawing. The following font configuration 
+would fix that. However, option BoxDrawing (default on) overrides this 
+and lets mintty draw box drawing characters itself.
+```
+FontChoice=|Box Drawing:3
+Font3=DejaVu Sans Mono
+BoxDrawing=no
+```
+
 ### Dynamic fonts ###
 
 Mintty supports on-the-fly temporary font installation, especially for use 
@@ -908,10 +977,13 @@ Character width can be modified by a number of configuration or dynamic settings
 * `Charset`: may affect CJK ambiguous-width handling if used with `Locale`
 * `Font`: may affect CJK ambiguous-width handling if locale support fails
 * `PrintableControls`: makes C1 or C0 control characters visible (width 1)
+* [DECSET 2521](https://github.com/mintty/mintty/wiki/CtrlSeqs#lamalef-joining): renders Arabic LAM/ALEF ligatures in single-cell width
+* [DECSET 2027](https://github.com/mintty/mintty/wiki/CtrlSeqs#emoji-width-mode): 2-cell “emoji width” mode
 * [OSC 701](https://github.com/mintty/mintty/wiki/CtrlSeqs#locale): changes locale/charset, may affect ambiguous width handling
 * OSC 50: changes font, may affect ambiguous width handling (with `Locale`)
 * [OSC 77119](https://github.com/mintty/mintty/wiki/CtrlSeqs#wide-characters): turns some character ranges to wide characters
 * [PEC](https://github.com/mintty/mintty/wiki/CtrlSeqs#explicit-character-width): explicit character width attribute
+* [Emoji width mode](https://github.com/mintty/mintty/wiki/CtrlSeqs#emoji-width-mode): forces emojis to double-cell width
 
 See the [mintty manual](http://mintty.github.io/mintty.1.html) and
 [Control Sequences](https://github.com/mintty/mintty/wiki/CtrlSeqs)
@@ -1137,6 +1209,9 @@ by the cumulated width of the emoji sequence characters. The option
 `EmojiPlacement` can adjust the location of emoji graphics within that area.
 You can use the escape sequence PEC to tune emoji width.
 
+Since mintty 3.7.5, there is also “emoji width” mode (DECSET 2027) to 
+enforce 2-cell display width of emojis.
+
 ### Installing emoji resources ###
 
 Mintty does not bundle actual emoji graphics with its package.
@@ -1151,8 +1226,8 @@ Emoji data can be found at the following sources:
   [Full Emoji Modifier Sequences](http://www.unicode.org/emoji/charts/full-emoji-modifiers.html) 
   (with all emoji data embedded)
   and extract emoji data (call it without parameters for instructions)
-  * Deploy the desired subdirectories (e.g. `apple`) and subdirectory `common`
-  * Includes apple, emojione, facebook, google, twitter, samsung, windows emojis (and some limited low-resolution sets that we shall ignore)
+  * Deploy the subdirectories `common` and `google`
+  * Used to include apple, emojione, facebook, google, twitter, samsung, windows emojis, now only provides google style
 * [OpenMoji](https://openmoji.org/)
   * Under “Get OpenMojis”, download the “[PNG Color 72×72](https://github.com/hfg-gmuend/openmoji/releases/latest/download/openmoji-72x72-color.zip)” archive (or the very large resolution if preferred)
   * Unpack the archive into `openmoji`
@@ -1162,6 +1237,9 @@ Emoji data can be found at the following sources:
 * [JoyPixels](https://www.joypixels.com/) (formerly EmojiOne)
   * Download JoyPixels Free (or Premium)
   * Deploy the preferred subdirectory (e.g. png/unicode/128) as `joypixels`
+* [Emoji data and images](https://github.com/iamcal/emoji-data) has a mix 
+  of recent and outdated emoji sets of styles apple, facebook, google, twitter.
+  Check out yourself.
 * Zoom (with an installed Zoom meeting client)
   * Deploy $APPDATA/Zoom/data/Emojis/*.png into `zoom`
 
@@ -1201,7 +1279,7 @@ all-users deployment of the emojis listed at Unicode.org and the flags emojis:
 You may also use the scripts for deployment in your preferred config directory.
 
 To deploy in your personal local resource folder:
-* `mkdir -p ~/.config//mintty/emojis; cd ~/.config/mintty/emojis`
+* `mkdir -p ~/.config/mintty/emojis; cd ~/.config/mintty/emojis`
 * `/usr/share/mintty/emojis/getemojis -d`
 * `/usr/share/mintty/emojis/getflags -de`
 
@@ -1245,9 +1323,19 @@ without suffix, which is not UTF-8 in most cases and may be unexpected.
 Take care to make sure that the child process has the same idea about the 
 character encoding as the terminal in this scenario.
 
+### Unicode support ###
+
+For character width and character name information, mintty supports 
+Unicode data also internally. Unicode with information is used if 
+option `Charwidth` is set to anthing other than the default `locale`.
+(See also wiki page [Versions](https://github.com/mintty/mintty/wiki/Versions).)
+
 ### GB18030 support ###
 
-Mintty has special support for the GB18030 character encoding which is not 
+Note: This special support is only applied for cygwin versions < 3.5 from 
+which cygwin supports GB18030 natively.
+
+Mintty has special support for the GB18030 character encoding which was not 
 supported by cygwin and therefore not available for interactive configuration 
 of the `Charset` setting in the Options dialog.
 Setting `Charset=GB18030` in a config file or on the command line invokes 
@@ -1334,6 +1422,14 @@ as the `AppID` option.
 Tabs can also be switched from a tabbar, activated with setting `Tabbar` to 
 a recommended value of 2 or more (use 4 or 9 for maximal tab synchronization).
 
+### Tab ordering ###
+
+Tabs can be reordered with user-definable functions tab-left, tab-right.
+For example to use keys Alt+Win+Left/Right:
+```
+KeyFunctions=AW+Left:tab-left;AW+Right:tab-right
+```
+
 
 ## Multi-monitor support ##
 
@@ -1387,7 +1483,7 @@ It is suggested to adjust the window size to the Tektronix 4010 resolution and a
 
 The script `tek` in the mintty 
 [utils repository](https://github.com/mintty/utils) supports switching 
-to Tek mode and optionally output of Tek or plot files.
+to Tek mode and optional output of Tek plot files.
 It also sets the environment variables **TERM** and **GNUTERM** properly.
 When leaving the sub-shell, it restores DEC/ANSI terminal mode.
 

@@ -1,5 +1,5 @@
 // termout.c (part of mintty)
-// Copyright 2008-22 Andy Koppe, 2017-22 Thomas Wolff
+// Copyright 2008-23 Andy Koppe, 2017-2025 Thomas Wolff
 // Adapted from code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -21,7 +21,8 @@
 #include <sys/time.h>
 
 #define TERM_CMD_BUF_INC_STEP 128
-#define TERM_CMD_BUF_MAX_SIZE (1024 * 1024)
+//#define TERM_CMD_BUF_MAX_SIZE (1024 * 1024)
+#define TERM_CMD_BUF_MAX_SIZE max(2222, (uint)cfg.max_image_size)
 
 #define SUB_PARS (1 << (sizeof(*term.csi_argv) * 8 - 1))
 
@@ -110,8 +111,12 @@ move(int x, int y, int marg_clip)
 
   if (x < 0)
     x = 0;
-  if (x >= term.cols)
-    x = term.cols - 1;
+  if (x >= term.cols) {
+    if (term.vt52_mode)  // && if implementing VT52 emulation of VT100 (#1299)
+      x = curs->x;
+    else
+      x = term.cols - 1;
+  }
 
   if (term.st_active) {
     if (curs->y < term.rows)
@@ -122,8 +127,12 @@ move(int x, int y, int marg_clip)
   else {
     if (y < 0)
       y = 0;
-    if (y >= term.rows)
-      y = term.rows - 1;
+    if (y >= term.rows) {
+      if (term.vt52_mode)
+        y = curs->y;  // #1299
+      else
+        y = term.rows - 1;
+    }
   }
 
   curs->x = x;
@@ -242,6 +251,9 @@ insert_char(int n)
 static int
 charwidth(xchar chr)
 {
+  // EMOJI MODIFIER FITZPATRICKs
+  if (term.emoji_width && chr >= 0x1F3FB && chr <= 0x1F3FF)
+    return 0;
 #if HAS_LOCALES
   if (cfg.charwidth % 10)
     return xcwidth(chr);
@@ -289,7 +301,7 @@ attr_rect(cattrflags add, cattrflags sub, cattrflags xor, short y0, short x0, sh
     termline * l = term.lines[y];
     int xl = x0;
     int xr = x1;
-    if (!term.attr_rect) {
+    if (term.attr_rect < 2) {
       if (y != y0)
         xl = term.marg_left;
       if (y != y1)
@@ -646,16 +658,37 @@ sum_rect(short y0, short x0, short y1, short x1)
         cattrflags attr = line->chars[x].attr.attr;
         if (attr & ATTR_UNDER)
           sum += 0x10;
-        else if (attr & ATTR_REVERSE)
+        if (attr & ATTR_REVERSE)
           sum += 0x20;
-        else if (attr & ATTR_BLINK)
+        if (attr & (ATTR_BLINK | ATTR_BLINK2))
           sum += 0x40;
-        else if (attr & ATTR_BOLD)
+        if (attr & ATTR_BOLD)
           sum += 0x80;
+        if (attr & ATTR_INVISIBLE) {
+          sum += 0x08;
+#ifdef xterm_before_390
+          // fixed in xterm 390: invisible char value was always 0x20
+          sum -= line->chars[x].chr;
+          sum += ' ';
+#endif
+        }
+        if (attr & ATTR_PROTECTED)
+          sum += 0x04;
+#ifdef support_vt525_color_checksum
+        // it's a bit more complex than this, supports only 16 colours, 
+        // and xterm/VT525 checksum handling is incompatible with 
+        // xterm/VT420 checksum calculation, so we skip this
+        int fg = (attr & ATTR_FGMASK) >> ATTR_FGSHIFT;
+        if (fg < 16)
+          sum += fg << 4;
+        int bg = (attr & ATTR_BGMASK) >> ATTR_BGSHIFT;
+        if (bg < 16)
+          sum += bg;
+#endif
         int xc = x;
         while (line->chars[xc].cc_next) {
           xc += line->chars[xc].cc_next;
-          sum += line->chars[xc].chr & 0xFF;
+          sum += line->chars[xc].chr & 0xFFFF;
         }
       }
     }
@@ -845,6 +878,63 @@ write_primary_da(void)
   child_write(primary_da, strlen(primary_da));
 }
 
+
+static inline xchar
+xtermchar(termchar * tc)
+{
+  xchar ch = tc->chr;
+  if (is_high_surrogate(ch) && tc->cc_next) {
+    termchar * cc = tc + tc->cc_next;
+    if (is_low_surrogate(cc->chr)) {
+      ch = combine_surrogates(tc->chr, cc->chr);
+    }
+  }
+  return ch;
+}
+
+/*
+   Check whether the base character before the cursor could be a base 
+   character of an emoji sequence, so a subsequent ZWJ (U+200D) should 
+   enforce double-width on the cell. To save some performance here, 
+   we do not check the exact emoji base property but the inclusion in 
+   a character range that could (perhaps in future Unicode versions) 
+   contain an emoji sequence base character.
+   The important issue here is to exclude script characters / letters 
+   from getting widened (as U+200D is for example also used as a 
+   formatting modifier for Arabic script).
+ */
+static bool
+could_be_emoji_base(termchar * tc)
+{
+  xchar c = xtermchar(tc);
+  return c >= 0x2300 && (c < 0x2400
+     || (c >= 0x25A0 && c < 0x27C0)
+     || (c >= 0x2B00 && c < 0x2C00)
+     || (c >= 0x1F100 && c < 0x1F700)
+     || (c >= 0x1F900 && c < 0x20000)
+         );
+}
+
+/*
+   Determine characters for Arabic Lam/Alef single-cell joining
+   Unicode has presentation forms (isolated and final) only for 
+	U+644 LAM
+   combined with either of
+	U+627 ALEF
+	U+622 ALEF WITH MADDA ABOVE
+	U+623 ALEF WITH HAMZA ABOVE
+	U+625 ALEF WITH HAMZA BELOW
+	U+649 ALEF MAKSURA
+   (where the ligature with ALEF MAKSURA, however, is wider than one cell),
+   but not for any other LAM WITH ... (SMALL V, DOT ABOVE, etc) or
+   any other ALEF (WASLA, WITH WAVY HAMZA, etc);
+   so, lacking more information about Arabic typography, the 
+   assumption is that only the combinations of plain LAM with 
+   ALEF or ALEF WITH MADDA or WITH HAMZA ABOVE or BELOW need to be supported
+ */
+bool isLAM(xchar c) { return c == 0x644; }
+bool isALEF(xchar c) { return c >= 0x622 && c <= 0x627 && c != 0x624 && c != 0x626; }
+
 static wchar last_high = 0;
 static wchar last_char = 0;
 static int last_width = 0;
@@ -905,6 +995,16 @@ write_char(wchar c, int width)
     //TODO: if changed, propagate mode onto paragraph
     if (cfg.ligatures_support)
       term_invalidate(0, curs->y, curs->x, curs->y);
+  }
+
+  // check for Arabic Lam/Alef single-cell joining
+  if (term.join_lam_alef &&
+      curs->x && isALEF(c) && isLAM(line->chars[curs->x - 1].chr)
+     )
+  {
+    // in LAM/ALEF single-cell joining mode, handle ALEF after LAM like a 
+    // combining character, in order to trigger their single-cell rendering
+    width = 0;
   }
 
   if (curs->wrapnext && term.autowrap && width > 0) {
@@ -971,6 +1071,24 @@ write_char(wchar c, int width)
     }
   }
 
+  // check whether to continue an emoji joined sequence
+  if (term.emoji_width && curs->x > 0) {
+    // find previous character position
+    int x = curs->x - !curs->wrapnext;
+    if (line->chars[x].chr == UCSWIDE)
+      x--;
+    //printf("ini %d:%d prev :%d\n", curs->y, curs->x, x);
+    // if it's a pending emoji joined sequence, enforce handling of 
+    // current character like a combining character
+    if (line->chars[x].attr.attr & TATTR_EMOJI)
+      //printf("@:%d (%04X) %04X prev joiner\n", x, line->chars[x].chr, c),
+      width = 0;
+  }
+
+  // in insert mode, shift rest of line before insertion;
+  // do this after width trimming of ZWJ-joined characters,
+  // the case of subsequent widening of single-width characters 
+  // needs to be tuned later
   if (term.insert && width > 0)
     insert_char(width);
 
@@ -1043,11 +1161,96 @@ write_char(wchar c, int width)
        /*
         * If the previous character is UCSWIDE, back up another one.
         */
+        bool is_wide = false;
         if (line->chars[x].chr == UCSWIDE) {
           assert(x > 0);
           x--;
+          is_wide = true;
         }
-       /* Try to precompose with the cell's base codepoint */
+        //printf("cur %d:%d prev :%d\n", curs->y, curs->x, x);
+
+        if (term.emoji_width) {
+         /* Mark pending emoji joined sequence;
+            check for a previous Fitzpatrick high surrogate 
+            before we add its low surrogate (add_cc below)
+         */
+          bool emoji_joiner = c == 0x200D && could_be_emoji_base(&line->chars[x]);
+          if (emoji_joiner)
+            //printf("%d:%d (%04X) %04X mark joiner\n", curs->y, curs->x, line->chars[x].chr, c),
+            line->chars[x].attr.attr |= TATTR_EMOJI;
+          else
+            line->chars[x].attr.attr &= ~TATTR_EMOJI;
+
+          wchar last_comb(termline *line, int col) {
+            while (line->chars[col].cc_next)
+              col += line->chars[col].cc_next;
+            return line->chars[col].chr;
+          }
+          bool is_fitzpatrick = false;
+
+         /* Tune Fitzpatrick colour on non-emojis */
+          if (// U+1F3FB..U+1F3FF EMOJI MODIFIER FITZPATRICKs
+              // UTF-16: D83C DFFB .. D83C DFFF
+              c >= 0xDFFB && c <= 0xDFFF && last_comb(line, x) == 0xD83C)
+          {
+            is_fitzpatrick = true;
+            static colour skin_tone[5] = {
+              RGB(0xFB, 0xD8, 0xB7),
+              RGB(0xE0, 0xBE, 0x95),
+              RGB(0xBC, 0x92, 0x6A),
+              RGB(0x9B, 0x72, 0x44),
+              RGB(0x6E, 0x51, 0x3C)
+            };
+            line->chars[x].attr.attr &= ~ATTR_FGMASK;
+            line->chars[x].attr.attr |= TRUE_COLOUR << ATTR_FGSHIFT;
+            line->chars[x].attr.truefg = skin_tone[c - 0xDFFB];
+          }
+
+         /* Enforce wide with certain modifiers */
+          if (!is_wide &&
+              // enforce emoji sequence on:
+              // U+FE0F VARIATION SELECTOR-16
+              // U+200D ZERO WIDTH JOINER
+              (c == 0xFE0F
+            || emoji_joiner
+              // U+1F3FB..U+1F3FF EMOJI MODIFIER FITZPATRICKs
+              // UTF-16: D83C DFFB .. D83C DFFF
+            || is_fitzpatrick
+              // U+E0020..U+E007F TAGs
+              // UTF-16: D83C DFFB .. D83C DFFF
+            || (c >= 0xDC20 && c <= 0xDC7F && last_comb(line, x) == 0xDB40)
+              )
+             )
+          {
+            // enforce double-width rendering of single-width contents
+            line->chars[x].attr.attr |= TATTR_EXPAND;
+
+            if (curs->x == term.marg_right || curs->x == term.cols - 1
+             || ((line->lattr & LATTR_MODE) != LATTR_NORM && curs->x >= (term.cols - 1) / 2)
+               )
+            {
+              // skip for now; shall we wrap subsequently in this case?
+              // ... and move over the previous contents to the next line...
+            }
+            else {
+              //printf("%d:%d (:%d %04X) %04X make wide\n", curs->y, curs->x, x, line->chars[x].chr, c),
+              // if we widen the previous position:
+              // in insert mode, shift rest of line by 1 more cell
+              if (term.insert)
+                insert_char(1);
+
+              // seen a single-width char before current position,
+              // so cursor is at the right half of the newly wide position,
+              // so unlike above, put UCSWIDE here, then forward position
+              put_char(UCSWIDE);
+              curs->x++;
+            }
+          }
+        }
+
+       /* Try to precompose with the previous cell's base codepoint;
+          otherwise, add the combining character to the previous cell
+        */
         wchar pc;
         if (termattrs_equal_fg(&line->chars[x].attr, &curs->attr))
           pc = win_combine_chars(line->chars[x].chr, c, curs->attr.attr);
@@ -1074,7 +1277,7 @@ write_char(wchar c, int width)
   curs->x++;
   if ((line->lattr & LATTR_MODE) != LATTR_NORM) {
     if (curs->x >= term.cols / 2) {
-      curs->x --;
+      curs->x--;
       if (term.autowrap)
         curs->wrapnext = true;
     }
@@ -1104,21 +1307,26 @@ static bool scriptfonts_init = false;
 static bool use_blockfonts = false;
 
 static void
-mapfont(struct rangefont * ranges, uint len, char * script, uchar f)
+mapfont(struct rangefont * ranges, uint len, char * script, uchar f, int shift)
 {
   for (uint i = 0; i < len; i++) {
-    if (0 == strcmp(ranges[i].scriptname, script))
+    if (0 == strcmp(ranges[i].scriptname, script)) {
       ranges[i].font = f;
+      // register glyph shift / centering as configured in setting FontChoice
+      // to be applied as character attribute
+      //ranges[i].shift = shift;
+      ranges[i].font |= shift << 4;
+    }
   }
   if (0 == strcmp(script, "CJK")) {
-    mapfont(ranges, len, "Han", f);
-    mapfont(ranges, len, "Hangul", f);
-    mapfont(ranges, len, "Katakana", f);
-    mapfont(ranges, len, "Hiragana", f);
-    mapfont(ranges, len, "Bopomofo", f);
-    mapfont(ranges, len, "Kanbun", f);
-    mapfont(ranges, len, "Fullwidth", f);
-    mapfont(ranges, len, "Halfwidth", f);
+    mapfont(ranges, len, "Han", f, shift);
+    mapfont(ranges, len, "Hangul", f, shift);
+    mapfont(ranges, len, "Katakana", f, shift);
+    mapfont(ranges, len, "Hiragana", f, shift);
+    mapfont(ranges, len, "Bopomofo", f, shift);
+    mapfont(ranges, len, "Kanbun", f, shift);
+    mapfont(ranges, len, "Fullwidth", f, shift);
+    mapfont(ranges, len, "Halfwidth", f, shift);
   }
 }
 
@@ -1139,10 +1347,22 @@ cfg_apply(char * conf, char * item)
       *sepp = '\0';
 
     if (!item || !strcmp(cmdp, item)) {
+      // determine glyph shift / centering as configured by setting FontChoice
+      uint shift = 0;
+      while (*cmdp == '>') {
+        cmdp ++;
+#ifdef configured_glyph_shift
+        if (shift < GLYPHSHIFT_MAX)
+          shift ++;
+#else
+        shift = 1;
+#endif
+      }
+      // setup font for block range (with '|') or script ranges
       if (*cmdp == '|')
-        mapfont(blockfonts, lengthof(blockfonts), cmdp + 1, atoi(paramp));
+        mapfont(blockfonts, lengthof(blockfonts), cmdp + 1, atoi(paramp), shift);
       else
-        mapfont(scriptfonts, lengthof(scriptfonts), cmdp, atoi(paramp));
+        mapfont(scriptfonts, lengthof(scriptfonts), cmdp, atoi(paramp), shift);
     }
 
     if (sepp) {
@@ -1219,13 +1439,40 @@ write_ucschar(wchar hwc, wchar wc, int width)
 {
   cattrflags attr = term.curs.attr.attr;
   ucschar c = hwc ? combine_surrogates(hwc, wc) : wc;
+
+  // determine alternative font
   uchar cf = scriptfont(c);
+  // handle configured glyph shift
+  uint glyph_shift = cf >> 4;  // extract glyph shift / glyph centering flag
+  cf &= 0xF;                   // mask glyph shift / glyph centering flag
 #ifdef debug_scriptfonts
   if (c && (cf || c > 0xFF))
     printf("write_ucschar %04X scriptfont %d\n", c, cf);
 #endif
+  // set attribute for alternative font
   if (cf && cf <= 10 && !(attr & FONTFAM_MASK))
     term.curs.attr.attr = attr | ((cattrflags)cf << ATTR_FONTFAM_SHIFT);
+#ifdef configured_glyph_shift
+  // set attribute to indicate glyph shift
+  glyph_shift &= GLYPHSHIFT_MAX;
+  term.curs.attr.attr |= ((cattrflags)glyph_shift << ATTR_GLYPHSHIFT_SHIFT);
+#else
+  // set attribute to indicate glyph centering
+  if (glyph_shift)
+    term.curs.attr.attr |= ATTR_GLYPHSHIFT;
+#endif
+
+  // Auto-expanded glyphs
+  if (width == 2
+      // && wcschr(W("〈〉《》「」『』【】〔〕〖〗〘〙〚〛"), wc)
+      && wc >= 0x3008 && wc <= 0x301B
+      && (wc | 1) != 0x3013  // exclude 〒〓 from the range
+      && win_char_width(wc, term.curs.attr.attr) < 2
+      // ensure symmetric handling of matching brackets
+      && win_char_width(wc ^ 1, term.curs.attr.attr) < 2)
+  {
+    term.curs.attr.attr |= TATTR_EXPAND;
+  }
 
   if (hwc) {
     if (width == 1
@@ -1464,14 +1711,14 @@ do_vt52(uchar c)
 {
   term_cursor *curs = &term.curs;
   term.state = NORMAL;
-  term.autowrap = false;
-  term.rev_wrap = false;
   term.esc_mod = 0;
   switch (c) {
     when '\e':
       term.state = ESCAPE;
     when '<':  /* Exit VT52 mode (Enter VT100 mode). */
       term.vt52_mode = 0;
+      term.autowrap = term.save_autowrap;
+      term.rev_wrap = term.save_rev_wrap;
     when '=':  /* Enter alternate keypad mode. */
       term.app_keypad = true;
     when '>':  /* Exit alternate keypad mode. */
@@ -2117,8 +2364,13 @@ set_modes(bool state)
             term.curs.cset_single = CSET_ASCII;
             term_update_cs();
           }
-          else
+          else {
             term.vt52_mode = 1;
+            term.save_autowrap = term.autowrap;
+            term.save_rev_wrap = term.rev_wrap;
+            term.autowrap = false;
+            term.rev_wrap = false;
+          }
         when 3:  /* DECCOLM: 80/132 columns */
           if (term.deccolm_allowed) {
             term.selected = false;
@@ -2222,12 +2474,16 @@ set_modes(bool state)
           term.report_focus = state;
         when 1005: /* Xterm's UTF8 encoding for mouse positions */
           term.mouse_enc = state ? ME_UTF8 : 0;
+          win_update_mouse();  // reset pixel pointer
         when 1006: /* Xterm's CSI-style mouse encoding */
           term.mouse_enc = state ? ME_XTERM_CSI : 0;
+          win_update_mouse();  // reset pixel pointer
         when 1016: /* Xterm's CSI-style mouse encoding with pixel resolution */
           term.mouse_enc = state ? ME_PIXEL_CSI : 0;
+          win_update_mouse();  // set pixel pointer
         when 1015: /* Urxvt's CSI-style mouse encoding */
           term.mouse_enc = state ? ME_URXVT_CSI : 0;
+          win_update_mouse();  // reset pixel pointer
         when 1037:
           term.delete_sends_del = state;
         when 1042:
@@ -2301,6 +2557,8 @@ set_modes(bool state)
           }
         when 7767:       /* 'C': Changed font reporting */
           term.report_font_changed = state;
+        when 7780:       /* ~ 80 (DECSDM) */
+          term.image_display = state;
         when 7783:       /* 'S': Shortcut override */
           term.shortcut_override = state;
         when 1007:       /* Alternate Scroll Mode, xterm */
@@ -2309,6 +2567,8 @@ set_modes(bool state)
           term.wheel_reporting = state;
         when 7787:       /* 'W': Application mousewheel mode */
           term.app_wheel = state;
+        when 7765:       /* 'A': Alt-Modified mousewheel mode */
+          term.alt_wheel = state;
         when 7796:       /* Bidi disable in current line */
           if (state)
             term.lines[term.curs.y]->lattr |= LATTR_NOBIDI;
@@ -2334,14 +2594,18 @@ set_modes(bool state)
             term.curs.bidimode &= ~LATTR_BIDISEL;
           else
             term.curs.bidimode |= LATTR_BIDISEL;
+        when 2521:      /* LAM/ALEF single-cell joining */
+          term.join_lam_alef = state;
         when 2026:
           term.suspend_update = state ? 150 : 0;
           if (!state) {
             do_update();
             usleep(1000);  // flush update
           }
-        when 2027:
+        when 7723: /* Reflow mode; 2027 is dropped */
           term.curs.rewrap_on_resize = state;
+        when 2027 or 7769: /* Emoji 2-cell width mode */
+          term.emoji_width = state;
       }
     }
     else { /* SM/RM: set/reset mode */
@@ -2483,6 +2747,8 @@ get_mode(bool privatemode, int arg)
         return 2 - term.show_scrollbar;
       when 7767:       /* 'C': Changed font reporting */
         return 2 - term.report_font_changed;
+      when 7780:       /* ~ 80 (DECSDM) */
+        return 2 - term.image_display;
       when 7783:       /* 'S': Shortcut override */
         return 2 - term.shortcut_override;
       when 1007:       /* Alternate Scroll Mode, xterm */
@@ -2491,6 +2757,8 @@ get_mode(bool privatemode, int arg)
         return 2 - term.wheel_reporting;
       when 7787:       /* 'W': Application mousewheel mode */
         return 2 - term.app_wheel;
+      when 7765:       /* 'A': Alt-Modified mousewheel mode */
+        return 2 - term.alt_wheel;
       when 7796:       /* Bidi disable in current line */
         return 2 - !!(term.lines[term.curs.y]->lattr & LATTR_NOBIDI);
       when 77096:      /* Bidi disable */
@@ -2505,8 +2773,12 @@ get_mode(bool privatemode, int arg)
         return 2 - !!(term.curs.bidimode & LATTR_BOXMIRROR);
       when 2501: /* bidi direction auto-detection */
         return 2 - !(term.curs.bidimode & LATTR_BIDISEL);
-      when 2027:
+      when 2521: /* LAM/ALEF single-cell joining */
+        return 2 - term.join_lam_alef;
+      when 7723: /* Reflow mode; 2027 is dropped */
         return 2 - term.curs.rewrap_on_resize;
+      when 2027 or 7769: /* Emoji 2-cell width mode */
+        return 2 - term.emoji_width;
       otherwise:
         return 0;
     }
@@ -2662,7 +2934,7 @@ pop_colours(uint ix)
 }
 
 /*
- * dtterm window operations and xterm extensions.
+ * XTWINOPS: dtterm window operations and xterm extensions.
    CSI Ps ; Ps ; Ps t
  */
 static void
@@ -3075,6 +3347,13 @@ do_csi(uchar c)
           term.tabs[i] = false;
         term.newtab = 0;  // don't set new default tabs on resize
       }
+    when CPAIR('?', 'W'):  /* DECST8C: reset tab stops (VT510, xterm 389) */
+      if (arg0 == 5 && term.tabs) {
+        for (int i = 0; i < term.cols; i++)
+          term.tabs[i] = (i % 8 == 0);
+      }
+    when CPAIR('"', 'v'):  /* DECRQDE: request display extent (VT340, xterm 387) */
+      child_printf("\e[%d;%d;1;1;1\"w", term.rows, term.cols);
     when 'r': {      /* DECSTBM: set scrolling region */
       int top = arg0_def1 - 1;
       int bot = (arg1 ? min(arg1, term.rows) : term.rows) - 1;
@@ -3235,8 +3514,8 @@ do_csi(uchar c)
         when 26:  // Keyboard Report
           child_printf("\e[?27;0;%cn", term.has_focus ? '0' : '8');
         // DEC Locator
-        when 53 or 55:
-          child_printf("\e[?53n");
+        when 55:  // alternative 53 was a legacy xterm mistake, dropped in 389
+          child_printf("\e[?50n");  // 53 was a ctlseqs mistake
         when 56:
           child_printf("\e[?57;1n");
       }
@@ -3346,8 +3625,10 @@ do_csi(uchar c)
                 term.csi_argv[2] ?: urows, term.csi_argv[3] ?: ucols);
     when CPAIR('*', 'x'):  /* DECSACE: VT420 Select Attribute Change Extent */
       switch (arg0) {
-        when 2: term.attr_rect = true;
-        when 0 or 1: term.attr_rect = false;
+        // use original DECSACE values rather than effective bool value,
+        // so we can respond properly to DECRQSS like xterm
+        when 2: term.attr_rect = 2;
+        when 0 or 1 /*or 2*/: term.attr_rect = arg0;
       }
     when CPAIR('$', 'r')  /* DECCARA: VT420 Change Attributes in Area */
       or CPAIR('$', 't'): {  /* DECRARA: VT420 Reverse Attributes in Area */
@@ -3624,7 +3905,7 @@ static float freq_C5_C7[26] =
  * Fill image area with sixel placeholder characters and set cursor.
  */
 static void
-fill_image_space(imglist * img)
+fill_image_space(imglist * img, bool keep_positions)
 {
   cattrflags attr0 = term.curs.attr.attr;
   // refer SIXELCH cells to image for display/discard management
@@ -3647,11 +3928,15 @@ fill_image_space(imglist * img)
     term.curs.y = y0;
     term.curs.x = x0;
   } else {  // sixel scrolling mode
+    short y0 = term.curs.y;
     for (int i = 0; i < img->height; ++i) {
       term.curs.x = x0;
       //printf("SIXELCH @%d imgi %d\n", term.curs.y, term.curs.attr.imgi);
       for (int x = x0; x < x0 + img->width && x < term.cols; ++x)
         write_char(SIXELCH, 1);
+      // image display mode (7780): do not scroll
+      if (keep_positions && term.curs.y >= term.marg_bot)
+        break;
       if (i == img->height - 1) {  // in the last line
         if (!term.sixel_scrolls_right) {
           write_linefeed();
@@ -3660,6 +3945,10 @@ fill_image_space(imglist * img)
       } else {
         write_linefeed();
       }
+    }
+    if (keep_positions) {
+      term.curs.y = y0;
+      term.curs.x = x0;
     }
   }
 
@@ -3757,7 +4046,7 @@ do_dcs(void)
       img->cwidth = st->max_x;
       img->cheight = st->max_y;
 
-      fill_image_space(img);
+      fill_image_space(img, false);
 
       // add image to image list;
       // replace previous for optimisation in some cases
@@ -3948,6 +4237,8 @@ do_dcs(void)
         child_printf("\eP1$r%ut\e\\", term.rows);
       } else if (!strcmp(s, "$|")) {  // DECSCPP (columns)
         child_printf("\eP1$r%u$|\e\\", term.cols);
+      } else if (!strcmp(s, "*x")) {  // DECSACE (attribute change extent)
+        child_printf("\eP1$r%u*x\e\\", term.attr_rect);
       } else if (!strcmp(s, "*|")) {  // DECSNLS (lines)
         child_printf("\eP1$r%u*|\e\\", term.rows);
       } else if (!strcmp(s, "$~")) {  // DECSSDT (status line type)
@@ -3956,6 +4247,8 @@ do_dcs(void)
         child_printf("\eP1$r%u$}\e\\", term.st_active);
       } else if (!strcmp(s, "-p")) {  // DECARR (auto repeat rate)
         child_printf("\eP1$r%u-p\e\\", term.repeat_rate);
+      } else if (!strcmp(s, ">4m")) {  // XTQMODKEYS
+        child_printf("\eP1$r>4;%um\e\\", term.modify_other_keys);
       } else {
         child_printf("\eP0$r\e\\");
       }
@@ -4164,10 +4457,6 @@ do_clipboard(void)
   int len;
   int ret;
 
-  if (!cfg.allow_set_selection) {
-    return;
-  }
-
   while (*s != ';' && *s != '\0') {
     s += 1;
   }
@@ -4175,10 +4464,30 @@ do_clipboard(void)
     return;
   }
   s += 1;
-  if (*s == '?') {
-    /* Reading from clipboard is unsupported */
+  if (0 == strcmp(s, "?")) {
+    if (!cfg.allow_paste_selection) {
+      return;
+    }
+
+    char * cb = get_clipboard();
+    if (!cb)
+      return;
+    char * b64 = base64(cb);
+    //printf("<%s> -> <%s>\n", s, cb, b64);
+    free(cb);
+    if (!b64)
+      return;
+
+    child_printf("\e]52;;%s%s", b64, osc_fini());
+
+    free(b64);
     return;
   }
+
+  if (!cfg.allow_set_selection) {
+    return;
+  }
+
   len = strlen(s);
 
   output = malloc(len + 1);
@@ -4191,6 +4500,9 @@ do_clipboard(void)
     output[ret] = '\0';
     win_copy_text(output);
   }
+  else
+    // clear selection
+    win_copy(W(""), 0, 1);
   free(output);
 }
 
@@ -4224,13 +4536,22 @@ do_cmd(void)
     when 104: do_colour_osc(true, 4, true);
     when 105: do_colour_osc(true, 5, true);
     when 10:  do_colour_osc(false, FG_COLOUR_I, false);
-    when 11:  if (strchr("*_%=+", *term.cmd_buf)) {
-                wchar * bn = cs__mbstowcs(term.cmd_buf);
-                wstrset(&cfg.background, bn);
-                free(bn);
-                if (*term.cmd_buf == '%')
-                  scale_to_image_ratio();
-                win_invalidate_all(true);
+    when 11:  if (term.cmd_len && strchr("*_%=+", *term.cmd_buf)) {
+                char * bf = guardpath(term.cmd_buf + 1, 1);
+                if (bf) {
+                  string bf1 = asform("%c%s", *term.cmd_buf, bf);
+                  wchar * bn = cs__mbstowcs(bf1);
+                  if (!bn) {
+                    delete(bf);
+                    break;
+                  }
+                  wstrset(&cfg.background, bn);
+                  if (*term.cmd_buf == '%')
+                    scale_to_image_ratio();
+                  win_invalidate_all(true);
+                  free(bn);
+                }
+                free(bf);
               }
               else
                 do_colour_osc(false, BG_COLOUR_I, false);
@@ -4256,6 +4577,9 @@ do_cmd(void)
         s += 11;
       else if (!strncmp(s, "///", 3))
         s += 2;
+
+      // do not check guardpath() here or it might beep on every prompt...
+
       if (s[0] == '~' && (!s[1] || s[1] == '/')) {
         char * dir = asform("%s%s", home, s + 1);
         child_set_fork_dir(dir);
@@ -4263,6 +4587,8 @@ do_cmd(void)
       }
       else if (!*s || *s == '/')
         child_set_fork_dir(s);
+      else
+        {}  // do not accept relative pathnames
     when 701:  // Set/get locale (from urxvt).
       if (!strcmp(s, "?"))
         child_printf("\e]701;%s%s", cs_get_locale(), osc_fini());
@@ -4362,9 +4688,9 @@ do_cmd(void)
         }
       }
     when 22: {  // set mouse pointer style
-      wchar * ps = cs__mbstowcs(s);
+      wstring ps = cs__mbstowcs(s);
       set_cursor_style(term.mouse_mode || term.locator_1_enabled, ps);
-      free(ps);
+      delete(ps);
     }
     when 7750:
       set_arg_option("Emojis", strdup(s));
@@ -4373,7 +4699,7 @@ do_cmd(void)
     when 8: {  // hyperlink attribute
       char * link = s;
       char * url = strchr(s, ';');
-      if (url++ && *url) {
+      if (url && url[1]) {
         term.curs.attr.link = putlink(link);
       }
       else
@@ -4471,6 +4797,7 @@ do_cmd(void)
       int crop_y = 0;
       int crop_width = 0;
       int crop_height = 0;
+      bool keep_positions = term.image_display;
 
       // process parameters
       while (s && *s) {
@@ -4557,6 +4884,9 @@ do_cmd(void)
             crop_height = - val;
           }
         }
+        else if (0 == strcmp("doNotMoveCursor", s) && val) {
+          keep_positions = true;
+        }
 
         s = nxt;
       }
@@ -4586,8 +4916,12 @@ do_cmd(void)
           imglist * img;
           short left = term.curs.x;
           short top = term.curs.y;
+          if (term.sixel_display) {  // sixel display mode
+            left = 0;
+            top = 0;
+          }
           if (winimg_new(&img, name, data, datalen, left, top, width, height, pixelwidth, pixelheight, pAR, crop_x, crop_y, crop_width, crop_height, term.curs.attr.attr & (ATTR_BLINK | ATTR_BLINK2))) {
-            fill_image_space(img);
+            fill_image_space(img, keep_positions);
 
             if (term.imgs.first == NULL) {
               term.imgs.first = term.imgs.last = img;
@@ -4736,6 +5070,33 @@ term_do_write(const char *buf, uint len, bool fix_status)
   while (pos < len) {
     uchar c = buf[pos++];
 
+    if (!tek_mode && (c == 0x1A || c == 0x18)) { // SUB or CAN
+      term.state = NORMAL;
+      if (c == 0x1A || strstr(cfg.term, "vt1")) {
+        // display one of ␦ / ⸮ / ▒
+        wchar sub = 0x2592;  // ▒
+        if (!strstr(cfg.term, "vt1")) {
+          wchar subs[] = W("␦⸮");
+          win_check_glyphs(subs, 2, term.curs.attr.attr);
+          if (subs[0])
+            sub = subs[0];
+          else if (subs[1])
+            sub = subs[1];
+        }
+        if (sub == 0x2592) {
+          // enable self-drawn box as this doesn't pass transformation below
+          cattrflags savattr = term.curs.attr.attr;
+          term.curs.attr.attr &= ~FONTFAM_MASK;
+          term.curs.attr.attr |= (cattrflags)11 << ATTR_FONTFAM_SHIFT;
+          write_char(sub, 1);
+          term.curs.attr.attr = savattr;
+        }
+        else
+          write_char(sub, 1);
+      }
+      continue;
+    }
+
    /*
     * If we're printing, add the character to the printer buffer.
     */
@@ -4774,6 +5135,8 @@ term_do_write(const char *buf, uint len, bool fix_status)
         if (term.curs.oem_acs && !memchr("\e\n\r\b", c, 4)) {
           if (term.curs.oem_acs == 2)
             c |= 0x80;
+          // with codepage set to 437, function cs_btowc_glyph 
+          // maps VGA characters to their glyphs
           write_ucschar(0, cs_btowc_glyph(c), 1);
           continue;
         }
@@ -4851,6 +5214,10 @@ term_do_write(const char *buf, uint len, bool fix_status)
             //if (term.curs.width)
             //  width = term.curs.width % 10;
 #endif
+            // EMOJI MODIFIER FITZPATRICKs U+1F3FB..U+1F3FF
+            if (term.emoji_width && term.curs.x && hwc == 0xD83C && wc >= 0xDFFB && wc <= 0xDFFF)
+              width = 0;
+
             write_ucschar(hwc, wc, width);
           }
           else
@@ -4878,7 +5245,7 @@ term_do_write(const char *buf, uint len, bool fix_status)
           continue;
         }
 
-        // Everything else
+        // NRCS matching function
         wchar NRC(wchar * map)
         {
           static char * rpl = "#@[\\]^_`{|}~";
@@ -4891,85 +5258,98 @@ term_do_write(const char *buf, uint len, bool fix_status)
 
         cattrflags asav = term.curs.attr.attr;
 
+        // Some more special graphic renderings
+        // Do these before the NRCS switch below as that transforms 
+        // some characters into this range which would then get 
+        // doubly-transformed
+        if ((cfg.box_drawing && wc >= 0x2500 && wc <= 0x257F)
+         || (wc >= 0x2580 && wc <= 0x259F)
+         || (wc >= 0xE0B0 && wc <= 0xE0BF && wc != 0xE0B5 && wc != 0xE0B7)
+           )
+        {
+          term.curs.attr.attr &= ~FONTFAM_MASK;
+          term.curs.attr.attr |= (cattrflags)11 << ATTR_FONTFAM_SHIFT;
+        }
+        else
+        // Everything else
         switch (cset) {
           when CSET_VT52DRW:  // VT52 "graphics" mode
-            if (0x5E <= wc && wc <= 0x7E) {
-              uchar dispcode = 0;
-              uchar gcode = 0;
-              if ('l' <= wc && wc <= 's') {
-                dispcode = wc - 'l' + 1;
-                gcode = 13;
-              }
-              else if ('c' <= wc && wc <= 'e') {
-                dispcode = 0xF;
-              }
-              wc = W("^ ￿▮⅟³⁵⁷°±→…÷↓⎺⎺⎻⎻⎼⎼⎽⎽₀₁₂₃₄₅₆₇₈₉¶") [c - 0x5E];
-              term.curs.attr.attr |= ((cattrflags)dispcode) << ATTR_GRAPH_SHIFT;
-              if (gcode) {
-                // extend graph encoding with unused font number
+            if (0x5E <= c && c <= 0x7E) {
+              if ('l' <= c && c <= 's') {
+                wc = c - 'l' + 1 + 0x500;
                 term.curs.attr.attr &= ~FONTFAM_MASK;
-                term.curs.attr.attr |= (cattrflags)gcode << ATTR_FONTFAM_SHIFT;
+                term.curs.attr.attr |= (cattrflags)12 << ATTR_FONTFAM_SHIFT;
+              }
+              else {
+                wc = W("^ ￿▮⅟³⁵⁷°±→…÷↓⎺⎺⎻⎻⎼⎼⎽⎽₀₁₂₃₄₅₆₇₈₉¶") [c - 0x5E];
+                if ('c' <= c && c <= 'e') {
+                  term.curs.attr.attr &= ~FONTFAM_MASK;
+                  term.curs.attr.attr |= (cattrflags)13 << ATTR_FONTFAM_SHIFT;
+                }
               }
             }
           when CSET_LINEDRW:  // VT100 line drawing characters
-            if (0x60 <= wc && wc <= 0x7E) {
-              wchar dispwc = win_linedraw_char(wc - 0x60);
-#define draw_vt100_line_drawing_chars
-#ifdef draw_vt100_line_drawing_chars
-              if ('j' <= wc && wc <= 'x') {
-                static uchar linedraw_code[31] = {
-                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-#if __GNUC__ >= 5
-                  0b1001, 0b1100, 0b0110, 0b0011, 0b1111,  // ┘┐┌└┼
-                  0x10, 0x20, 0b1010, 0x40, 0x50,          // ⎺⎻─⎼⎽
-                  0b0111, 0b1101, 0b1011, 0b1110, 0b0101,  // ├┤┴┬│
-#else // < 4.3
+            if ('`' <= c && c <= '~') {
+              //      `abcdefghijklmnopqrstuvwxyz{|}~
+              //      ♦▒→↡↵↴°±↴↓┘┐┌└┼‾⁻—₋_├┤┴┬│≤≥π≠£·
+              if ('j' <= c && c <= 'x') {
+                static uchar linedraw_code[15] = {
                   0x09, 0x0C, 0x06, 0x03, 0x0F,  // ┘┐┌└┼
                   0x10, 0x20, 0x0A, 0x40, 0x50,  // ⎺⎻─⎼⎽
                   0x07, 0x0D, 0x0B, 0x0E, 0x05,  // ├┤┴┬│
-#endif
-                  0, 0, 0, 0, 0, 0
                 };
-                uchar dispcode = linedraw_code[wc - 0x60];
-                if (dispcode) {
-                  uchar gcode = 11;
-                  if (dispcode >> 4) {
-                    dispcode >>= 4;
-                    gcode++;
-                  }
-                  term.curs.attr.attr |= ((cattrflags)dispcode) << ATTR_GRAPH_SHIFT;
-                  // extend graph encoding with unused font numbers
+                wc = 0x100 + linedraw_code[c - 'j'];
+                term.curs.attr.attr &= ~FONTFAM_MASK;
+                term.curs.attr.attr |= (cattrflags)12 << ATTR_FONTFAM_SHIFT;
+              }
+              else {
+                wc = win_linedraw_char(c - 0x60);
+                // enable self-drawn box as this isn't transformed above
+                if (wc >= 0x2500 && wc <= 0x259F) {
                   term.curs.attr.attr &= ~FONTFAM_MASK;
-                  term.curs.attr.attr |= (cattrflags)gcode << ATTR_FONTFAM_SHIFT;
+                  term.curs.attr.attr |= (cattrflags)11 << ATTR_FONTFAM_SHIFT;
                 }
               }
-#endif
-              wc = dispwc;
             }
-          when CSET_TECH:  // DEC Technical character set
+          when CSET_TECH:  // DEC Technical Character Set
             if (c > ' ' && c < 0x7F) {
-              // = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎛⎝⎞⎠⎨⎬￿￿╲╱￿￿￿￿￿￿￿≤≠≥∫∴∝∞÷Δ∇ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
-              // = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎛⎝⎞⎠⎨⎬╶╶╲╱╴╴╳￿￿￿￿≤≠≥∫∴∝∞÷Δ∇ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
-              // = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎧⎩⎫⎭⎨⎬╶╶╲╱╴╴╳￿￿￿￿≤≠≥∫∴∝∞÷Δ∇ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
-              wc = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎧⎩⎫⎭⎨⎬╶╶╲╱╴╴╳￿￿￿￿≤≠≥∫∴∝∞÷  ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ￿Σ￿￿√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ￿ν∂πψρστ￿ƒωξυζ←↑→↓")
+              //      !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
+              // = W("⎷┌─⌠⌡│⎡⎣⎤⎦⎧⎩⎫⎭⎨⎬  ╲╱   ␦␦␦␦≤≠≥∫∴∝∞÷Δ∇ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ␦Σ␦␦√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ␦ν∂πψρστ␦ƒωξυζ←↑→↓")
+              //               "⎛⎝⎞⎠" would not align with ⎨⎬
+              wc = W("   ⌠⌡│⎡⎣⎤⎦⎧⎩⎫⎭⎨⎬       ␦␦␦␦≤≠≥∫∴∝∞÷  ΦΓ∼≃Θ×Λ⇔⇒≡ΠΨ␦Σ␦␦√ΩΞΥ⊂⊃∩∪∧∨¬αβχδεφγηιθκλ␦ν∂πψρστ␦ƒωξυζ←↑→↓")
                    [c - ' ' - 1];
-              uchar dispcode = 0;
-              if (c <= 0x37) {
-                static uchar techdraw_code[23] = {
-                  0xE,                          // square root base
-                  0, 0, 0, 0, 0,
-                  0x8, 0x9, 0xA, 0xB,           // square bracket corners
-                  0, 0, 0, 0,                   // curly bracket hooks
-                  0, 0,                         // curly bracket middle pieces
-                  0x1, 0x2, 0, 0, 0x5, 0x6, 0x7 // sum segments
-                };
-                dispcode = techdraw_code[c - 0x21];
+              if (wc == 0x2502) {
+                if (term.curs.y) {
+                  // substitute vertical bar with EXTENSION matching the 
+                  // character cell above, to achieve proper alignment
+                  wchar wc0 = term.lines[term.curs.y - 1]
+                              ->chars[term.curs.x].chr;
+                  switch (wc0) {
+                    when 0x2320 or 0x23AE: // ⌠
+                      wc = 0x23AE;         // ⎮
+                    when 0x23A1 or 0x23A2: // ⎡
+                      wc = 0x23A2;         // ⎢
+                    when 0x23A4 or 0x23A5: // ⎤
+                      wc = 0x23A5;         // ⎥
+                    when 0x239B or 0x239C: // ⎛
+                      wc = 0x239C;         // ⎜
+                    when 0x239E or 0x239F: // ⎞
+                      wc = 0x239F;         // ⎟
+                    when 0x23A7 or 0x23AB: // ⎧⎫
+                      wc = 0x23AA;         // ⎪⎪
+                    when 0x23A8 or 0x23AC: // ⎨⎬
+                      wc = 0x23AA;         // ⎪⎪
+                    when 0x23AA:           // ⎪⎪
+                      wc = 0x23AA;         // ⎪⎪
+                  }
+                }
               }
-              else if (c == 0x44)
-                dispcode = 0xC;
-              else if (c == 0x45)
-                dispcode = 0xD;
-              term.curs.attr.attr |= ((cattrflags)dispcode) << ATTR_GRAPH_SHIFT;
+              if (wc == ' ' || wc == 0x2502) {
+                if (wc == ' ')
+                  wc = c;
+                term.curs.attr.attr &= ~FONTFAM_MASK;
+                term.curs.attr.attr |= (cattrflags)14 << ATTR_FONTFAM_SHIFT;
+              }
             }
           when CSET_NL:
             wc = NRC(W("£¾ĳ½|^_`¨ƒ¼´"));  // Dutch
@@ -5063,27 +5443,6 @@ term_do_write(const char *buf, uint len, bool fix_status)
           otherwise: ;
         }
 
-        // Some more special graphic renderings
-        if (wc >= 0x2580 && wc <= 0x259F) {
-          // Block Elements (U+2580-U+259F)
-          // ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔▕▖▗▘▙▚▛▜▝▞▟
-          term.curs.attr.attr |= ((cattrflags)(wc & 0xF)) << ATTR_GRAPH_SHIFT;
-          uchar gcode = 14 + ((wc >> 4) & 1);
-          // extend graph encoding with unused font numbers
-          term.curs.attr.attr &= ~FONTFAM_MASK;
-          term.curs.attr.attr |= (cattrflags)gcode << ATTR_FONTFAM_SHIFT;
-        }
-#ifdef draw_powerline_geometric_symbols
-#warning graphical results of this approach are unpleasant; not enabled
-        else if (wc >= 0xE0B0 && wc <= 0xE0BF && wc != 0xE0B5 && wc != 0xE0B7) {
-          // draw geometric full-cell Powerline symbols,
-          // to avoid artefacts at their borders (#943)
-          term.curs.attr.attr &= ~FONTFAM_MASK;
-          term.curs.attr.attr |= (cattrflags)13 << ATTR_FONTFAM_SHIFT;
-          term.curs.attr.attr |= (cattrflags)15 << ATTR_GRAPH_SHIFT;
-        }
-#endif
-
         // Determine width of character to be rendered
         int width;
         if (term.wide_indic && wc >= 0x0900 && indicwide(wc))
@@ -5123,20 +5482,10 @@ term_do_write(const char *buf, uint len, bool fix_status)
             width = 1;
         }
 
-        // Auto-expanded glyphs
-        if (width == 2
-            // && wcschr(W("〈〉《》「」『』【】〒〓〔〕〖〗〘〙〚〛"), wc)
-            && wc >= 0x3008 && wc <= 0x301B && (wc | 1) != 0x3013
-            && win_char_width(wc, term.curs.attr.attr) < 2
-            // ensure symmetric handling of matching brackets
-            && win_char_width(wc ^ 1, term.curs.attr.attr) < 2)
-        {
-          term.curs.attr.attr |= TATTR_EXPAND;
-        }
-
         // Control characters
         if (wc < 0x20 || wc == 0x7F) {
           if (!do_ctrl(wc) && c == wc) {
+            // the rôle of function cs_btowc_glyph in this case is unclear
             wc = cs_btowc_glyph(c);
             if (wc != c)
               write_ucschar(0, wc, 1);

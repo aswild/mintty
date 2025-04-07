@@ -1,5 +1,5 @@
 // wininput.c (part of mintty)
-// Copyright 2008-22 Andy Koppe, 2015-2022 Thomas Wolff
+// Copyright 2008-23 Andy Koppe, 2015-2025 Thomas Wolff
 // Licensed under the terms of the GNU General Public License v3 or later.
 
 #include "winpriv.h"
@@ -22,15 +22,22 @@ static int sysmenulen;
 //static uint kb_select_key = 0;
 static uint super_key = 0;
 static uint hyper_key = 0;
+// Compose support
+static uint compose_key = 0;
+static uint last_key_down = 0;
+static uint last_key_up = 0;
+
 static uint newwin_key = 0;
 static bool newwin_pending = false;
 static bool newwin_shifted = false;
 static bool newwin_home = false;
 static int newwin_monix = 0, newwin_moniy = 0;
+
 static int transparency_pending = 0;
 static bool selection_pending = false;
 bool kb_input = false;
 uint kb_trace = 0;
+uint mods_debug;
 
 struct function_def {
   string name;
@@ -207,6 +214,7 @@ wnd_enum_tabs(HWND curr_wnd, LPARAM lParam)
     int len = GetWindowTextLengthW(curr_wnd);
     wchar title[len + 1];
     len = GetWindowTextW(curr_wnd, title, len + 1);
+    strip_title(title);
 
     AppendMenuW((HMENU)menu, MF_ENABLED, IDM_GOTAB + tabi, title);
     MENUITEMINFOW mi;
@@ -769,6 +777,18 @@ static void
 open_popup_menu(bool use_text_cursor, string menucfg, mod_keys mods)
 {
   //printf("open_popup_menu txtcur %d <%s> %X\n", use_text_cursor, menucfg, mods);
+
+  if (!menucfg) {
+    if (mods & MDK_ALT)
+      menucfg = cfg.menu_altmouse;
+    else if (mods & MDK_CTRL)
+      menucfg = cfg.menu_ctrlmouse;
+    else
+      menucfg = cfg.menu_mouse;
+  }
+  if (!*menucfg)
+    return;
+
   /* Create a new context menu structure every time the menu is opened.
      This was a fruitless attempt to achieve its proper DPI scaling.
      It also supports opening different menus (Ctrl+ for extended menu).
@@ -779,15 +799,6 @@ open_popup_menu(bool use_text_cursor, string menucfg, mod_keys mods)
 
   ctxmenu = CreatePopupMenu();
   //show_menu_info(ctxmenu);
-
-  if (!menucfg) {
-    if (mods & MDK_ALT)
-      menucfg = *cfg.menu_altmouse ? cfg.menu_altmouse : "ls";
-    else if (mods & MDK_CTRL)
-      menucfg = *cfg.menu_ctrlmouse ? cfg.menu_ctrlmouse : "e|ls";
-    else
-      menucfg = *cfg.menu_mouse ? cfg.menu_mouse : "b";
-  }
 
   bool vsep = false;
   bool hsep = false;
@@ -885,7 +896,11 @@ static int alt_code;
 static bool alt_uni;
 
 static bool lctrl;  // Is left Ctrl pressed?
-static int lctrl_time;
+static int lctrl_time = 0;
+static int ralt_time = 0;
+static int is_lctrl = 0;
+static bool is_ralt = false;
+static bool is_altgr = false;
 
 mod_keys
 get_mods(void)
@@ -912,6 +927,7 @@ static void
 update_mouse(mod_keys mods)
 {
 static bool last_app_mouse = false;
+static bool last_pix_mouse = false;
 
   // unhover (end hovering) if hover modifiers are withdrawn
   if (term.hovering && (char)(mods & ~cfg.click_target_mod) != cfg.opening_mod) {
@@ -925,13 +941,15 @@ static bool last_app_mouse = false;
     && !term.show_other_screen
     // disable app mouse pointer while not targetting app
     && (cfg.clicks_target_app ^ ((mods & cfg.click_target_mod) != 0));
+  bool new_pix_mouse = is_mouse_mode_by_pixels();
 
-  if (new_app_mouse != last_app_mouse) {
+  if (new_app_mouse != last_app_mouse || new_pix_mouse != last_pix_mouse) {
     //HCURSOR cursor = LoadCursor(null, new_app_mouse ? IDC_ARROW : IDC_IBEAM);
     HCURSOR cursor = win_get_cursor(new_app_mouse);
     SetClassLongPtr(wnd, GCLP_HCURSOR, (LONG_PTR)cursor);
     SetCursor(cursor);
     last_app_mouse = new_app_mouse;
+    last_pix_mouse = new_pix_mouse;
   }
 }
 
@@ -973,9 +991,9 @@ translate_pos(int x, int y)
     y = max(0, y - term.rows * cell_height);
   }
   return (pos){
-    .x = floorf((x - PADDING) / (float)cell_width),
+    .x = floorf((x - PADDING + horclip()) / (float)cell_width),
     .y = floorf((y - PADDING - OFFSET) / (float)cell_height),
-    .pix = min(max(0, x - PADDING), term.cols * cell_width - 1),
+    .pix = min(max(0, x - PADDING), term.cols * cell_width - 1) + horclip(),
     .piy = min(max(0, y - PADDING - OFFSET), rows * cell_height - 1),
     .r = (cfg.elastic_mouse && !term.mouse_mode)
          ? (x - PADDING) % cell_width > cell_width / 2
@@ -1347,6 +1365,12 @@ toggle_bidi()
 }
 
 void
+toggle_lam_alef()
+{
+  term.join_lam_alef = !term.join_lam_alef;
+}
+
+void
 toggle_dim_margins()
 {
   term.dim_margins = !term.dim_margins;
@@ -1437,6 +1461,14 @@ static void
 hyper_down(uint key, mod_keys mods)
 {
   hyper_key = key;
+  (void)mods;
+}
+
+static void
+compose_down(uint key, mod_keys mods)
+{
+  compose_key = key;
+  last_key_down = key;
   (void)mods;
 }
 
@@ -1674,6 +1706,12 @@ mflags_bidi()
 }
 
 static uint
+mflags_lam_alef()
+{
+  return term.join_lam_alef ? MF_CHECKED : MF_UNCHECKED;
+}
+
+static uint
 mflags_dim_margins()
 {
   return term.dim_margins ? MF_CHECKED : MF_UNCHECKED;
@@ -1746,6 +1784,8 @@ static struct function_def cmd_defs[] = {
   {"new-tab", {IDM_TAB}, 0},
   {"new-tab-cwd", {IDM_TAB_CWD}, 0},
   {"toggle-tabbar", {.fct = toggle_tabbar}, mflags_tabbar},
+  {"tab-left", {.fct = win_tab_left}, 0},
+  {"tab-right", {.fct = win_tab_right}, 0},
 
   {"hor-left-1", {.fct = hor_left_1}, 0},
   {"hor-right-1", {.fct = hor_right_1}, 0},
@@ -1810,6 +1850,7 @@ static struct function_def cmd_defs[] = {
   {"tek-copy", {IDM_TEKCOPY}, mflags_tek_mode},
   {"save-image", {IDM_SAVEIMG}, 0},
   {"break", {IDM_BREAK}, 0},
+  {"intr", {.fct = child_intr}, 0},
   {"flipscreen", {IDM_FLIPSCREEN}, mflags_flipscreen},
   {"open", {IDM_OPEN}, mflags_open},
   {"toggle-logging", {IDM_TOGLOG}, mflags_logging},
@@ -1819,12 +1860,14 @@ static struct function_def cmd_defs[] = {
   {"toggle-vt220", {.fct = toggle_vt220}, mflags_vt220},
   {"toggle-auto-repeat", {.fct = toggle_auto_repeat}, mflags_auto_repeat},
   {"toggle-bidi", {.fct = toggle_bidi}, mflags_bidi},
+  {"toggle-lam-alef", {.fct = toggle_lam_alef}, mflags_lam_alef},
   {"refresh", {.fct = refresh}, 0},
   {"toggle-dim-margins", {.fct = toggle_dim_margins}, mflags_dim_margins},
   {"toggle-status-line", {.fct = toggle_status_line}, mflags_status_line},
 
   {"super", {.fct_key = super_down}, 0},
   {"hyper", {.fct_key = hyper_down}, 0},
+  {"compose", {.fct_key = compose_down}, 0},
   {"kb-select", {.fct_key = kb_select}, mflags_kb_select},
   {"no-scroll", {.fct_key = no_scroll}, mflags_no_scroll},
   {"toggle-no-scroll", {.fct_key = toggle_no_scroll}, mflags_no_scroll},
@@ -1879,8 +1922,6 @@ typedef enum {
   COMP_PENDING = 1, COMP_ACTIVE = 2
 } comp_state_t;
 static comp_state_t comp_state = COMP_NONE;
-static uint last_key_down = 0;
-static uint last_key_up = 0;
 
 static struct {
   wchar kc[4];
@@ -1903,6 +1944,9 @@ compose_clear(void)
 void
 win_key_reset(void)
 {
+  is_lctrl = 0;
+  is_ralt = false;
+  is_altgr = false;
   alt_state = ALT_NONE;
   compose_clear();
 }
@@ -1973,8 +2017,8 @@ vk_name(uint key)
   for (uint i = 0; i < lengthof(vk_names); i++)
     if (key == vk_names[i].vk_)
       return vk_names[i].vk_name;
-  static char vk_name[3];
-  sprintf(vk_name, "%02X", key & 0xFF);
+  static char vk_name[6];
+  sprintf(vk_name, "VK_%02X", key & 0xFF);
   return vk_name;
 }
 #endif
@@ -2006,7 +2050,7 @@ static struct {
   {VK_TAB, 0, "Tab"},
   {VK_RETURN, 0, "Enter"},
   {VK_PAUSE, 1, "Pause"},
-  {VK_ESCAPE, 0, "Esc"},
+  {VK_ESCAPE, 1, "Esc"},  // 'unmod' enabled with #1245
   {VK_SPACE, 0, "Space"},
   {VK_SNAPSHOT, 1, "PrintScreen"},
   {VK_LWIN, 1, "LWin"},
@@ -2282,6 +2326,16 @@ pick_key_function(wstring key_commands, char * tag, int n, uint key, mod_keys mo
 
       return ret;
     }
+    else if (key == VK_CAPITAL && cfg.compose_key == MDK_CAPSLOCK) {
+      // support config ComposeKey=capslock:
+      // nullify the keyboard state lock effect, see above,
+      // so we can support config ComposeKey=capslock;
+      // avoid the recursion with fake events that have scancode 0
+      if (scancode)
+        win_key_nullify(key);
+      else
+        return false;
+    }
 
     n--;
     if (sepp) {
@@ -2380,6 +2434,65 @@ insert_alt_code(void)
 // So let's go with the biggest number.
 #define TO_UNICODE_MAX 16
 
+#define dont_debug_altgr
+
+#ifdef debug_altgr
+
+static int
+send_vks(bool down, int vk1, int vk2)
+{
+#ifdef debug_virtual_key_codes
+  printf("[7mfeeding VKs %02X %02X[m\n", vk1, vk2);
+#endif
+
+  DWORD ext(int vk) {
+    if (vk == VK_RSHIFT || vk == VK_RCONTROL || vk == VK_RMENU || vk == VK_RBUTTON || vk == VK_RWIN)
+      return KEYEVENTF_EXTENDEDKEY;
+    else
+      return 0;
+  }
+
+  INPUT ki[2];
+  ki[0].type = INPUT_KEYBOARD;
+  ki[1].type = INPUT_KEYBOARD;
+  ki[0].ki.dwFlags = (down ? 0 : KEYEVENTF_KEYUP) | ext(vk1);
+  ki[1].ki.dwFlags = (down ? 0 : KEYEVENTF_KEYUP) | ext(vk2);
+  ki[0].ki.wVk = vk1 & 0xFF;
+  ki[1].ki.wVk = vk2 & 0xFF;
+  ki[0].ki.wScan = 0;
+  ki[1].ki.wScan = 0;
+  LONG t = GetMessageTime() + 10;
+  ki[0].ki.time = t;
+  ki[1].ki.time = t;
+  ki[0].ki.dwExtraInfo = 0;
+  ki[1].ki.dwExtraInfo = 0;
+  return SendInput(2, ki, sizeof(INPUT));
+}
+
+static bool
+send_test_vks(bool down, int key)
+{
+  if (key == 0x31)
+    return send_vks(down, VK_LCONTROL, VK_LMENU);
+  if (key == 0x32)
+    return send_vks(down, VK_LCONTROL, VK_RMENU);
+  if (key == 0x33)
+    return send_vks(down, VK_RCONTROL, VK_LMENU);
+  if (key == 0x34)
+    return send_vks(down, VK_RCONTROL, VK_RMENU);
+  if (key == 0x35)
+    return send_vks(down, VK_LMENU, VK_LCONTROL);
+  if (key == 0x36)
+    return send_vks(down, VK_LMENU, VK_RCONTROL);
+  if (key == 0x37)
+    return send_vks(down, VK_RMENU, VK_LCONTROL);
+  if (key == 0x38)
+    return send_vks(down, VK_RMENU, VK_RCONTROL);
+  return false;
+}
+
+#endif
+
 bool
 win_key_down(WPARAM wp, LPARAM lp)
 {
@@ -2398,7 +2511,12 @@ win_key_down(WPARAM wp, LPARAM lp)
     comp_state = COMP_NONE;
 
 #ifdef debug_virtual_key_codes
-  printf("win_key_down %02X %s scan %d ext %d rpt %d/%d other %02X\n", key, vk_name(key), scancode, extended, repeat, count, HIWORD(lp) >> 8);
+  printf("[7mwin_key_down %02X %s scan %02X ext %d rpt %d/%d other %02X[m\n", key, vk_name(key), scancode, extended, repeat, count, HIWORD(lp) >> 8);
+#endif
+
+#ifdef debug_altgr
+  if (send_test_vks(true, key))
+    return false;
 #endif
 
 static LONG last_key_time = 0;
@@ -2443,7 +2561,7 @@ static LONG last_key_time = 0;
 
   // Fix AltGr detection;
   // workaround for broken Windows on-screen keyboard (#692)
-  if (!cfg.old_altgr_detection) {
+  if (!(cfg.old_altgr_detection & 1)) {
     static bool lmenu_tweak = false;
     if (key == VK_MENU && !scancode) {
       extended = true;
@@ -2462,20 +2580,73 @@ static LONG last_key_time = 0;
   // Distinguish real LCONTROL keypresses from fake messages sent for AltGr.
   // It's a fake if the next message is an RMENU with the same timestamp.
   // Or, as of buggy TeamViewer, if the RMENU comes soon after (#783).
-  if (key == VK_CONTROL && !extended) {
-    lctrl = true;
-    lctrl_time = GetMessageTime();
-    //printf("lctrl (true) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
-  }
-  else if (lctrl_time) {
-    lctrl = !(key == VK_MENU && extended 
-              && GetMessageTime() - lctrl_time <= cfg.ctrl_alt_delay_altgr);
-    lctrl_time = 0;
-    //printf("lctrl (time) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
+  if (cfg.old_altgr_detection & 2) {
+    if (key == VK_CONTROL && !extended) {
+      lctrl = true;
+      lctrl_time = GetMessageTime();
+      //printf("lctrl (true) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
+    }
+    else if (lctrl_time) {
+      lctrl = !(key == VK_MENU && extended 
+                && GetMessageTime() - lctrl_time <= cfg.ctrl_alt_delay_altgr);
+      lctrl_time = 0;
+      //printf("lctrl (time) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
+    }
+    else {
+      lctrl = is_key_down(VK_LCONTROL) && (lctrl || !is_key_down(VK_RMENU));
+      //printf("lctrl (else) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
+    }
   }
   else {
-    lctrl = is_key_down(VK_LCONTROL) && (lctrl || !is_key_down(VK_RMENU));
-    //printf("lctrl (else) %d (%d)\n", lctrl, is_key_down(VK_LCONTROL));
+    // State machine to distinguish left-Control and right-Alt 
+    // as pressed in any sequence with same timestamp to form AltGr,
+    // as well as both modifiers separately,
+    // in order to support all of AltGr, Ctrl+AltGr, etc.
+    // - workaround for Citrix problem (#1266)
+    // - keep this workaround separate from other AltGr workarounds 
+    //   to prevent nasty interference, so maintain extra flags and timestamps
+/*
+keys: C is VK_LCONTROL, 2 is simulated LCONTROL+RMENU, 7 is RMENU+LCONTROL
+VK: events observed
+state: as desired
+	1	2	3	4	5	6	7	8
+keys	AGr/2	7	C+AGr	AGr+C	C+2	2+C	C+7	7+C
+VK	C=M	C=M=C	C+M	C=M+C	C+C=M	C=M+C	C+M=C	C=M=C+C
+state	A	A	CA	CA	CA	CA	CA	CA
+
+state transition matrix
+state		input (= same timestamp, > later)
+C	M	>C	=C	>M	=M
+---------------------------------------------
+0	0	+C	?	+M	?
+C	0	2C	-	C+MA	-1C+MA
+0	M	+C	+A	"	"
+C	M	+C	+A	"	"
+*/
+    if (key == VK_CONTROL && !extended) {
+      lctrl_time = GetMessageTime();
+      if (is_ralt && lctrl_time - ralt_time <= cfg.ctrl_alt_delay_altgr)
+        is_altgr = true;
+      else
+        if (is_lctrl)
+          is_lctrl = 2;
+        else
+          is_lctrl = true;
+      //printf("-> is_lctrl %d\n", is_lctrl);
+    }
+    else if (key == VK_MENU && extended) {
+      ralt_time = GetMessageTime();
+      is_ralt = true;
+      if (is_lctrl) {
+        is_altgr = true;
+        if (ralt_time - lctrl_time <= cfg.ctrl_alt_delay_altgr)
+          if (is_lctrl)
+            is_lctrl -= 1;
+      }
+      //printf("-> is_ralt %d\n", is_ralt);
+    }
+    lctrl = is_lctrl;
+    //printf("-- is_lctrl %d is_ralt %d is_altgr %d\n", is_lctrl, is_ralt, is_altgr);
   }
 
   bool numlock = kbd[VK_NUMLOCK] & 1;
@@ -2505,6 +2676,15 @@ static LONG last_key_time = 0;
   }
 
   bool altgr = ralt | ctrl_lalt_altgr;
+  //altgr |= is_altgr;  // doesn't appear to be necessary
+  if (!(cfg.old_altgr_detection & 4)) {
+    // enforce Control modifier as detected by VK_ state
+    // unless it could be involved to determine AltGr
+    //printf("-- lctrl %d lctrl0 %d altgr %d altgr0 %d is_ralt %d is_altgr %d\n", lctrl, lctrl0, altgr, altgr0, is_ralt, is_altgr);
+    if (lctrl0 && !altgr)
+      ctrl = true;
+  }
+
   // While this should more properly reflect the AltGr modifier state, 
   // with the current implementation it has the opposite effect;
   // it spoils Ctrl+AltGr with modify_other_keys mode.
@@ -2522,6 +2702,15 @@ static LONG last_key_time = 0;
   bool super = super_key && is_key_down(super_key);
   bool hyper = hyper_key && is_key_down(hyper_key);
   mods |= super * MDK_SUPER | hyper * MDK_HYPER;
+  mods_debug = mods
+       | !!is_key_down(VK_LWIN) << 23
+       | !!is_key_down(VK_RWIN) << 22
+       | !!is_key_down(VK_LCONTROL) << 21
+       | !!is_key_down(VK_RCONTROL) << 20
+       | !!is_key_down(VK_LMENU) << 19
+       | !!is_key_down(VK_RMENU) << 18
+       | (uint)!!is_key_down(VK_LSHIFT) << 17
+       | (uint)!!is_key_down(VK_RSHIFT) << 16;
 
   update_mouse(mods);
 
@@ -2533,7 +2722,9 @@ static LONG last_key_time = 0;
   }
 
   if (key == VK_MENU) {
-    if (!repeat && mods == MDK_ALT && alt_state == ALT_NONE)
+    if (!repeat && mods == MDK_ALT && alt_state == ALT_NONE &&
+        (!altgr0 || cfg.altgr_is_alt)  // #1245
+       )
       alt_state = ALT_ALONE;
     return true;
   }
@@ -2546,6 +2737,15 @@ static LONG last_key_time = 0;
   // the child process has died.
   if ((key == VK_RETURN || key == VK_ESCAPE) && !mods && !child_is_alive())
     exit_mintty();
+
+  // On ESC or Enter key, restore keyboard IME state to alphanumeric mode.
+  if (cfg.key_alpha_mode && (key == VK_RETURN || key == VK_ESCAPE) && !mods) {
+    HIMC imc = ImmGetContext(wnd);
+    if (ImmGetOpenStatus(imc)) {
+      ImmSetConversionStatus(imc, IME_CMODE_ALPHANUMERIC, IME_SMODE_NONE);
+    }
+    ImmReleaseContext(wnd, imc);
+  }
 
   // Handling special shifted key functions
   if (newwin_pending) {
@@ -3332,10 +3532,10 @@ static struct {
   }
 
   bool altgr_key(void) {
+    trace_alt("altgr_key altgr %d alt %d -> %d\n", altgr, alt, lalt & !ctrl_lalt_altgr);
     if (!altgr)
       return false;
 
-    trace_alt("altgr_key alt %d -> %d\n", alt, lalt & !ctrl_lalt_altgr);
     alt = lalt & !ctrl_lalt_altgr;
 
     // Sync keyboard layout with our idea of AltGr.
@@ -3345,6 +3545,8 @@ static struct {
     // Need to check there's a Ctrl that isn't part of Ctrl+LeftAlt==AltGr.
     if ((ctrl & !ctrl_lalt_altgr) | (lctrl & rctrl))
       return false;
+
+    trace_alt("altgr_key -> layout alt %d\n", alt);
 
     // Try the layout.
     return layout();
@@ -3749,8 +3951,25 @@ win_key_up(WPARAM wp, LPARAM lp)
 
   uint key = wp;
 #ifdef debug_virtual_key_codes
-  printf("  win_key_up %02X %s\n", key, vk_name(key));
+  printf("  win_key_up %02X (down %02X) %s\n", key, last_key_down, vk_name(key));
 #endif
+
+#ifdef debug_altgr
+  if (send_test_vks(false, key))
+    return false;
+#endif
+
+  bool extended = HIWORD(lp) & KF_EXTENDED;
+  if (key == VK_CONTROL && !extended) {
+    is_lctrl = 0;
+    is_altgr = false;
+    //printf("-- clear is_lctrl %d\n", is_lctrl);
+  }
+  if (key == VK_MENU && extended) {
+    is_ralt = false;
+    is_altgr = false;
+    //printf("-- clear is_ralt %d\n", is_ralt);
+  }
 
   if (key == VK_CANCEL) {
     // in combination with Control, this may be the KEYUP event 
@@ -3758,6 +3977,7 @@ win_key_up(WPARAM wp, LPARAM lp)
     // detected properly for use as a modifier; let's try to fix this
     super_key = 0;
     hyper_key = 0;
+    compose_key = 0;
   }
   else if (key == VK_SCROLL) {
     // heuristic compensation of race condition with auto-repeat
@@ -3785,6 +4005,11 @@ win_key_up(WPARAM wp, LPARAM lp)
         (cfg.compose_key == MDK_ALT && key == VK_MENU)
         || (cfg.compose_key == MDK_SUPER && key == super_key)
         || (cfg.compose_key == MDK_HYPER && key == hyper_key)
+        // support KeyFunctions=CapsLock:compose (or other key)
+        || key == compose_key
+        // support config ComposeKey=capslock
+        // needs support by nullifying capslock state (see above)
+        || (cfg.compose_key == MDK_CAPSLOCK && key == VK_CAPITAL)
        )
     {
       if (comp_state >= 0) {
@@ -3866,6 +4091,9 @@ win_key_up(WPARAM wp, LPARAM lp)
   if (key == VK_MENU) {
     if (alt_state > ALT_ALONE && alt_code) {
       insert_alt_code();
+    } else if (alt_state == ALT_ALONE) {
+      // support KeyFunctions=Alt:"alt" (#1245)
+      pick_key_function(cfg.key_commands, "Alt", 0, key, 0, 0, scancode);
     }
     alt_state = ALT_NONE;
     return true;

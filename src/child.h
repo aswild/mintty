@@ -13,14 +13,17 @@ extern void child_proc(void);
 extern void child_kill(bool point_blank);
 extern void child_write(const char *, uint len);
 extern void child_break(void);
+extern void child_intr(void);
 extern void child_printf(const char * fmt, ...) __attribute__((format(printf, 1, 2)));
 extern void child_send(const char *, uint len);
 extern void child_sendw(const wchar *, uint len);
 extern void child_resize(struct winsize * winp);
 extern bool child_is_alive(void);
 extern bool child_is_parent(void);
+extern char * procres(int pid, char * res);
 extern wchar * grandchild_process_list(void);
 extern char * child_tty(void);
+extern uchar * child_termios_chars(void);
 extern char * foreground_prog(void);  // to be free()d
 extern void user_command(wstring commands, int n);
 extern wstring child_conv_path(wstring, bool adjust_dir);

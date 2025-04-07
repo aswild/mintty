@@ -24,17 +24,31 @@ extern HIMC imc;        // the input method context
 extern HWND config_wnd; // the options window
 extern ATOM class_atom;
 
+extern wchar * getregstr(HKEY key, wstring subkey, wstring attribute);
+extern uint getregval(HKEY key, wstring subkey, wstring attribute, uint def);
+
 extern void clear_tabs(void);
 extern void add_tab(uint tabi, HWND wndi);
+extern void win_tab_left(void);
+extern void win_tab_right(void);
+extern void win_tab_move(int n);
 // Inter-window actions
 enum {
   WIN_MINIMIZE = 0,
   WIN_MAXIMIZE = -1,
   WIN_FULLSCREEN = -2,
+#ifdef sanitize_min_restore_via_sync
+  WIN_RESTORE = -3,
+#endif
+#ifdef async_horflush
+  WIN_HORFLUSH = -4,
+#endif
   WIN_TOP = 1,
   WIN_TITLE = 4,
   WIN_INIT_POS = 5,
+#ifdef sanitize_min_restore_via_hide
   WIN_HIDE = 8,
+#endif
 };
 // support tabbar
 extern void win_to_top(HWND top_wnd);
@@ -79,12 +93,15 @@ extern uint dpi;
 extern int per_monitor_dpi_aware;
 extern bool keep_screen_on;
 extern bool force_opaque;
+extern bool checked_desktop_config;
 
 extern bool click_focus_token;
 extern pos last_pos;
 extern int lines_scrolled;
 extern bool kb_input;
 extern uint kb_trace;
+
+extern char * version(void);
 
 extern void win_update_now(void);
 
@@ -112,14 +129,14 @@ extern void set_dpi_auto_scaling(bool on);
 extern void win_update_transparency(int transparency, bool opaque);
 extern void win_prefix_title(const wstring);
 extern void win_unprefix_title(const wstring);
+extern void strip_title(wchar * title);
 extern void win_set_icon(char * s, int icon_index);
+extern char * guardpath(string path, int level);
 
 extern void win_show_tip(int x, int y, int cols, int rows);
 extern void win_destroy_tip(void);
 
 extern void taskbar_progress(int percent);
-extern HCURSOR win_get_cursor(bool appmouse);
-extern void set_cursor_style(bool appmouse, wchar * style);
 
 extern void win_init_menus(void);
 extern void win_update_menus(bool callback);
@@ -130,6 +147,10 @@ extern bool win_mouse_click(mouse_button, LPARAM);
 extern void win_mouse_release(mouse_button, LPARAM);
 extern void win_mouse_wheel(POINT wpos, bool horizontal, int delta);
 extern void win_mouse_move(bool nc, LPARAM);
+
+extern bool is_mouse_mode_by_pixels(void);
+extern HCURSOR win_get_cursor(bool appmouse);
+extern void set_cursor_style(int appmouse, wstring style);
 
 extern mod_keys get_mods(void);
 extern void win_key_reset(void);
@@ -162,6 +183,7 @@ extern void win_set_ime_open(bool);
 extern void win_set_ime(bool open);
 extern bool win_get_ime(void);
 
+extern bool is_win_dark_mode(void);
 extern void win_dark_mode(HWND w);
 
 extern void show_message(char * msg, UINT type);

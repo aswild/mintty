@@ -1,3 +1,255 @@
+### 3.7.8 (22 March 2025) ###
+
+Terminal features
+  * SUB and CAN controls terminate ESC sequences and are displayed (DEC, xterm 397).
+  * LAM/ALEF single-cell joining mode (DECSET 2521).
+  * Arabic joining considers ZWJ and ZWNJ formatters.
+  * Fix graphics (image/sixel) and emoji display to adapt to horizontal scrolling.
+  * Fix mouse position click coordinates to adapt to horizontal scrolling.
+  * Fix reflow to avoid vanishing graphics on terminal resizing.
+  * Changed image size limit from 1MB to configurable value, default > 4MB.
+
+Character rendering
+  * Fix overhang rendering for some characters, clipped in 3.7.7 (#1304).
+  * Optional single-cell rendering of Arabic LAM/ALEF ligatures.
+  * Revise background clearing to catch border cases (#1310).
+  * Option to center position of smaller glyphs in CJK ranges (#1313).
+
+Keyboard handling
+  * Enforce Ctrl as held down (except with AltGr) (~#1266, ~#1273).
+
+Window handling
+  * Fix frame adjustment when disabling darkmode.
+  * Display hair cross mouse pointer in pixel-grained mouse reporting modes.
+
+Font configuration:
+  * Handle font metrics errors (#1309).
+
+Configuration:
+  * New option ThemeDark to be used if Windows Darkmode is set (#1305, ~#1303).
+  * New glyph centering prefix ">" for option FontChoice (#1313).
+  * Propagate TERM config setting to WSL HOSTTERM variable (mintty/wsltty#290, ~mintty/wsltty#278).
+  * New option PixMousePointer.
+  * New option MaxImageSize.
+
+### 3.7.7 (21 December 2024) ###
+
+Terminal features
+  * VT52 emulation absolute position keeps row/column if out-of-bounds (#1299).
+
+Character rendering
+  * Reenabled distinct blinking for combined characters (broken since 3.5.3).
+  * Fix skipping of accent to next position on background colour.
+  * Fix drawing of Powerline round symbols (mintty/wsltty#358).
+  * Fix rendering of right-to-left scripts on italic or cursor position.
+  * Tweak diagonal box characters for uniform appearance.
+  * Limit double-width enforcement by ZWJ to potential emoji base characters.
+
+Window handling
+  * Show new tab at its target position right away (#1292).
+  * Live changing of reordered tabs while being dragged (#1293).
+  * Change mouse pointer while tab dragging (#1293).
+  * Adapt dynamic tab drag highlighting (~#1293).
+  * Swipe visualisation of tab reorder dragging (~#1293).
+  * New windows/Alt+F2 launches terminal on same monitor (broken since 2.9.5).
+  * Maximise/Restore keeps window on same monitor (broken since 3.6.5, ~#1226).
+  * Virtual transparency: fix background offset on multiple monitors (#1296).
+  * Virtual transparency: fix background offset with options Scrollbar=left or BorderStyle=frame/void (#1296).
+  * Image background: keep updated while moving/resizing.
+
+Misc
+  * Avoid potentially blocking retrieval of printers list (#1295).
+  * Option -RR reports list of available printers.
+
+### 3.7.6 (24 September 2024) ###
+
+Font and character rendering
+  * Fix rendering of repeated DEC graphics (#1288).
+
+Window handling
+  * Tabs can be reordered interactively via drag-and-drop (#1283).
+  * Fix command-line options -B and --Border (#7).
+
+### 3.7.5 (17 September 2024) ###
+
+Unicode and Emoji data
+  * Unicode 16.0 update.
+
+Terminal features
+  * Emoji width mode (DECSET 2027) to always render emojis in 2-cell width.
+  * Dropped deprecated DECSET mode 2027 for terminal reflow.
+  * Fix CopyTab=true behaviour (#1281).
+
+Character encoding
+  * Disable GB18030 workaround for cygwin since 3.5 which supports it natively.
+
+Font and character rendering
+  * Fix rendering of combined characters in South East Asian scripts (#1285).
+  * Fix and enable rendering for geometric Powerline symbols (#979, #943).
+  * Avoid bottom padding artefacts of double-height self-drawn symbols.
+  * Box Drawing characters (U+2500..U+257F) are self-drawn (#935, #1119).
+
+Mouse and menu handling
+  * Allow disabling of mouse menus by clearing Menu* (#1279).
+
+Window handling
+  * Avoid interaction problem of tabbed/non-tabbed windows.
+  * Tabs can be reordered via user-definable functions (#1283).
+  * Tweak initial window display, mitigate bright flash (#1284).
+  * Border style can be set also via config file (#7).
+
+Configuration
+  * New option BoxDrawing (#935, #1119).
+  * New user-definable functions tab-left, tab-right to reorder tabbar (#1283).
+  * Setting options Menu* to empty value disables the respective menu (#1279).
+  * Skip config files in $HOME if $HOME does not exist (mintty/wsltty#351).
+  * New option BorderStyle (#7).
+
+### 3.7.4 (03 July 2024) ###
+
+Keyboard handling
+  * Tweak revised AltGr handling to avoid sticky Ctrl state (#1273, ~#1266).
+
+### 3.7.3 (28 June 2024) ###
+
+Misc
+  * Fix version tag and package building problems.
+
+Configuration
+  * Prevent saving changed settings to /etc/minttyrc.
+
+### 3.7.2 (27 June 2024) ###
+
+Terminal features
+  * Restore wrap modes on return from VT52 mode.
+  * Fix scrolling artefacts at overhanging emojis with setting EmojiPlacement=full (#1261).
+  * Drop exemptions from emoji space expansion (numbers and flag letters, ~#1104).
+  * Escape sequence DECST8C reset tab stops (xterm 389, VT510).
+  * Escape sequence DECRQDE request display extent (xterm 387, VT340).
+  * Support OSC 52 ? to paste base64-encoded clibboard (#1264, xterm).
+  * Support OSC 52 to clear clibboard (xterm).
+  * Fixed DSR Locator status response.
+
+Text rendering
+  * Render dim attribute as a Light font variation if available.
+  * Tentatively changing default bold rendering as bold font.
+  * Fix CJK quote marks auto-expansion for FontChoice-set fonts (#1271).
+  * Fix artefacts from auto-narrowing end-of-line overhang (#1179).
+
+Keyboard handling
+  * Revise AltGr handling to support flexible right-Alt+left-Ctrl combinations (#1266).
+
+Misc
+  * Support fallback to legacy wslbridge for old Windows versions (mintty/wsltty#350).
+  * Fix CopyTab=yes crash condition (#1269).
+  * Optional confirmation for pasting multi-line clipboard contents (#1268).
+  * Unsqueeze the Options dialog slightly.
+  * Ctrl+Win+mouse-scroll zooms font even if ZoomMouse is off.
+
+Desktop integration
+  * Avoid taskbar icon width twitching in Windows 11 (#1263).
+
+Configuration
+  * New option AllowPasteSelection (#1264).
+  * Drop AllowSetSelection from interactive Options menu (~#1264).
+  * New option TabFont.
+  * New option DimAsFont.
+  * Add "Show dim as font" to options dialog.
+  * Change default setting BoldAsFont=yes.
+  * New option ConfirmMultiLinePasting (#1268).
+
+### 3.7.1 (24 February 2024) ###
+
+Terminal features
+  * Dropped DSR 53 (legacy xterm mistake, dropped in xterm 389).
+  * HTML screen dump supports subscript or superscript.
+  * HTML screen dump supports DEC double-width lines and pairs of double-height lines.
+  * Tweak DECRQCRA Rectangular Checksum to match xterm (~#1225, xterm 390).
+  * Fix status area refresh, especially after restoring a minimized window.
+  * Workaround for rendering failure of top-left background text on background image.
+  * Fix invisible and blinking attributes on background image.
+  * Added XTQMODKEYS to DECRQSS (#1189, xterm 389).
+
+Misc
+  * Fix handling of options to be saved (#1246, #1247).
+  * Tune and fix click-opening URL (mintty/wsltty#346, #1254).
+  * Fix layout of Options dialog Selection pane (#1257).
+
+Window handling
+  * Fix instable window switching after minimize/restore (#1242, #1249).
+  * Fix window switching (Ctrl+ALT) after minimize/restore (#1242).
+  * New rewrap per-line disable mode DECRST 7723 (deprecated 2027, #1255).
+  * Semi-workaround for transparency loss when resizing unfocused grid-snapped window (#1256).
+
+Configuration
+  * New user-definable key Alt for option KeyFunctions (#1245).
+  * New user-definable function intr (~#1245).
+
+### 3.7.0 (14 November 2023) ###
+
+Misc
+  * Fix memory leak (mintty/wsltty#340) caused by dynamic emoji checking.
+  * Revise and unify handling of dynamic pathnames for terminal control.
+  * Guard network access via dynamic pathnames.
+
+Unicode and Emoji data
+  * Unicode 15.1 update.
+  * Adapt getemojis script to reduced format of unicode.org emoji charts (#1240).
+
+Terminal features
+  * Tweak mousewheel scrolling: do not mix line and page events (#1234).
+  * Tweak mousewheel scrolling: page scrolling one line less, consistent with keyboard paging (#1234).
+  * Send Alt modifier with mousewheel events (#1234).
+  * New DECSET 7765 to exchange normal and Alt-modified mouse wheel scrolling (#1234).
+  * Tweak double-click filename/URL selection with colon (#1236).
+  * Filter paste characters causing interrupt signals, according to the current stty settings.
+  * Fixed background in HTML screen dump.
+
+Window handling
+  * Better error handling if click-opening file fails.
+  * Save image file with proper access rights.
+
+Font rendering
+  * Support size adjustment of alternative fonts, for use as secondary fonts (mintty/wsltty#341).
+
+Configuration
+  * Alternative font specification supports initial + for size increase (mintty/wsltty#341).
+  * New option GuardNetworkPaths.
+  * Added STTY to FilterPasteControls settings (xterm 388), as default.
+
+### 3.6.5 (3 September 2023) ###
+
+Pathname handling
+  * Fix file link detection (#1208), tweak URL detection (#1209).
+  * Restore opening of Windows path names (#1219; broken since 2.8.1).
+
+Terminal features
+  * Fix setup of initial status line if monitor DPI is 96.
+  * ESC/Enter restore alphanumeric keyboard input mode while IME is active (#1223).
+  * OSC 50 query response is "?" after font setting failed.
+  * Fix DECRQCRA Rectangular Checksum attribute handling.
+  * Added DECSACE to DECRQSS (xterm 383).
+  * Optionally indicate keyboard layout code in status line.
+  * Fix image display (iTerm2 protocol) in "Sixel display mode".
+  * New DECSET 7780 "Image display mode" to keep cursor position on image output (#1228).
+  * New parameter doNotMoveCursor for iTerm2-style image output (#1228).
+
+Window handling
+  * Revamp window operations, esp max/fullscreen, to not raise to foreground.
+  * Sanitize Alt+TAB behaviour: Group taskbar icons by setting -o Class (#1207).
+  * Handling transparency in tab sets (#1152, #1069, ~#1128).
+  * Workaround against dropping fullscreen on DPI change (#1226).
+  * Preserve "normal position" (unzoomed) during screen changes (~#1226).
+
+Configuration
+  * New user-definable function compose (#1211).
+  * New option setting ComposeKey=capslock (#1211).
+  * New option ConfirmReset to guard confirm dialog on interactive reset (#1173).
+  * Support changed Drag-and-drop format for some theme file downloads.
+  * New option KeyAlphaMode (#1223).
+  * New option -Rw to report the Windows window id.
+  * New option StatusDebug to include debug information in the status line.
+
 ### 3.6.4 (25 Mar 2023) ###
 
 Terminal features

@@ -1,5 +1,5 @@
 // term.c (part of mintty)
-// Copyright 2008-12 Andy Koppe, 2016-2020 Thomas Wolff
+// Copyright 2008-2023 Andy Koppe, 2016-2025 Thomas Wolff
 // Adapted from code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -277,6 +277,10 @@ term_reset(bool full)
   }
 
   term.state = NORMAL;
+  if (term.vt52_mode) {
+    term.autowrap = term.save_autowrap;
+    term.rev_wrap = term.save_rev_wrap;
+  }
   term.vt52_mode = 0;
 
   // DECSTR attributes and cursor states to be reset
@@ -346,16 +350,19 @@ term_reset(bool full)
     term.wheel_reporting_xterm = false;
     term.wheel_reporting = true;
     term.app_wheel = false;
+    term.alt_wheel = false;
     term.echoing = false;
     term.bracketed_paste = false;
     term.wide_indic = false;
     term.wide_extra = false;
     term.disable_bidi = false;
+    term.join_lam_alef = false;
     term.enable_bold_colour = cfg.bold_as_colour;
     term.enable_blink_colour = true;
     term.readline_mouse_1 = cfg.clicks_place_cursor;
     term.readline_mouse_2 = cfg.clicks_place_cursor;
     term.readline_mouse_3 = cfg.clicks_place_cursor;
+    term.emoji_width = false;
   }
 
   term.virtuallines = 0;
@@ -365,6 +372,7 @@ term_reset(bool full)
   term.imgs.last = NULL;
   term.imgs.altfirst = NULL;
   term.imgs.altlast = NULL;
+  term.image_display = 0;
   term.sixel_display = 0;
   term.sixel_scrolls_right = 0;
   term.sixel_scrolls_left = 0;
@@ -1199,12 +1207,18 @@ printsc(char * tag, char * ltag, termline **lines, int rows)
 #define printsc(tag, ltag, lines, rows)	
 #endif
 
+#define dont_debug_reflow
+
 /*
  * Line rebreaking for screen and scrollback lines
  */
 static void
-term_reflow(int newrows, int newcols)
+term_reflow(int newrows, int newcols, bool quick_reflow)
 {
+  trace_resize(("----- term_reflow %d %d quick %d\n", newrows, newcols, quick_reflow));
+#ifdef debug_reflow
+  ulong t0 = mtime();
+#endif
   // First, mark the current cursor position;
   // also clear old marks elsewhere;
   // to be sure to catch the cursor position, use the new height 
@@ -1247,6 +1261,9 @@ term_reflow(int newrows, int newcols)
       }
     cursor_scrolled ++;
   }
+#ifdef debug_reflow
+  ulong t1 = mtime();
+#endif
 
   // Reflow scrollback buffer
   int i = 0;
@@ -1267,6 +1284,23 @@ term_reflow(int newrows, int newcols)
     // determine actual non-empty columns
     while (actcols && attr_clear(inbuf->chars[actcols - 1].attr.attr))
       actcols --;
+
+    // Quick reflow: for continuous reflow while resizing, 
+    // reflow must be quicker; we only reflow the bottommost lines
+    if (quick_reflow) {
+      // TODO: do not split handling for wrapped lines
+      // TODO: check rewrap artefacts
+      if (i < sblines - 2 * max(term.rows, newrows)) {
+        // skip reflow for all but the bottommost lines
+        scrollback_push(cline, newrows);
+
+        cursor_scroll(inbuf);
+        freeline(inbuf);
+
+        i ++;
+        continue;
+      }
+    }
 
     if ((!(inbuf->lattr & LATTR_WRAPPED) && actcols <= newcols)
         || !(inbuf->lattr & LATTR_REWRAP)
@@ -1329,6 +1363,13 @@ term_reflow(int newrows, int newcols)
       return true;
     }
 #else
+#ifdef skip_rewrap
+    // ignore rewrap and clear out input wrap buffer, for testing
+    scrollback_push(compressline(inbuf), newrows);
+    freeline(inbuf);
+    goto wrapped;
+#endif
+
     bool advance_inbuf()
     {
       if ((inbuf->lattr & LATTR_WRAPPED) && i + j + 1 < sblines) {
@@ -1441,6 +1482,9 @@ term_reflow(int newrows, int newcols)
   }
   free(scrollback);
   printsb(">rewrap");
+#ifdef debug_reflow
+  ulong t2 = mtime();
+#endif
 
   // Rebase graphics positions.
   // Make sure the anchor position (top-left cell of image) is registered 
@@ -1481,7 +1525,15 @@ term_reflow(int newrows, int newcols)
 #endif
     freeline(line);
   }
-  term.virtuallines = term.sblines - newrows;
+
+  // What was the idea of this assignment?
+  // It spoils graphics references and makes graphics vanish 
+  // on resize with reflow.
+  //term.virtuallines = term.sblines - newrows;
+
+#ifdef debug_reflow
+  ulong t3 = mtime();
+#endif
 
   // Pop all screen lines back from scrollback buffer;
   // we need to handle the case that, after reflow, there are fewer lines 
@@ -1533,9 +1585,16 @@ term_reflow(int newrows, int newcols)
         i = 0;
         break;
       }
+#ifdef debug_reflow
+  ulong t4 = mtime();
+#endif
 
   // Trim scrollback buffer to max config size
   scrollback_trim();
+#ifdef debug_reflow
+  ulong t5 = mtime();
+  printf("pre %ld reflow %ld graph %ld post %ld trim %ld\n", t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4);
+#endif
 
   if (cursor_scrolled > newrows) {
     // scroll back to display previous cursor position
@@ -1549,9 +1608,9 @@ term_reflow(int newrows, int newcols)
  * Set up the terminal for a given size.
  */
 void
-term_resize(int newrows, int newcols)
+term_resize(int newrows, int newcols, bool quick_reflow)
 {
-  trace_resize(("--- term_resize %d %d\n", newrows, newcols));
+  trace_resize(("--- term_resize %d %d quick %d\n", newrows, newcols, quick_reflow));
 
   bool on_alt_screen = term.on_alt_screen;
   term_switch_screen(0, false);
@@ -1678,7 +1737,7 @@ term_resize(int newrows, int newcols)
 
   // Reflow screen and scrollback buffer to new width
   if (cfg.rewrap_on_resize && newcols != term.cols)
-    term_reflow(newrows, newcols);
+    term_reflow(newrows, newcols, quick_reflow);
 
   // Make a new displayed text buffer.
   if (term.displines) {
@@ -2841,6 +2900,7 @@ match_emoji(termchar * d, int maxlen)
             curlowsurr += curlowsurr->cc_next;  // low surrogate of current char
           }
         }
+
         if (emoji.len) {  // add sequence to dynamic list
           emoji_dyns = renewn(emoji_dyns, nemoji_dyns + 1);
 
@@ -2871,6 +2931,8 @@ match_emoji(termchar * d, int maxlen)
             emoji.len = 0;
           }
         }
+        else
+          free(chs);
       }
     }
 
@@ -2980,22 +3042,40 @@ emoji_show(int x, int y, struct emoji e, int elen, cattr eattr, ushort lattr)
 }
 
 #define dont_debug_win_text_invocation
+#if defined(debug_win_text_modified) && !defined(debug_win_text_invocation)
+# define debug_win_text_invocation
+#endif
 
 #ifdef debug_win_text_invocation
 
 void
-_win_text(int line, int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, char has_rtl, bool clearpad, uchar phase)
+_win_text(int line, int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, char has_rtl, char has_sea, bool clearpad, uchar phase)
 {
-  if (*text != ' ') {
-    printf("[%d] %d:%d(len %d) attr %08llX", line, ty, tx, len, attr.attr);
-    for (int i = 0; i < len && i < 8; i++)
+  int last = len - 1;
+  while (last >= 0 && text[last] == ' ')
+    last --;
+
+  if (last >= 0) {
+    printf("[<%d] %d:%d(len %2d) attr %09llX", line, ty, tx, len, attr.attr);
+    for (int i = 0; i <= last /*&& i < 8*/; i++)
       printf(" %04X", text[i]);
     printf("\n");
   }
-  win_text(tx, ty, text, len, attr, textattr, lattr, has_rtl, clearpad, phase);
+
+  win_text(tx, ty, text, len, attr, textattr, lattr, has_rtl, has_sea, clearpad, phase);
+
+#ifdef debug_win_text_modified
+  // debug modification by substitute_combining_chars feature, now disabled
+  if (last >= 0) {
+    printf("[>%d] %d:%d(len %2d) attr %09llX", line, ty, tx, len, attr.attr);
+    for (int i = 0; i <= last /*&& i < 8*/; i++)
+      printf(" %04X", text[i]);
+    printf("\n");
+  }
+#endif
 }
 
-#define win_text(tx, ty, text, len, attr, textattr, lattr, has_rtl, clearpad, phase) _win_text(__LINE__, tx, ty, text, len, attr, textattr, lattr, has_rtl, clearpad, phase)
+#define win_text(tx, ty, text, len, attr, textattr, lattr, has_rtl, has_sea, clearpad, phase) _win_text(__LINE__, tx, ty, text, len, attr, textattr, lattr, has_rtl, has_sea, clearpad, phase)
 
 #endif
 
@@ -3013,7 +3093,7 @@ void trace_line(char * tag, termchar * chars)
 #endif
 
 #define UNLINED (UNDER_MASK | ATTR_STRIKEOUT | ATTR_OVERL | ATTR_OVERSTRIKE)
-#define UNBLINK (FONTFAM_MASK | GRAPH_MASK | UNLINED | TATTR_EMOJI)
+#define UNBLINK (FONTFAM_MASK | UNLINED | TATTR_EMOJI)
 
 // Attributes to be ignored when checking whether to apply overhang:
 // we cannot support overhang over double-width space (TATTR_WIDE),
@@ -3027,6 +3107,23 @@ void trace_line(char * tag, termchar * chars)
 
 #define IGNWIDTH TATTR_EXPAND | TATTR_NARROW | TATTR_SINGLE | TATTR_CLEAR
 #define IGNEMOJATTR (TATTR_WIDE | ATTR_FGMASK | TATTR_COMBINING | IGNWIDTH)
+
+static bool
+is_comcom(wchar ch)
+{
+  static wchar comcom[] = {
+    0x0E33,  // THAI CHARACTER SARA AM
+    0x0EB3,  // LAO VOWEL SIGN AM
+    0x0F77,  // TIBETAN VOWEL SIGN VOCALIC RR
+    0x0F79,  // TIBETAN VOWEL SIGN VOCALIC LL
+  };
+  for (uint i = 0; i < lengthof(comcom); i++)
+    if (ch < comcom[i])
+      return false;
+    else if (ch == comcom[i])
+      return true;
+  return false;
+}
 
 void
 term_paint(void)
@@ -3126,15 +3223,22 @@ term_paint(void)
              // only if followed by space
              //&& iswspace(d[1].chr) && !d[1].cc_next
              //&& d[1].chr != 0x1680 && d[1].chr != 0x3000
-             && d[1].chr == ' ' && !d[1].cc_next
+             && ((d[1].chr == ' ' && !d[1].cc_next)
+             // ... or with setting EmojiPlacement=full,
+             // to avoid scrolling artefacts (#1261)
+                 || cfg.emoji_placement == EMPL_FULL
+                )
              // not at cursor position? does not work for emojis
              //&& !at_cursor_pos(i, j)
              // and significant attributes are equal
              && !((d->attr.attr ^ d[1].attr.attr) & ~IGNOVRHANG)
-             // do not overhang numbers, flag letters etc
+#ifdef exempt_emoji_components_from_overhang
+#warning drop this for #1261
+             // do not overhang numbers, flag letters etc (~#1104)
              && d->chr >= 0x80 // exclude #️*️0️..9️
              //&& !(ch >= 0x1F1E6 || ch <= 0x1F1FF) // exclude 🇦..🇿
              && !(!e.seq && emoji_bases[e.idx].ch >= 0x1F1E6 && emoji_bases[e.idx].ch <= 0x1F1FF)
+#endif
                )
             {
               d->attr.attr |= TATTR_OVERHANG;
@@ -3213,13 +3317,9 @@ term_paint(void)
         else if (tchar < ' ' && cfg.printable_controls > 1)
           tchar = 0x2591;  // ⌷⎕░▒▓
         if (tchar >= 0x2580 && tchar <= 0x259F) {
-          // Block Elements (U+2580-U+259F)
-          // ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔▕▖▗▘▙▚▛▜▝▞▟
-          tattr.attr |= ((cattrflags)(tchar & 0xF)) << ATTR_GRAPH_SHIFT;
-          uchar gcode = 14 + ((tchar >> 4) & 1);
-          // extend graph encoding with unused font numbers
+          // tag substitutes as Block Elements (U+2580-U+259F)
           tattr.attr &= ~FONTFAM_MASK;
-          tattr.attr |= (cattrflags)gcode << ATTR_FONTFAM_SHIFT;
+          tattr.attr |= (cattrflags)11 << ATTR_FONTFAM_SHIFT;
         }
       }
 
@@ -3375,15 +3475,22 @@ term_paint(void)
              // only if followed by space
              //&& iswspace(d[1].chr) && !d[1].cc_next
              //&& d[1].chr != 0x1680 && d[1].chr != 0x3000
-             && d[1].chr == ' ' && !d[1].cc_next
+             && ((d[1].chr == ' ' && !d[1].cc_next)
+             // ... or with setting EmojiPlacement=full,
+             // to avoid scrolling artefacts (#1261)
+                 || cfg.emoji_placement == EMPL_FULL
+                )
              // not at cursor position? does not work for emojis
              //&& !at_cursor_pos(i, j)
              // and significant attributes are equal
              && !((d->attr.attr ^ d[1].attr.attr) & ~IGNOVRHANG)
-             // do not overhang numbers, flag letters etc
+#ifdef exempt_emoji_components_from_overhang
+#warning drop this for #1261
+             // do not overhang numbers, flag letters etc (~#1104)
              && d->chr >= 0x80 // exclude #️*️0️..9️
              //&& !(ch >= 0x1F1E6 || ch <= 0x1F1FF) // exclude 🇦..🇿
              && !(!e.seq && emoji_bases[e.idx].ch >= 0x1F1E6 && emoji_bases[e.idx].ch <= 0x1F1FF)
+#endif
                )
             {
               d->attr.attr |= TATTR_OVERHANG;
@@ -3490,7 +3597,13 @@ term_paint(void)
             // && is_ambigwide(tchar) ? but then they will be clipped...
            )
         {
+          // auto-narrowing of glyphs that don't fit into the cell
+
           //printf("[%d:%d] narrow? %04X..%04X\n", i, j, tchar, chars[j + 1].chr);
+
+          // mark for later win_text parameter clearpad (#1179)
+          tattr.attr |= TATTR_OVERHANG;
+
           if (
               // do not narrow various symbol ranges;
               // this is a bit redundant with Symbol overhang below
@@ -3880,11 +3993,11 @@ term_paint(void)
     }
     if (prevdirtyitalic) {
       // clear overhang into right padding border
-      win_text(term.cols, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr, false, true, 0);
+      win_text(term.cols, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr, false, false, true, 0);
     }
     if (firstdirtyitalic) {
       // clear overhang into left padding border
-      win_text(-1, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr, false, true, 0);
+      win_text(-1, i, W(" "), 1, CATTR_DEFAULT, (cattr*)&CATTR_DEFAULT, line->lattr, false, false, true, 0);
     }
 
 #define dont_debug_bidi_paragraphs
@@ -3929,6 +4042,7 @@ term_paint(void)
     int textlen = 0;
 
     char has_rtl = 0;
+    char has_sea = 0;  // South East Asian script
     uchar bc = 0;
     bool dirty_run = (line->lattr != displine->lattr);
     bool dirty_line = dirty_run;
@@ -3951,11 +4065,13 @@ term_paint(void)
     cattr ovl_attr;
     ushort ovl_lattr;
     char ovl_has_rtl;
+    char ovl_has_sea;
 
     void flush_text()
     {
       if (ovl_len) {
-        win_text(ovl_x, ovl_y, ovl_text, ovl_len, ovl_attr, ovl_textattr, ovl_lattr, ovl_has_rtl, false, 2);
+        // now flush the text for 2-phase output
+        win_text(ovl_x, ovl_y, ovl_text, ovl_len, ovl_attr, ovl_textattr, ovl_lattr, ovl_has_rtl, ovl_has_sea, false, 2);
         ovl_len = 0;
       }
     }
@@ -3968,7 +4084,7 @@ term_paint(void)
 # define debug_out_text
 #endif
 
-    void out_text(int x, int y, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, char has_rtl)
+    void out_text(int x, int y, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, char has_rtl, char has_sea)
     {
 #ifdef debug_out_text
       wchar t[len + 1]; wcsncpy(t, text, len); t[len] = 0;
@@ -4014,7 +4130,7 @@ term_paint(void)
             if (elen == 1 && attr.attr & TATTR_OVERHANG)
               elen = 2;
             // fill emoji background
-            win_text(x, y, esp, elen, eattr, textattr, lattr, has_rtl, false, 1);
+            win_text(x, y, esp, elen, eattr, textattr, lattr, has_rtl, has_sea, false, 1);
             flush_text();
           }
 #if defined(debug_emojis) && debug_emojis > 4
@@ -4022,7 +4138,7 @@ term_paint(void)
           eattr.attr &= ~(ATTR_BGMASK | ATTR_FGMASK);
           eattr.attr |= 6 << ATTR_BGSHIFT | 4;
           esp[0] = '0' + elen;
-          win_text(x, y, esp, elen, eattr, textattr, lattr, has_rtl, false, 2);
+          win_text(x, y, esp, elen, eattr, textattr, lattr, has_rtl, has_sea, false, 2);
 #endif
           if (cfg.emoji_placement == EMPL_FULL && !overlaying)
             do_overlay = true;  // display in overlaying loop
@@ -4037,7 +4153,7 @@ term_paint(void)
           eattr.attr &= ~(ATTR_BGMASK | ATTR_FGMASK);
           eattr.attr |= 4 << ATTR_BGSHIFT | 6;
           esp[0] = '0';
-          win_text(x, y, esp, 1, eattr, textattr, lattr, has_rtl, false, 2);
+          win_text(x, y, esp, 1, eattr, textattr, lattr, has_rtl, has_sea, false, 2);
         }
 #endif
       }
@@ -4063,8 +4179,16 @@ term_paint(void)
            * combining doubles
            * cursor position, to support underlay cursor painting
          */
-        win_text(x, y, text, len, attr, textattr, lattr, has_rtl, false, 1);
+#ifndef phase1_output_after_phase2_copy
+        // phase 1 output for the background
+        win_text(x, y, text, len, attr, textattr, lattr, has_rtl, has_sea, false, 1);
         flush_text();
+#endif
+
+        // remember actual text for later phase 2 output (flush)
+        // - it used to cause trouble like accent misplacement 
+        // to do this after phase 1 output as win_text could modify contents 
+        // when the combsubst mechanism (wintext) was in effect, now disabled
         ovl_x = x;
         ovl_y = y;
         wcsncpy(ovl_text, text, len);
@@ -4073,9 +4197,18 @@ term_paint(void)
         memcpy(ovl_textattr, textattr, len * sizeof(cattr));
         ovl_lattr = lattr;
         ovl_has_rtl = has_rtl;
+        ovl_has_sea = has_sea;
+
+#ifdef phase1_output_after_phase2_copy
+        // phase 1 output for the background
+        // - it used to cause overhang clipping (#1304, #1311)
+        // when this was done after phase 2 output copy above
+        win_text(x, y, text, len, attr, textattr, lattr, has_rtl, has_sea, false, 1);
+        flush_text();
+#endif
       }
       else {
-        win_text(x, y, text, len, attr, textattr, lattr, has_rtl, false, 0);
+        win_text(x, y, text, len, attr, textattr, lattr, has_rtl, has_sea, false, 0);
         flush_text();
       }
     }
@@ -4113,7 +4246,7 @@ term_paint(void)
         dirty_line = true;
 
 #ifdef debug_run
-#define trace_run(tag)	({/*if (tchar & 0xFF00)*/ if (tchar != ' ') printf("break (%s) (%04X)%04X\n", tag, j > 0 ? newchars[j - 1].chr : 0, tchar);})
+#define trace_run(tag)	({if (tchar > '~') printf("break (%s) @%d %04X|%04X\n", tag, j, j > 0 ? newchars[j - 1].chr : 0, tchar);})
 
 #else
 #define trace_run(tag)	(void)0
@@ -4184,6 +4317,22 @@ term_paint(void)
           trace_run("len"), break_run = true;
       }
 
+     /*
+      * Output South East Asian script combining characters in one chunk.
+      */
+      if (tchar >= 0x0900 && tchar <= 0x109F) {
+        // South Asian (U+0900-U+0DFF)
+        // South East Asian (U+0E00-U+109F)
+        has_sea |= 1;
+      }
+      if (break_run && is_comcom(tchar)) {
+        // Output composed combining characters with previous in one chunk;
+        // also extend rendering box.
+        has_sea |= 2;
+        trace_run("no-break-run");
+        break_run = false;
+      }
+
       uchar tbc = bidi_class(xtchar);
 
       if (textlen && tbc != bc) {
@@ -4203,10 +4352,11 @@ term_paint(void)
      /* Flush previous output chunk on break_run */
       if (break_run || cfg.bloom) {
         if ((dirty_run && textlen) || overlaying)
-          out_text(start, i, text, textlen, attr, textattr, line->lattr, has_rtl);
+          out_text(start, i, text, textlen, attr, textattr, line->lattr, has_rtl, has_sea);
         start = j;
         textlen = 0;
         has_rtl = 0;
+        has_sea = 0;
         attr = tattr;
         dirty_run = dirty_line;
 #if defined(debug_dirty) && debug_dirty > 1
@@ -4259,6 +4409,13 @@ term_paint(void)
 #endif
           dd += dd->cc_next;
           wchar tchar = dd->chr;
+
+          // skip joined ALEF:
+          // if ALEF was handled like a combining char in order to trigger 
+          // single-cell rendering of Arabic LAM/ALEF ligatures, 
+          // prevent its double display as an additional combining accent
+          if (dd->attr.attr & TATTR_JOINED)
+            continue;
 
           // mark combining unless pseudo-combining surrogates
           if (!is_low_surrogate(tchar)) {
@@ -4349,7 +4506,7 @@ term_paint(void)
       }
     }
     if (dirty_run && textlen)
-      out_text(start, i, text, textlen, attr, textattr, line->lattr, has_rtl);
+      out_text(start, i, text, textlen, attr, textattr, line->lattr, has_rtl, has_sea);
     if (!overlaying)
       flush_text();
 
@@ -4383,10 +4540,10 @@ term_invalidate(int left, int top, int right, int bottom)
     top = 0;
   if (right >= term.cols)
     right = term.cols - 1;
-  if (bottom >= term.rows)
-    bottom = term.rows - 1;
+  if (bottom >= term_allrows)
+    bottom = term_allrows - 1;
 
-  for (int i = top; i <= bottom && i < term.rows; i++) {
+  for (int i = top; i <= bottom && i < term_allrows; i++) {
     if ((term.displines[i]->lattr & LATTR_MODE) == LATTR_NORM)
       for (int j = left; j <= right && j < term.cols; j++)
         term.displines[i]->chars[j].attr.attr |= ATTR_INVALID;

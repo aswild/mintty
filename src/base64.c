@@ -9,6 +9,10 @@
 #else
 #define uint32_t uint
 #endif
+#ifdef BASE64_TEST
+#include "std.h"
+#include <stdlib.h>
+#endif
 
 static const char base64_table[] = {
   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
@@ -49,7 +53,22 @@ static inline int decode(char v)
 
 }
 
-int base64_encode(const char *input, int ilen, char *output, int olen)
+char * base64(char * s)
+{
+  int ilen = strlen(s);
+  int olen = (ilen + 2) / 3 * 4;
+  char * out = malloc(olen + 1);
+  int out_len = base64_encode((unsigned char *)s, ilen, out, olen);
+  if (out_len < 0)
+    return 0;
+  out[out_len] = '\0';
+#ifdef BASE64_TEST
+  printf("%d %d %s %s\n", olen, out_len, s, out);
+#endif
+  return out;
+}
+
+int base64_encode(const unsigned char * input, int ilen, char * output, int olen)
 {
   int calc_len = (ilen + 2) / 3 * 4;
   int i = 0;
@@ -80,7 +99,7 @@ int base64_encode(const char *input, int ilen, char *output, int olen)
     } else {
       output[i + 2] = encode((v >> 6) & 0x3f);
     }
-    output[i+3] = '=';
+    output[i + 3] = '=';
     i += 4;
   }
   return i;
@@ -176,17 +195,19 @@ int base64_decode(const char *input, int ilen, char *out, int olen)
 
 
 #ifdef BASE64_TEST
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "base64.h"
 
 struct base64_test {
-  const char *orig;
-  const char *encode;
+  char *orig;
+  char *encode;
 };
 
 static struct base64_test test_sets[] = {
+  { "", "", },
   { "A", "QQ==", },
   { "AA", "QUE=", },
   { "AAA", "QUFB", },
@@ -198,6 +219,10 @@ static struct base64_test test_sets[] = {
   { "ABCDEFG", "QUJDREVGRw==" },
   { "ABCDEFGH", "QUJDREVGR0g=" },
   { "ABCDEFGHI", "QUJDREVGR0hJ" },
+  { "bö", "YsO2" },
+  { "e€", "ZeKCrA==" },
+  { "oeœ", "b2XFkw==" },
+  { "", "a,b" }
 };
 
 #define ARRAY_SIZE(a)		(sizeof(a) / sizeof(a[0]))
@@ -225,10 +250,10 @@ static void decode_string(const char *s, char *out, int len)
 
   out_len = base64_decode(s, strlen(s), out, len - 1);
   if (out_len < 0) {
-    error("Encode %s with len %d return %d\n", s, len, out_len);
+    error("Decode %s with len %d return %d\n", s, len, out_len);
   }
   if (out_len > len - 1) {
-    error("Encode %s with len %d return invalid len %d\n", s, len, out_len);
+    error("Decode %s with len %d return invalid len %d\n", s, len, out_len);
   }
   out[out_len] = '\0';
 }
@@ -238,12 +263,13 @@ static void test_encode(void)
   char buf[1024];
   unsigned int i;
 
-  for (i = 0; i < ARRAY_SIZE(test_sets); i += 1) {
+  for (i = 0; i < ARRAY_SIZE(test_sets) - 1; i += 1) {
     encode_string(test_sets[i].orig, &buf[0], sizeof(buf));
     if (strcmp(buf, test_sets[i].encode) != 0) {
       error("Encode %s return %s, expect %s\n",
             test_sets[i].orig, buf, test_sets[i].encode);
     }
+    base64(test_sets[i].orig);
   }
   printf("Encode PASSED\n");
 }
@@ -273,4 +299,5 @@ int main(int argc, char *argv[])
 
   return 0;
 }
+
 #endif

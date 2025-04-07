@@ -1,5 +1,5 @@
 // wintext.c (part of mintty)
-// Copyright 2008-22 Andy Koppe, 2015-2022 Thomas Wolff
+// Copyright 2008-22 Andy Koppe, 2015-2025 Thomas Wolff
 // Adapted from code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -31,10 +31,12 @@ enum {
   FONT_ZOOMFULL  = 0x20,
   FONT_ZOOMSMALL = 0x40,
   FONT_ZOOMDOWN  = 0x80,
-  FONT_WIDE      = 0x100,
+  FONT_DIM       = 0x100,
+  // keep these last:
+  FONT_WIDE      = 0x200,
 #ifdef narrow_via_font
 #warning narrowing via font is deprecated
-  FONT_NARROW    = 0x200,
+  FONT_NARROW    = 0x400,
   FONT_MAXNO     = FONT_WIDE + FONT_NARROW
 #else
   FONT_NARROW    = 0,	// disabled narrowing via font
@@ -108,6 +110,7 @@ bool font_ambig_wide;
 
 
 typedef enum {BOLD_SHADOW, BOLD_FONT} BOLD_MODE;
+typedef enum {DIM_DIM, DIM_FONT} DIM_MODE;
 typedef enum {UND_LINE, UND_FONT} UND_MODE;
 
 struct charpropcache {
@@ -124,13 +127,17 @@ struct fontfam {
   char no_rtl;  // 1: no R/Hebrew, 2: no AL/Arabic, 4: either
   HFONT fonts[FONT_MAXNO];
   bool fontflag[FONT_MAXNO];
+  bool fontok;
   bool font_dualwidth;
+  int width;
+  int shift;
   struct charpropcache * cpcache[FONT_BOLDITAL + 1];
   uint cpcachelen[FONT_BOLDITAL + 1];
   wchar errch;
   int fw_norm;
   int fw_bold;
   BOLD_MODE bold_mode;
+  DIM_MODE dim_mode;
   UND_MODE und_mode;
   int row_spacing, col_spacing;
   int descent;
@@ -269,11 +276,19 @@ static HFONT
 create_font(wstring name, int weight, bool underline)
 {
 #ifdef debug_create_font
-  printf("font [??]: %d (size %d) 0 w%4d i0 u%d s0\n", font_height, font_size, weight, underline);
+  printf("create_font [??]: %d (size %d) 0 w%4d i0 u%d s0\n", font_height, font_size, weight, underline);
 #endif
+  int height = font_height;
+  if (*name == '+') {
+    name ++;
+    height = height * 16 / 10;
+#ifdef debug_create_font
+    printf("create_font [??]: %d->%d\n", font_height, height);
+#endif
+  }
   return
     CreateFontW(
-      font_height, 0, 0, 0, weight, false, underline, false,
+      height, 0, 0, 0, weight, false, underline, false,
       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
       get_font_quality(), FIXED_PITCH | FF_DONTCARE,
       name
@@ -408,6 +423,7 @@ struct data_adjust_font_weights {
   struct fontfam *ff;
   int fw_norm_0, fw_bold_0, fw_norm_1, fw_bold_1, default_charset;
   bool font_found, ansi_found, cs_found;
+  bool light_found;
 };
 
 static int CALLBACK
@@ -418,7 +434,8 @@ enum_fonts_adjust_font_weights(const LOGFONTW * lfp, const TEXTMETRICW * tmp, DW
   (void)fontType;
 
 #if defined(debug_fonts) && debug_fonts > 1
-  trace_font(("%ls %dx%d %d it %d cs %d %s\n", lfp->lfFaceName, (int)lfp->lfWidth, (int)lfp->lfHeight, (int)lfp->lfWeight, lfp->lfItalic, lfp->lfCharSet, (lfp->lfPitchAndFamily & 3) == FIXED_PITCH ? "fixed" : ""));
+  if (!lfp->lfCharSet)
+    trace_font(("%ls %dx%d weight %d it %d cs %d %s\n", lfp->lfFaceName, (int)lfp->lfWidth, (int)lfp->lfHeight, (int)lfp->lfWeight, lfp->lfItalic, lfp->lfCharSet, (lfp->lfPitchAndFamily & 3) == FIXED_PITCH ? "fixed" : ""));
 #endif
 
   data->font_found = true;
@@ -438,6 +455,41 @@ enum_fonts_adjust_font_weights(const LOGFONTW * lfp, const TEXTMETRICW * tmp, DW
 
   return 1;  // continue
 }
+
+#define find_light_font_automatically
+
+#ifdef find_light_font_automatically
+static int CALLBACK
+enum_font_variants(const LOGFONTW * lfp, const TEXTMETRICW * tmp, DWORD fontType, LPARAM lParam)
+{
+  struct data_adjust_font_weights *data = (struct data_adjust_font_weights *)lParam;
+  (void)tmp;
+  (void)fontType;
+
+  if (lfp->lfCharSet == data->default_charset || lfp->lfCharSet == DEFAULT_CHARSET) {
+    int nlen = wcslen(data->ff->name);
+    if (0 == wcsncmp(lfp->lfFaceName, data->ff->name, nlen)
+     && (0 == wcscmp(lfp->lfFaceName + nlen + 1, W("Light"))
+//     && (wcsstr(lfp->lfFaceName + nlen, W("Light"))
+//      || wcsstr(lfp->lfFaceName + nlen, W("Thin"))
+        )
+       )
+    {
+#if defined(debug_fonts) && debug_fonts > 1
+      trace_font(("<%ls %dx%d weight %d it %d cs %d %s\n", lfp->lfFaceName, (int)lfp->lfWidth, (int)lfp->lfHeight, (int)lfp->lfWeight, lfp->lfItalic, lfp->lfCharSet, (lfp->lfPitchAndFamily & 3) == FIXED_PITCH ? "fixed" : ""));
+#endif
+      // for later activation in another_font,
+      // choose one of Thin, ExtraLight, Ultra Light, Light
+      // (maybe according to common preference...) -
+      // for now, let's just pick Light if available,
+      // and set a flag in data to later set data->ff->dim_mode = DIM_FONT
+      data->light_found = true;
+    }
+  }
+
+  return 1;  // continue
+}
+#endif
 
 static void
 adjust_font_weights(struct fontfam * ff, int findex)
@@ -463,6 +515,7 @@ adjust_font_weights(struct fontfam * ff, int findex)
     .default_charset = default_charset,
     .font_found = false,
     .ansi_found = false,
+    .light_found = false,
     .cs_found = default_charset == DEFAULT_CHARSET
   };
 
@@ -477,6 +530,13 @@ adjust_font_weights(struct fontfam * ff, int findex)
   HDC dc = GetDC(0);
   EnumFontFamiliesExW(dc, &lf, enum_fonts_adjust_font_weights, (LPARAM)&data, 0);
   trace_font(("font width (%d)%d(%d)/(%d)%d(%d)", data.fw_norm_0, ff->fw_norm, data.fw_norm_1, data.fw_bold_0, ff->fw_bold, data.fw_bold_1));
+#ifdef find_light_font_automatically
+  if (cfg.dim_as_font) {
+    trace_font(("\n"));
+    lf.lfFaceName[0] = 0;  // clear font family name
+    EnumFontFamiliesExW(dc, &lf, enum_font_variants, (LPARAM)&data, 0);
+  }
+#endif
   ReleaseDC(0, dc);
 
   // check if no font found
@@ -498,6 +558,10 @@ adjust_font_weights(struct fontfam * ff, int findex)
     else
       font_warning(ff, _("Font has limited support for character ranges"));
   }
+
+  // set dim mode usage of Light font variation if it exists and shall be used
+  if (data.light_found && cfg.dim_as_font)
+    ff->dim_mode = DIM_FONT;
 
   // find available widths closest to selected widths
   if (abs(ff->fw_norm - data.fw_norm_0) <= abs(ff->fw_norm - data.fw_norm_1) && data.fw_norm_0 > 0)
@@ -532,6 +596,30 @@ adjust_font_weights(struct fontfam * ff, int findex)
   trace_font((" -> %d/%d\n", ff->fw_norm, ff->fw_bold));
 }
 
+static int fonts_found;
+
+static int CALLBACK
+enum_fonts_check_font(const LOGFONTW * lfp, const TEXTMETRICW * tmp, DWORD fontType, LPARAM lParam)
+{
+  (void)lfp, (void)tmp, (void)fontType, (void)lParam;
+  fonts_found ++;
+  return 1;  // continue
+}
+
+static int
+check_font(HDC dc, struct fontfam * ff)
+{
+  LOGFONTW lf;
+  wcscpy(lf.lfFaceName, W(""));
+  wcsncat(lf.lfFaceName, ff->name, lengthof(lf.lfFaceName) - 1);
+  lf.lfPitchAndFamily = 0;
+  lf.lfCharSet = DEFAULT_CHARSET;  // report all supported char ranges
+
+  fonts_found = 0;
+  EnumFontFamiliesExW(dc, &lf, enum_fonts_check_font, 0, 0);
+  return fonts_found;
+}
+
 /*
  * Initialise all the fonts of a font family we will need initially:
    Normal (the ordinary font), and optionally bold and underline;
@@ -551,7 +639,6 @@ win_init_fontfamily(HDC dc, int findex)
   //printf("fontfamily %d <%ls>\n", findex, ff->name);
 
   trace_resize(("--- init_fontfamily\n"));
-  TEXTMETRIC tm;
 
   for (uint i = 0; i < FONT_BOLDITAL; i++) {
     if (ff->fonts[i])
@@ -571,6 +658,9 @@ win_init_fontfamily(HDC dc, int findex)
 
   // if initialized as BOLD_SHADOW then real bold is never attempted
   ff->bold_mode = BOLD_FONT;
+
+  // dim attribute implemented as dimmed colour by default
+  ff->dim_mode = DIM_DIM;
 
   ff->und_mode = UND_FONT;
   if (cfg.underl_manual || cfg.underl_colour != (colour)-1)
@@ -596,13 +686,18 @@ win_init_fontfamily(HDC dc, int findex)
   }
 
   ff->fonts[FONT_NORMAL] = create_font(ff->name, ff->fw_norm, false);
+  // as this does not report error and font fallback, check explicitly:
+  ff->fontok = check_font(dc, ff);
 
   LOGFONT logfont;
   GetObject(ff->fonts[FONT_NORMAL], sizeof(LOGFONT), &logfont);
   trace_font(("created font %s %d it %d cs %d\n", logfont.lfFaceName, (int)logfont.lfWeight, logfont.lfItalic, logfont.lfCharSet));
   SelectObject(dc, ff->fonts[FONT_NORMAL]);
-  GetTextMetrics(dc, &tm);
-  if (!tm.tmHeight) {
+
+  TEXTMETRIC tm;
+  int tmok = GetTextMetrics(dc, &tm);
+  //printf("TextMetric[%d] %d h %d a %d d %d e %d i %d w %d cs %d <%ls>\n", findex, tmok, tm.tmHeight, tm.tmAscent, tm.tmDescent, tm.tmExternalLeading, tm.tmInternalLeading, tm.tmAveCharWidth, tm.tmCharSet, ff->name);
+  if (!tmok || !tm.tmHeight) {
     // corrupt font installation (e.g. deleted font file)
     font_warning(ff, _("Font installation corrupt, using system substitute"));
     wstrset(&ff->name, W(""));
@@ -611,6 +706,47 @@ win_init_fontfamily(HDC dc, int findex)
     SelectObject(dc, ff->fonts[FONT_NORMAL]);
     GetTextMetrics(dc, &tm);
   }
+  // fix broken font metrics
+  if (tm.tmAveCharWidth < 0)
+    // Panic Sans reports negative char width
+    tm.tmAveCharWidth = - tm.tmAveCharWidth;
+
+  // set average glyph width and optional horizontal shift (for CJK centering)
+  ff->width = tm.tmAveCharWidth;
+  ff->shift = 0;
+  if (findex) {  // #1313
+    // note CJK width gap (to double-width), triggered by script attribute
+    int shift = (2 * fontfamilies[0].width - tm.tmAveCharWidth) / 2;
+    if (shift > 0)
+      ff->shift = shift;
+  }
+
+#ifdef auto_detect_glyph_shift
+  // check font for "narrow" CJK characters (#1312);
+  // problem with this approach:
+  // a font may contain some CJK ranges but not others,
+  // so a script-based approach provides finer-grained distinction;
+  // this is now implemented based on configuration setting FontChoice
+  int cwide = 0; int cnorm = 0;
+  if (*ff->name) {
+    int len = GetFontUnicodeRanges(dc, 0);
+    GLYPHSET * gs = malloc(len);
+    gs->cbThis = len;
+    gs->flAccel = 0;
+    len = GetFontUnicodeRanges(dc, gs);
+    for (uint i = 0; len && i < gs->cRanges; i++) {
+      if (is_wide(gs->ranges[i].wcLow))
+        cwide += gs->ranges[i].cGlyphs;
+      else
+        cnorm += gs->ranges[i].cGlyphs;
+      if (gs->ranges[i].cGlyphs > 9)
+        printf("   %04X/%d <%lc>\n", gs->ranges[i].wcLow, gs->ranges[i].cGlyphs, gs->ranges[i].wcLow);
+    }
+    free(gs);
+  }
+  printf("   wide %d norm %d\n", cwide, cnorm);
+#endif
+
   if (!findex)
     lfont = logfont;
 
@@ -694,7 +830,7 @@ win_init_fontfamily(HDC dc, int findex)
   }
 
 #ifdef debug_create_font
-  printf("size %d -> height %d -> height %d\n", font_size, font_height, cell_height);
+  printf("init_font_family: size %d -> height %d -> height %d\n", font_size, font_height, cell_height);
 #endif
 
   //ff->font_dualwidth = (tm.tmMaxCharWidth >= tm.tmAveCharWidth * 3 / 2);
@@ -717,12 +853,6 @@ win_init_fontfamily(HDC dc, int findex)
   printf("font faw %d (dual %d [ambig %d])\n", faw, ff->font_dualwidth, font_ambig_wide);
 #endif
 
-  // Initialise VT100 linedraw character mappings.
-  // See what glyphs are available.
-  ushort glyphs[LDRAW_CHAR_NUM][LDRAW_CHAR_TRIES];
-  GetGlyphIndicesW(dc, *linedraw_chars, LDRAW_CHAR_NUM * LDRAW_CHAR_TRIES,
-                   *glyphs, true);
-
   // See what RTL glyphs are available.
   ushort rtlglyphs[2];
   GetGlyphIndicesW(dc, W("אا"), 2, rtlglyphs, true);
@@ -731,19 +861,22 @@ win_init_fontfamily(HDC dc, int findex)
     ff->no_rtl |= 4;
   //printf("RTL glyphs %04X %04X %d\n", rtlglyphs[0], rtlglyphs[1], ff->no_rtl);
 
+  // Initialise VT100 linedraw character mappings.
+  // See what glyphs are available.
+  ushort glyphs[LDRAW_CHAR_NUM][LDRAW_CHAR_TRIES];
+  GetGlyphIndicesW(dc, *linedraw_chars, LDRAW_CHAR_NUM * LDRAW_CHAR_TRIES,
+                   *glyphs, true);
+
   // For each character, try the list of possible mappings until either we
   // find one that has a glyph in the font or we hit the ASCII fallback.
   for (uint i = 0; i < LDRAW_CHAR_NUM; i++) {
+    bool decbox = 'j' <= i + '`' && i + '`' <= 'x';
     uint j = 0;
     while (linedraw_chars[i][j] >= 0x80 &&
+           !decbox &&  // no substitutes for self-drawn box graphics
            (glyphs[i][j] == 0xFFFF || glyphs[i][j] == 0x1F))
       j++;
     ff->win_linedraw_chars[i] = linedraw_chars[i][j];
-#define draw_vt100_line_drawing_chars
-#ifdef draw_vt100_line_drawing_chars
-    if ('j' - '`' <= i && i <= 'x' - '`')
-      ff->win_linedraw_chars[i] = linedraw_chars[i][0];
-#endif
   }
 
   ff->fonts[FONT_UNDERLINE] = create_font(ff->name, ff->fw_norm, true);
@@ -842,7 +975,7 @@ win_init_fontfamily(HDC dc, int findex)
 
   if (ff->bold_mode == BOLD_FONT) {
     int diffsize = abs(fontsize[FONT_BOLD] - fontsize[FONT_NORMAL]);
-#if defined(debug_create_font) || defined(debug_bold)
+#if defined(debug_create_font) || defined(debug_bold) || defined(debug_size)
     if (*ff->name)
       printf("bold_mode %d font_size %d size %d bold %d diff %d %s %ls\n",
              ff->bold_mode, font_size,
@@ -881,13 +1014,13 @@ wcscasestr(wstring in, wstring find)
 }
 
 static int CALLBACK
-enum_fonts(const LOGFONTW * lfp, const TEXTMETRICW * tmp, DWORD fontType, LPARAM lParam)
+enum_fonts_find_Fraktur(const LOGFONTW * lfp, const TEXTMETRICW * tmp, DWORD fontType, LPARAM lParam)
 {
   (void)tmp;
   (void)fontType;
   wstring * fnp = (wstring *)lParam;
 
-#if defined(debug_fonts) && debug_fonts > 1
+#if defined(debug_fonts) && debug_fonts > 2
   trace_font(("%ls %dx%d %d it %d cs %d %s\n", lfp->lfFaceName, (int)lfp->lfWidth, (int)lfp->lfHeight, (int)lfp->lfWeight, lfp->lfItalic, lfp->lfCharSet, (lfp->lfPitchAndFamily & 3) == FIXED_PITCH ? "fixed" : ""));
 #endif
   if ((lfp->lfPitchAndFamily & 3) == FIXED_PITCH
@@ -916,7 +1049,7 @@ findFraktur(wstring * fnp)
   lf.lfCharSet = ANSI_CHARSET;   // report only ANSI character range
 
   HDC dc = GetDC(0);
-  EnumFontFamiliesExW(dc, 0, enum_fonts, (LPARAM)fnp, 0);
+  EnumFontFamiliesExW(dc, 0, enum_fonts_find_Fraktur, (LPARAM)fnp, 0);
   ReleaseDC(0, dc);
 }
 
@@ -985,7 +1118,21 @@ wstring
 win_get_font(uint fi)
 {
   if (fi < lengthof(fontfamilies))
-    return fontfamilies[fi].name;
+    if (fontfamilies[fi].fontok) {
+#ifdef filter_controls_from_fontname
+      wstring fn = fontfamilies[fi].name;
+      while (*fn) {
+        if (*fn < ' ' || *fn == '\177') {
+          // most unlikely to happen if fontok is true
+          return W("??");
+        }
+        fn++;
+      }
+#endif
+      return fontfamilies[fi].name;
+    }
+    else
+      return W("?");
   else
     return null;
 }
@@ -1270,7 +1417,27 @@ show_status_line()
     term_update_cs();
   }
   wchar wstbuf[term.cols + 1];
-  swprintf(wstbuf, term.cols + 1, W("%s%s%s%s%s %s%s@%02d:%03d%s%s%s%s%s %ls %s"), 
+
+  wchar debug[22];
+  *debug = 0;
+  if (cfg.status_debug) {
+    wchar kblayout[KL_NAMELENGTH];
+    GetKeyboardLayoutNameW(kblayout);
+    wchar * kbl = kblayout;
+    while (*kbl == '0')
+      kbl++;
+    wcscpy(debug, W(" ["));
+    if (cfg.status_debug & 1)
+      wcscat(debug, kbl);
+    if (cfg.status_debug & 2) {
+      wcscat(debug, W("."));
+      extern uint mods_debug;
+      swprintf(&debug[wcslen(debug)], 9, W("%06X"), mods_debug);
+    }
+    wcscat(debug, W("]"));
+  }
+
+  swprintf(wstbuf, term.cols + 1, W("%s%s%s%s%s%ls %s%s@%02d:%03d%s%s%s%s%s %ls%s"), 
                  term.st_kb_flag ?
                      (term.st_kb_flag == 16 ? "Hex "
                       : term.st_kb_flag == 10 ? "Dec "
@@ -1284,6 +1451,7 @@ show_status_line()
                  term.app_cursor_keys ? "↕" : "",
                  term.app_keypad ? "±" : "",
                  child_tty(),
+                 debug,
                  term.printing ? "⎙" : "",
                  term.bracketed_paste ? "⁅⁆" : "",
                  curs.y, curs.x,
@@ -1294,7 +1462,7 @@ show_status_line()
                  || term.marg_top || term.marg_bot != term.rows - 1
                    ? "⬚" : "",
                  term.curs.origin ? "⊡" : "",
-                 status_bell ? W("🔔") : W(""),   // bell indicator 🔔 or 🛎️ 
+                 status_bell ? W("🔔 ") : W(""),   // bell indicator 🔔 or 🛎️ 
                  get_char_info(dispchar, true) ?: ""
                  );
   int n = 0;
@@ -1612,7 +1780,7 @@ another_font(struct fontfam * ff, int fontno)
   }
 
 #ifdef debug_create_font
-  printf("font [%02X]: %d (size %d%s%s%s%s) %d w%4d i%d u%d s%d\n", 
+  printf("another_font: font [%02X]: %d (size %d%s%s%s%s) %d w%4d i%d u%d s%d\n", 
 	fontno, font_height * (1 + !!(fontno & FONT_HIGH)), font_size, 
 	fontno & FONT_HIGH     ? " hi" : "",
 	fontno & FONT_WIDE     ? " wd" : "",
@@ -1620,10 +1788,20 @@ another_font(struct fontfam * ff, int fontno)
 	fontno & FONT_ZOOMFULL ? " zf" : "",
 	x, w, i, u, s);
 #endif
-  ff->fonts[fontno] =
-    CreateFontW(y, x, 0, 0, w, i, u, s,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                get_font_quality(), FIXED_PITCH | FF_DONTCARE, ff->name);
+  if (fontno & FONT_DIM) {
+    wchar name[wcslen(ff->name) + 7];
+    wcscpy(name, ff->name);
+    wcscat(name, W(" Light"));
+    ff->fonts[fontno] =
+      CreateFontW(y, x, 0, 0, w, i, u, s,
+                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                  get_font_quality(), FIXED_PITCH | FF_DONTCARE, name);
+  }
+  else
+    ff->fonts[fontno] =
+      CreateFontW(y, x, 0, 0, w, i, u, s,
+                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                  get_font_quality(), FIXED_PITCH | FF_DONTCARE, ff->name);
 
   ff->fontflag[fontno] = true;
 }
@@ -1713,6 +1891,33 @@ offset_bg(HDC dc)
   int wx = wr.left + GetSystemMetrics(SM_CXSIZEFRAME);
   int wy = wr.top + GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CYCAPTION);
 
+  // adjust brush to virtual desktop (#1296)
+static int virtual_desktop_left;
+static int virtual_desktop_top;
+  if (!checked_desktop_config) {
+    HWND dt = GetDesktopWindow();
+    HDC dtc = GetDC(dt);
+    GetClipBox(dtc, &wr);
+    ReleaseDC(dt, dtc);
+    virtual_desktop_left = wr.left;
+    virtual_desktop_top = wr.top;
+
+    LONG exstyle = GetWindowLong(wnd, GWL_EXSTYLE);
+    if (exstyle & WS_EX_LEFTSCROLLBAR)
+      virtual_desktop_left -= GetSystemMetrics(SM_CXVSCROLL);
+    LONG style = GetWindowLong(wnd, GWL_STYLE);
+    if (!(style & WS_THICKFRAME)) {  // BorderStyle=void
+      virtual_desktop_top += GetSystemMetrics(SM_CYSIZEFRAME);// + GetSystemMetrics(SM_CYCAPTION);
+      virtual_desktop_left += GetSystemMetrics(SM_CXSIZEFRAME);
+    }
+    if (!(style & WS_CAPTION))  // BorderStyle=frame
+      virtual_desktop_top += GetSystemMetrics(SM_CYCAPTION);
+
+    checked_desktop_config = true;
+  }
+  wx -= virtual_desktop_left;
+  wy -= virtual_desktop_top;
+
   // adjust wallpaper origin
 
   SetBrushOrgEx(dc, -wx, -wy, 0);
@@ -1757,7 +1962,9 @@ gpcheck(char * tag, GpStatus s)
     "PropertyNotSupported",
     "ProfileNotFound",
   };
+#if debug_gdiplus <= 1
   if (s)
+#endif
     printf("[%s] %d %s\n", tag, s, s >= 0 && s < lengthof(gps) ? gps[s] : "?");
 }
 #else
@@ -2079,7 +2286,7 @@ fill_rect(HDC dc, RECT * boxp, GpBrush * br)
 void
 win_flush_background(bool clearbg)
 {
-#ifdef debug_gdiplus
+#if defined(debug_gdiplus) && debug_gdiplus > 2
   printf("flush background bmp %d img %d gr %d (tiled %d)\n", !!bgbrush_bmp, !!bgbrush_img, !!bg_graphics, tiled);
 #endif
   w = 0; h = 0;
@@ -2191,7 +2398,11 @@ get_bg_filename(void)
   if (wallp)
     bgfn = wcsdup(wallpfn);
   else {
-    // path transformations
+    // path transformations:
+    // for dynamic changes (OSC 11) they are already handled 
+    // before setting cfg.background in termout.c,
+    // but for static configuration (option Background) they 
+    // need to be applied here as well
     if (0 == strncmp("~/", bf, 2)) {
       char * bfexp = asform("%s/%s", home, bf + 2);
       free(bf);
@@ -2206,6 +2417,8 @@ get_bg_filename(void)
       }
     }
 
+#ifdef pathname_conversion_here
+#warning now deprecated; handled via guardpath
     if (support_wsl && !wallp) {
       wchar * wbf = cs__utftowcs(bf);
       wchar * wdewbf = dewsl(wbf);  // free(wbf)
@@ -2214,6 +2427,7 @@ get_bg_filename(void)
       free(bf);
       bf = dewbf;
     }
+#endif
 
     bgfn = path_posix_to_win_w(bf);
   }
@@ -2418,6 +2632,15 @@ _trace_line(char * tag, cattr attr, ushort lattr, wchar * text, int len)
 #define trace_line(tag)
 #endif
 
+
+#ifdef substitute_combining_chars
+/* Substitution of (some) combining characters by lookalike characters; 
+   this has not been needed anymore for a while already (see #295),
+   it was dropped for unpleasant side effects:
+   for a combined character like x̀, when displayed in two phases 
+   (e.g. with background or with cursor), the accent would 
+   skip to the next position
+*/
 static wchar
 combsubst(wchar comb, cattrflags attr)
 {
@@ -2481,6 +2704,8 @@ combsubst(wchar comb, cattrflags attr)
   }
   return comb;
 }
+#endif
+
 
 int
 termattrs_equal_fg(cattr * a, cattr * b)
@@ -2537,7 +2762,7 @@ text_out(HDC hdc, int x, int y, UINT fuOptions, RECT *prc, LPCWSTR psz, int cch,
     return;
 #ifdef debug_text_out
   if (*psz >= 0x80) {
-    printf("@%3d (%3d):", x, y);
+    printf("%d@%3d/%3d:", cch, x, y);
     for (int i = 0; i < cch; i++)
       printf(" %04X<%d>", psz[i], dxs[i]);
     printf("\n");
@@ -2868,7 +3093,7 @@ apply_attr_colour(cattr a, attr_colour_mode mode)
    phase: overlay line display (italic right-to-left overhang handling)
  */
 void
-win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, char has_rtl, bool clearpad, uchar phase)
+win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, ushort lattr, char has_rtl, char has_sea, bool clearpad, uchar phase)
 {
 #ifdef debug_wscale
   if (attr.attr & (TATTR_EXPAND | TATTR_NARROW | TATTR_WIDE))
@@ -2877,55 +3102,48 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
 #endif
   //if (kb_trace) {printf("[%ld] <win_text\n", mtime()); kb_trace = 0;}
 
-  int graph = (attr.attr & GRAPH_MASK) >> ATTR_GRAPH_SHIFT;
-  bool graph_vt52 = false;
-  bool powerline = false;
   int findex = (attr.attr & FONTFAM_MASK) >> ATTR_FONTFAM_SHIFT;
-  // in order to save attributes bits, special graphic handling is encoded 
-  // in a compact form, combined with unused values of the font number;
-  // here we do some decoding and also recoding back to the previous format, 
-  // in order to avoid micro-refactoring in the code below, 
-  // where graphic encoding is interpreted bitwise in some cases;
-  // the font ranges used are:
-  //  <none> (graph part only): special for DEC Technical, VT52 fraction
-  //  11     VT100 Line Drawing, bit-wise encoded segments
-  //  12     VT100 scanlines 1...5
-  //  13     VT52 scanlines 1...8
-  //  14     Unicode Block Elements, part 1
-  //  15     Unicode Block Elements, part 2
+  bool boxpower = false;  // Box Drawing or Powerline symbols
+  bool boxcoded = false;  // coded DEC box drawing and scanlines
+  bool vt52fraction = false;
+  bool dectcs = false;
+  // self-drawn graphic glyphs and some special graphic handling are 
+  // indicated as unused font family number, in order to save attribute bits
+  //  11    Unicode Box Drawing and Powerline box drawing
+  //  12    encoded VT100 box drawing and VT100/VT52 scanlines
+  //  13    VT52 fraction numerators 3/ 5/ 7/
+  //  14    DEC Technical Character Set square root, sum segments, triangles
   if (findex > 10) {
-    if (findex == 12) // VT100 scanlines
-      graph <<= 4;
-    else if (findex == 13 && graph == 15) { // Private: geometric Powerline
-      graph = 0;
-      powerline = true;
-    }
-    else if (findex == 13) { // VT52 scanlines
-      graph <<= 4;
-      graph_vt52 = true;
-    }
-    else if (findex >= 14)
-      graph |= 0x80 | ((findex & 1) << 4);
+    if (findex == 11)  // Unicode Box Drawing and Powerline box drawing
+      boxpower = true;
+    else if (findex == 12) // VT100 box drawing, VT100/VT52 scanlines
+      boxcoded = true;
+    else if (findex == 13) // VT52 fraction numerators
+      vt52fraction = true;
+    else if (findex == 14) // DEC Technical Character Set (TCS)
+      dectcs = true;
 
     findex = 0;
   }
-  else if (graph) {
-    if (graph == 0xF)
-      graph = 0xF7;
-    else if (graph == 0xE)
-      graph = 0xE0;
-    else
-      graph |= 0xE0;
-  }
+
   struct fontfam * ff = &fontfamilies[findex];
   // check whether font lacks support of given RTL bidi class
   // has_rtl:    1: R/Hebrew,    2: AL/Arabic,    4: other
   // ff->no_rtl: 1: no R/Hebrew, 2: no AL/Arabic, 4: either
   if (has_rtl & ff->no_rtl) {
     //printf("%d<%ls> %X %X\n", findex, ff->name, has_rtl, ff->no_rtl);
+    // for RTL output, if font does not support RTL, 
+    // fallback to reserved font 11 (configured via FontRTL)
     findex = 11;
     ff = &fontfamilies[findex];
   }
+
+  // set horizontal shift if script-triggered to center CJK (#1313)
+#ifdef configured_glyph_shift
+  int glyph_shift = (attr.attr & GLYPHSHIFT_MASK) >> ATTR_GLYPHSHIFT_SHIFT;
+#else
+  int glyph_shift = (attr.attr & ATTR_GLYPHSHIFT) ? ff->shift : 0;
+#endif
 
   trace_line("win_text:");
 
@@ -2964,10 +3182,12 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     wscale_narrow_50 = true;
   }
 
+  bool dim_font = ff->dim_mode == DIM_FONT && attr.attr & ATTR_DIM;
+
   bool default_bg = (attr.attr & ATTR_BGMASK) >> ATTR_BGSHIFT == BG_COLOUR_I;
   if (attr.attr & ATTR_REVERSE)
     default_bg = false;
-  cattr attr0 = attr;  // need unmodified colour attributes for combinings
+  //cattr attr0 = attr;  // needed unmodified colour attributes for combinings
   attr = apply_attr_colour(attr, ACM_TERM);
   colour fg = attr.truefg;
   colour bg = attr.truebg;
@@ -3036,13 +3256,16 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     }
   }
 
- /* Now that attributes are sorted out, select proper font */
+ /* Now that attributes are (almost) sorted out, select proper font */
   uint nfont;
   switch (lattr) {
     when LATTR_NORM: nfont = 0;
     when LATTR_WIDE: nfont = FONT_WIDE;
     otherwise:       nfont = FONT_WIDE + FONT_HIGH;
   }
+
+  if (dim_font)
+    nfont |= FONT_DIM;
 
   int wscale = 100;
 
@@ -3134,6 +3357,9 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
 #endif
 
   uint eto_options = ETO_CLIPPED;
+#ifdef glyph_output
+  // this mode of output processing with unclear purpose used to corrupt
+  // cursor and italic display of right-to-left scripts; disabled
   if (has_rtl) {
    /* We've already done right-to-left processing in the screen buffer,
     * so stop Windows from doing it again (and hence undoing our work).
@@ -3158,6 +3384,7 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     trace_line(" >ChrPlc:");
     eto_options |= ETO_GLYPH_INDEX;
   }
+#endif
 
 
   bool combining = attr.attr & TATTR_COMBINING;
@@ -3165,9 +3392,12 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
 
   bool let_windows_combine = false;
   if (combining) {
+#ifdef substitute_combining_chars
    /* Substitute combining characters by overprinting lookalike glyphs */
+   /* Dropped for unpleasant effects, see comments at function combsubst */
     for (int i = 0; i < len; i++)
       text[i] = combsubst(text[i], attr.attr);
+#endif
    /* Determine characters that should be combined by Windows */
     if (len == 2) {
       if (text[0] == 'i' && (text[1] == 0x030F || text[1] == 0x0311))
@@ -3179,18 +3409,16 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
   }
 
   wchar * origtext = 0;
-  if (graph && graph < 0xE0) {
-    // clear codes for Block Elements, VT100 Line Drawing and "scanlines"
+  if (boxpower || boxcoded || dectcs) {
+    // keep orig text in separate ref
+    origtext = text;
+    text = newn(wchar, len);
+    // clear font glyphs under self-drawn geometric symbols
+    // - this method of clearing background is no longer in use since 3.7.8
+    // - keeping it in for now just in case; should be cleaned up later
     for (int i = 0; i < len; i++)
-      text[i] = ' ';
-  }
-  else if (powerline) {
-    origtext = newn(wchar, len);
-    // clear codes for Powerline geometric symbols
-    for (int i = 0; i < len; i++) {
-      origtext[i] = text[i];
-      text[i] = ' ';
-    }
+      //text[i] = ' ';
+      text[i] = 'X';  // make accidental use of this feature apparent
   }
 
  /* Array with offsets between neighbouring characters */
@@ -3219,6 +3447,9 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
     .top = y, .bottom = y + cell_height,
     .left = x, .right = min(x + width, cell_width * term.cols + PADDING)
   };
+  // extend bounding box for appended composed combining characters
+  if (has_sea & 2)
+    box.right += cell_width;
   RECT box0 = box;
   if (ldisp2) {  // e.g. attr.attr & ATTR_ITALIC
     box.right += cell_width;
@@ -3249,6 +3480,24 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
         break;
       }
   }
+#endif
+
+#ifdef debug_non_blank_lines
+  void printline() {
+    bool dopri = false;
+    for (int i = 0; i < len; i++)
+      if (text[i] != ' ') {
+        dopri = true;
+        break;
+      }
+    if (dopri) {
+      printf("%d:%d %06X %06X (def %d) %d", ty, tx, fg, bg, default_bg, len);
+      for (int i = 0; i < len; i++)
+        printf(" %02X", text[i]);
+      printf("\n");
+    }
+  }
+  printline();
 #endif
 
  /* Begin text output */
@@ -3312,7 +3561,10 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
   bool underlaid = false;
   void clear_run() {
     if (!underlaid) {
-      ExtTextOutW(dc, xt, yt, eto_options | ETO_OPAQUE, &box0, W(" "), 1, dxs);
+      // clear background of current output chunk
+      HBRUSH bgb = CreateSolidBrush(bg);
+      FillRect(dc, &box, bgb);
+      DeleteObject(bgb);
 
       underlaid = true;
     }
@@ -3344,6 +3596,8 @@ win_text(int tx, int ty, wchar *text, int len, cattr attr, cattr *textattr, usho
       underlaid = false;
 #endif
   }
+  else if (origtext && !ldisp2)
+    clear_run();  // clear background for self-drawn characters (#1310)
 
  /* Coordinate transformation per line */
   int coord_transformed = 0;
@@ -3528,6 +3782,7 @@ draw:;
  /* Underline */
   if (!ldisp2 && lattr != LATTR_TOP &&
       (force_manual_underline ||
+       nfont & FONT_UNDERLINE ||  // ensure underline of self-drawn characters
        (attr.attr & (ATTR_DOUBLYUND | ATTR_BROKENUND)) ||
        ((attr.attr & UNDER_MASK) == ATTR_UNDER &&
         (ff->und_mode == UND_LINE || (attr.attr & ATTR_ULCOLOUR)))
@@ -3580,23 +3835,13 @@ draw:;
   if (ldisp1) {
     if (!underlaid)
       clear_run();
-    goto _return;
+    goto _return;  // skipping coord_transformed2 set and restore
   }
 
- /* DEC Tech adjustments */
-  if (graph >= 0xE0) {  // adjust rendering of DEC Technical and VT52 fraction
-    if ((graph & ~1) == 0xE8)  // left square bracket corners
-      xt += line_width + 1;
-    else if ((graph & ~1) == 0xEA)  // right square bracket corners
-      xt -= line_width + 1;
-    else if (graph == 0xE7)  // middle angle: don't display ╳, draw (below)
-      for (int i = 0; i < len; i++)
-        text[i] = ' ';
-    else if (graph == 0xE0)  // square root base: rather draw (partially)
-      for (int i = 0; i < len; i++)
-        text[i] = 0x2502;
-    else if (graph == 0xF7)  // VT52 fraction numerator
-      yt -= line_width;
+ /* Partial glyph adjustments */
+  if (vt52fraction) {
+    // adjust position of VT52 fraction numerator
+    yt -= line_width;
   }
 
  /* Coordinate transformation per character */
@@ -3632,7 +3877,9 @@ draw:;
     }
   }
 
+
  /* Finally, draw the text */
+
   uint overwropt;
   if (ldisp2 || underlaid) {
     SetBkMode(dc, TRANSPARENT);
@@ -3655,9 +3902,30 @@ draw:;
   if (combining || combining_double)
     *dxs = char_width;  // convince Windows to apply font underlining
 
+  // handle invisible and blinking attributes on image background
+  if (fg == bg && default_bg && *cfg.background)
+    goto skip_drawing;  // restore coord_transformed2, then skip self-drawing
+
+  // skip text output for self-drawn characters
+  if (origtext)
+    goto skip_drawing;
+
+
+ /* Now, really draw the text */
+
   text_out_start(dc, text, len, dxs);
-  for (int xoff = 0; xoff < xwidth; xoff++)
-    if (combining || combining_double) {
+
+  // overstrike loop is for shadow or manual bold mode
+  for (int xoff0 = 0; xoff0 < xwidth; xoff0++) {
+#ifdef configured_glyph_shift
+    // calculate glyph shift from character attribute (0..3)
+    int xoff = xoff0 + glyph_shift * cell_width / 16;
+#else
+    // apply centering glyph shift if triggered by attribute (#1313)
+    int xoff = xoff0 + glyph_shift;
+#endif
+
+    if ((combining || combining_double) && !has_sea) {
       // Workaround for mangled display of combining characters;
       // Arabic shaping should not be affected as the transformed 
       // presentation forms are not combining characters anymore at this point.
@@ -3675,8 +3943,14 @@ draw:;
         SetBkMode(dc, TRANSPARENT);
         overwropt = 0;
       }
+
       // combining characters
-      textattr[0] = attr0; // need unmodified colour attributes for combinings
+      //textattr[0] = attr0; // need unmodified colour attributes for combinings
+      // but that spoils separate blinking, so revert commit 736da154
+      textattr[0] = attr;
+      // (which in turn spoiled substituted combined characters 
+      // while combsubst was still in use)
+
       for (int i = ulen; i < len; i += ulen) {
         // separate stacking of combining characters 
         // does not work with Uniscribe
@@ -3703,8 +3977,28 @@ draw:;
         overwropt = 0;
       }
     }
+
+    /*
+      With image background (-o Background=...png), if output in the 
+      top line begins with reverse or coloured background, 
+      a mysterious rendering bug hides the first chunk of output 
+      in frequent cases at that position.
+      (This was traced down in mintty deeply so the remaining suspicion 
+      is it's a bug in Windows.)
+      As a workaround, we invalidate the top-left cell right away 
+      so it gets printed to the window repeatedly, which effectively 
+      makes it visible from the first retry.
+     */
+    if (!tx && !ty && *cfg.background && !default_bg)
+      term_invalidate(0, 0, 0, 0);
+  }
+
   text_out_end();
 
+skip_drawing:;
+
+
+ /* Reset coordinate transformation */
   if (coord_transformed2) {
     SetWorldTransform(dc, &old_xform2);
     // restore these in case we're in a shadow loop
@@ -3714,7 +4008,14 @@ draw:;
     box2 = box2_;
   }
 
- /* Manual drawing of certain graphics */
+
+ /* Skip self-drawing to handle invisible attribute on image background */
+  if (fg == bg && default_bg && *cfg.background)
+    goto _return;
+
+
+ /* Self-drawn characters: manual drawing of certain graphics */
+
   // line_width already set above for DEC Tech adjustments
 #define dont_debug_vt100_line_drawing_chars
 #ifdef debug_vt100_line_drawing_chars
@@ -3737,118 +4038,46 @@ draw:;
 #define DRAW_DOWN  0x4
 #endif
 
-  if (graph >= 0xE0) {  // fix DEC Technical characters, draw VT52 fraction
-    if ((graph & 0x0C) == 0x08) {
-      // square bracket corners already repositioned above
-    }
-    else {  // Sum segments to be (partially) drawn, 
-            // square root base, pointing triangles, VT52 fraction numerator
-      int sum_width = line_width;
-      int y0 = (lattr == LATTR_BOT) ? y - cell_height : y;
-      int yoff = (cell_height - line_width) * 3 / 5;
-      if (lattr >= LATTR_TOP)
-        yoff *= 2;
-      int xoff = (char_width - line_width) / 2;
-      // 0xE0 square root base
-      // sum segments:
-      // 0xE1 upper left: add diagonal to bottom
-      // 0xE2 lower left: add diagonal to top
-      // 0xE5 upper right: add hook down
-      // 0xE6 lower right: add hook up
-      // 0xE7 middle right angle
-      int yt, yb;
-      int ycellb = y0 + (lattr >= LATTR_TOP ? 2 : 1) * cell_height;
-      if (graph & 1) {  // upper segment: downwards
-        yt = y0 + yoff;
-        yb = ycellb;
-      }
-      else {  // lower segment: upwards
-        yt = y0;
-        yb = y0 + yoff;
-      }
-      int xl = x + xoff;
-      int xr = xl;
-      if (graph <= 0xE2) {  // diagonals
-        sum_width ++;
-        xl += line_width - 1;
-        xr = x + char_width - 1;
-        if (graph == 0xE2) {
-          int xb = xl;
-          xl = xr;
-          xr = xb;
-        }
-      }
-      if (graph == 0xF7) {  // VT52 fraction numerator
-        yt = y + (cell_height - line_width) * 10 / 16;
-        yb = y + (cell_height - line_width) * 8 / 16;
-        xl = x + line_width - 1;
-        xr = xl + char_width - 1;
-      }
-      // adjustments with scaling pen:
-      xl ++; xr ++;
-      int x0 = x;
-      if (graph & 1) {  // upper segment: downwards
-        yt --;
-        yb --;
-      } else {  // lower segment: upwards
-        yt -= 1;
-        yb -= 1;
-      }
-      // pointing triangles:
-      if ((graph & ~1) == 0xEC) {
-        xl = x + line_width;
-        xr = x + char_width - 2 * line_width - 1;
-        x0 = x + (char_width - line_width) / 2;
-        yt = y + cell_height - 2 * line_width - 1;
-        yb = y + line_width;
-        if (graph & 1) {
-          yt ^= yb;
-          yb ^= yt;
-          yt ^= yb;
-        }
-      }
-      // special adjustments:
-      if (graph == 0xE0) {  // square root base
-        xl --;
-      }
-      else if (graph == 0xE7) {  // sum middle right angle
-      }
-      // draw:
-      //HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, sum_width, fg));
-      HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, line_width, fg));
-      sum_width = 1;  // now handled by pen width
-      for (int i = 0; i < len; i++) {
-        for (int l = 0; l < sum_width; l++) {
-          if (graph == 0xE0) {  // square root base
-            MoveToEx(dc, xl + l, ycellb, null);
-            LineTo(dc, xl - (xl - x0) / 2 + l, yb + l);
-            LineTo(dc, x0, yb + l);
-          }
-          else if (graph == 0xE7) {  // sum middle right angle
-            MoveToEx(dc, x0 + l, y0, null);
-            LineTo(dc, xl + l, yt);
-            LineTo(dc, x0 + l, yb);
-          }
-          else if ((graph & ~1) == 0xEC) {  // pointing triangles
-            MoveToEx(dc, xl + l, yt, null);
-            LineTo(dc, xr + l, yt);
-            LineTo(dc, x0 + l, yb);
-            LineTo(dc, xl + l, yt);
-          }
-          else {
-            MoveToEx(dc, xl + l, yt, null);
-            LineTo(dc, xr + l, yb);
-          }
-        }
-        x0 += char_width;
-        xl += char_width;
-        xr += char_width;
-      }
-      oldpen = SelectObject(dc, oldpen);
-      DeleteObject(oldpen);
-    }
+  HRGN clipr;
+  void setclipr(int x, int y, int n)
+  {
+    int clip_height = cell_height 
+                      * (lattr >= LATTR_TOP && ty < term_allrows - 1 ? 2 : 1);
+    clipr = CreateRectRgn(x, y, x + n * char_width, y + clip_height);
+    SelectClipRgn(dc, clipr);
   }
-  else if ((graph >= 0x80 && !graph_vt52) || powerline) {  // drawn graphics
+  void clearclipr()
+  {
+    SelectClipRgn(dc, 0);
+    DeleteObject(clipr);
+  }
+
+  if (vt52fraction) {  // draw VT52 fraction numerators
+    setclipr(x, y, ulen);
+
+    HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, line_width, fg));
+
+    int xi = x;
+    for (int i = 0; i < len; i++) {
+      int yt = y + (cell_height - line_width) * 10 / 16;
+      int yb = y + (cell_height - line_width) * 8 / 16;
+      int xl = xi + line_width - 1;
+      int xr = xl + char_width - 1;
+      MoveToEx(dc, xl, yt, null);
+      LineTo(dc, xr, yb);
+
+      xi += char_width;
+    }
+
+    oldpen = SelectObject(dc, oldpen);
+    DeleteObject(oldpen);
+
+    clearclipr();
+  }
+  else if (boxpower || dectcs) {  // drawn graphics
+    // Box Drawing (U+2500-U+257F)
+    // ─━│┃┄┅┆┇┈┉┊┋┌┍┎┏┐┑┒┓└┕┖┗┘┙┚┛├┝┞┟┠┡┢┣┤┥┦┧┨┩┪┫┬┭┮┯┰┱┲┳┴┵┶┷┸┹┺┻┼┽┾┿
+    // ╀╁╂╃╄╅╆╇╈╉╊╋╌╍╎╏═║╒╓╔╕╖╗╘╙╚╛╜╝╞╟╠╡╢╣╤╥╦╧╨╩╪╫╬╭╮╯╰╱╲╳╴╵╶╷╸╹╺╻╼╽╾╿
     // Block Elements (U+2580-U+259F)
     // ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔▕▖▗▘▙▚▛▜▝▞▟
     // Private Use geometric Powerline symbols (U+E0B0-U+E0BF, not 5, 7)
@@ -3858,10 +4087,11 @@ draw:;
     if (lattr >= LATTR_TOP)
       char_height *= 2;
     int y0 = y;
+    int yclip = y0;
     if (lattr == LATTR_BOT)
       y0 -= cell_height;
     int xi = x;
-    //printf("x %d y %d w %d h %d cw %d \n", x, y, cell_width, cell_height, char_width);
+    //printf("@%d/%d char %d×%d cell %d×%d\n", x, y, char_width, char_height, cell_width, cell_height);
 
     /*
        Mix fg at mix/8 with bg.
@@ -3908,29 +4138,28 @@ draw:;
     }
     void trio(char x1, char y1, char x2, char y2, char x3, char y3, bool chord)
     {
+      bool lefthalf = x1;
+      if (chord && lefthalf) {
+        // Powerline left half circle U+E0B4: fix gap to next cell
+        x1++; x2++; x3++;
+      }
       int _x1 = char_width * x1 / 8;
       int _y1 = char_height * y1 / 8;
       int _x2 = char_width * x2 / 8;
       int _y2 = char_height * y2 / 8;
       int _x3 = char_width * x3 / 8;
       int _y3 = char_height * y3 / 8;
-      if (x1) _x1--;
-      if (x2) _x2--;
-      if (x3) _x3--;
-      if (y2 == 8) _y2--;
-      _y3--;
-      if (chord && !x1) {
-        _x1++; _x2++; _x3++;
-      }
 
       HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, 0, fg));
       HBRUSH oldbrush = SelectObject(dc, CreateSolidBrush(fg));
       if (chord) {
-        if (x1)
-          Chord(dc, xi, y0 + _y1, xi + 2 * _x1, y0 + _y3,
-                    xi + _x1, y0 + _y1, xi + _x3, y0 + _y3);
+        if (lefthalf)
+          // Powerline left half circle U+E0B6: trichord(8, 0, 0, 4, 8, 8);
+          Chord(dc, xi      , y0 + _y1, xi + 2 * _x1, y0 + _y3,
+                    xi + _x1, y0 + _y1, xi + _x3    , y0 + _y3);
         else
-          Chord(dc, xi - _x2, y0 + _y1, xi + x2, y0 + _y3,
+          // Powerline right half circle U+E0B4: trichord(0, 0, 8, 4, 0, 8);
+          Chord(dc, xi - _x2, y0 + _y1, xi + _x2, y0 + _y3,
                     xi + _x3, y0 + _y3, xi + _x1, y0 + _y1);
       }
       else
@@ -3963,7 +4192,7 @@ draw:;
       ct /= 8;
       cr /= 8;
       cb /= 8;
-      //printf("25%02X <%d%%%d %d%%%d %d%%%d %d%%%d\n", graph, cl, dl, ct, dt, cr, dr, cb, db);
+      //printf("25XX <%d%%%d %d%%%d %d%%%d %d%%%d\n", cl, dl, ct, dt, cr, dr, cb, db);
       int cl_ = cl;
       int ct_ = ct;
       int cr_ = cr;
@@ -3992,7 +4221,7 @@ draw:;
           cb_++;
         }
       }
-      //printf("25%02X >%d%%%d %d%%%d %d%%%d %d%%%d\n", graph, cl, dl, ct, dt, cr, dr, cb, db);
+      //printf("25XX >%d%%%d %d%%%d %d%%%d %d%%%d\n", cl, dl, ct, dt, cr, dr, cb, db);
       //printf("Rect %d %d %d %d\n", xi + cl_, y0 + ct_, xi + cr_, y0 + cb_);
       HBRUSH br = CreateSolidBrush(c);
       FillRect(dc, &(RECT){xi + cl_, y0 + ct_, xi + cr_, y0 + cb_}, br);
@@ -4019,8 +4248,222 @@ draw:;
       rectdraw(l, t, r, b, sol, fg);
     }
 
-    for (int i = 0; i < ulen; i++) {
-      if (powerline && origtext) switch (origtext[i]) {
+    // prepare Box Drawing resources
+    int penwidth = line_width;
+    int heavypenwidth = penwidth + 2;
+    // adjust heavy parts in mixed light/heavy boxes:
+    int heavydelta = min(line_width, 2);
+#define use_extpen
+#ifdef use_extpen
+    LOGBRUSH brush = (LOGBRUSH){BS_SOLID, fg, 0};
+    DWORD style = PS_GEOMETRIC | PS_SOLID;
+    HPEN roundpen = ExtCreatePen(style, penwidth, &brush, 0, 0);
+    if (boxpower)
+      style |= PS_ENDCAP_SQUARE;  // skipped for DEC Technical sum segments
+    HPEN pen = ExtCreatePen(style, penwidth, &brush, 0, 0);
+    HPEN heavypen = ExtCreatePen(style, heavypenwidth, &brush, 0, 0);
+#else
+    HPEN pen = CreatePen(PS_SOLID, penwidth, fg);
+    HPEN heavypen = CreatePen(PS_SOLID, heavypenwidth, fg);
+#endif
+    HBRUSH br = CreateSolidBrush(fg);
+    // preload default pen for some performance
+    HPEN oldpen = SelectObject(dc, pen);
+
+#define dl 0x50
+#define dh 0x51
+
+    void boxlines(bool heavy, char x1, char y1, char x2, char y2, char x3, char y3)
+    {
+      int boxscale(int ref, char val)
+      {
+        if (val >= dl) {
+          if (val > dl)
+            return ref / 2 + line_width;
+          else
+            return ref / 2 - line_width;
+        }
+        else if (y3 < -3) {
+          // finer-tuned values for dashed lines
+          return ref * val / 72;
+        }
+        else {
+          return ref * val / 24;
+        }
+      }
+      int _x1 = boxscale(char_width, x1);
+      int _y1 = boxscale(char_height, y1);
+      int _x2 = boxscale(char_width, x2);
+      int _y2 = boxscale(char_height, y2);
+      int _x3 = boxscale(char_width, x3);
+      int _y3 = boxscale(char_height, y3);
+
+      void boxline(int x1, int y1, int x2, int y2)
+      {
+        //printf("boxline %d/%d..%d/%d w %d\n", x1, y1, x2, y2, line_width);
+        // for dashed lines, use FillRect here
+        // for slanted lines ╲ ╳ ╱, use LineTo below
+        // for box border lines, use LineTo below
+        //if (y3 != -2) {  // for slanted lines in ╲ ╳ ╱, rather use LineTo
+        if (y3 < -2) {  // dashed lines
+          // apply pen width
+          int w = penwidth;
+          if (heavy)
+            w = heavypenwidth;
+
+          // normalise
+          if (x1 > x2) {
+            x1 ^= x2; x2 ^= x1; x1 ^= x2;
+          }
+          if (y1 > y2) {
+            y1 ^= y2; y2 ^= y1; y1 ^= y2;
+          }
+          // for vertical line, apply horizontal pen width
+          if (x1 == x2) {
+            x1 -= w / 2;
+            x2 += w - w / 2;
+          }
+          // for horizontal line, apply vertical pen width
+          if (y1 == y2) {
+            y1 -= w / 2;
+            y2 += w - w / 2;
+          }
+          //printf("fillrect %d/%d..%d/%d\n", x1, y1, x2, y2);
+          FillRect(dc, &(RECT){xi + x1, y0 + y1, xi + x2, y0 + y2}, br);
+        }
+        else {
+          // for box border lines, we could use FillRect above 
+          // in order to get sharp edges;
+          // for use of LineTo, we use the PS_ENDCAP_SQUARE pen
+          y1 += y0;
+          y2 += y0;
+          x1 += xi;
+          x2 += xi;
+          if (heavy)
+            SelectObject(dc, heavypen);
+          if (y3 == -2) {  // diagonals ╲ ╱ ╳
+            // without adjustment, the diagonals appear clipped from right,
+            // widh adjustment both sides, they appear clipped from left,
+            // with adjustment by penwidth / 2, alignment appears bad;
+            // penwidth / 3 on the right/bottom side is a compromise
+            y2 -= max(penwidth / 3, 1);
+            x2 -= max(penwidth / 3, 1);
+            // also the square pen appears wrong with the diagonals
+            SelectObject(dc, roundpen);
+          }
+
+          // draw the line back again to compensate for the missing endpoint
+          //Polyline(dc, (POINT[]){{x1, y1}, {x2, y2}, {x1, y1}}, 3);
+          MoveToEx(dc, x1, y1, null);
+          LineTo(dc, x2, y2);
+          // draw the line back again to compensate for the missing endpoint
+          if (y3 > -3)  // skip for dashed line segments
+            LineTo(dc, x1, y1);
+
+          if (heavy || y3 == -2)
+            SelectObject(dc, pen);
+          }
+      }
+
+      boxline(_x1, _y1, _x2, _y2);
+      if (y3 >= 0)
+        boxline(_x2, _y2, _x3, _y3);
+    }
+    void boxcurve(char q)
+    {
+      int x1, y1, x2, y2, xc, yc, a;
+      //int r = 5;
+      int r = char_width / 2 + 1;
+      // adjust endpoint by 1 to compensate for the missing endpoint
+      switch (q) {
+        when 1:  // upper right quarter ╰ lower left border arc
+          x1 = char_width / 2;
+          y1 = 0;
+          x2 = char_width + 1;
+          y2 = char_height / 2;
+          xc = char_width / 2 + r;
+          yc = char_height / 2 - r;
+          a = 180;
+        when 2:  // lower right quarter ╭ upper left border arc
+          x1 = char_width;
+          y1 = char_height / 2;
+          x2 = char_width / 2;
+          y2 = char_height + 1;
+          xc = char_width / 2 + r;
+          yc = char_height / 2 + r;
+          a = 90;
+        when 3:  // lower left quarter ╮ upper right border arc
+          x1 = char_width / 2;
+          y1 = char_height;
+          x2 = -1;
+          y2 = char_height / 2;
+          xc = char_width / 2 - r;
+          yc = char_height / 2 + r;
+          a = 0;
+        when 4:  // upper left quarter ╯ lower right border arc
+          x1 = 0;
+          y1 = char_height / 2;
+          x2 = char_width / 2;
+          y2 = -1;
+          xc = char_width / 2 - r;
+          yc = char_height / 2 - r;
+          a = 270;
+      }
+      MoveToEx(dc, xi + x1, y0 + y1, null);
+      AngleArc(dc, xi + xc, y0 + yc, r, a, 90);
+      LineTo(dc, xi + x2, y0 + y2);
+    }
+
+    for (int i = 0; i < len; i++) {
+      setclipr(xi, yclip, 1);
+
+      switch (origtext[i]) {
+        // Box Drawing (U+2500-U+257F)
+        // ─━│┃┄┅┆┇┈┉┊┋┌┍┎┏┐┑┒┓└┕┖┗┘┙┚┛├┝┞┟┠┡┢┣┤┥┦┧┨┩┪┫┬┭┮┯┰┱┲┳┴┵┶┷┸┹┺┻┼┽┾┿
+        // ╀╁╂╃╄╅╆╇╈╉╊╋╌╍╎╏═║╒╓╔╕╖╗╘╙╚╛╜╝╞╟╠╡╢╣╤╥╦╧╨╩╪╫╬╭╮╯╰╱╲╳╴╵╶╷╸╹╺╻╼╽╾╿
+// tune position and length of double/triple dash segments
+#define sub2 line_width
+#define add2 2 * line_width
+#define sub3 line_width
+#define add3 line_width
+#include "boxdrawing.t"
+
+        // DEC Technical Character Set (TCS)
+        // !1234567DE
+        // ⎷  ╲╱   Δ∇
+        when '!': // RADICAL SYMBOL BOTTOM
+          boxlines(false, 12, 0, 12, 24, -1, -1);
+          boxlines(false, 0, 12, 5, 12, 12, 24);
+        when '"':
+          boxlines(false, 12, 24, 12, 12, 24, 12);
+        when '#':
+          boxlines(false, 0, 12, 24, 12, -1, -1);
+        when '1': // Top Left Sigma
+          boxlines(false, 24, 12, 12, 12, 24, 24);
+        when '2': // Bottom Left Sigma
+          boxlines(false, 24, 12, 12, 12, 24, 0);
+        when '3': // Top Diagonal Sigma
+          boxlines(false, 0, 0, 24, 24, -2, -2);
+        when '4': // Bottom Diagonal Sigma
+          boxlines(false, 0, 24, 24, 0, -2, -2);
+#define sigend 18
+        when '5': // Top Right Sigma
+          boxlines(false, 0, 12, sigend, 12, sigend, 22);
+        when '6': // Bottom Right Sigma
+          boxlines(false, 0, 12, sigend, 12, sigend, 2);
+        when '7': // Middle Sigma
+          boxlines(false, 0, 0, 12, 12, 0, 24);
+#define nabdel 8
+        when 'D': // DELTA
+          boxlines(false, 12, 2, 12 - nabdel, 22, 12 + nabdel, 22);
+          boxlines(false, 12, 2, 12 + nabdel, 22, -1, -1);
+        when 'E': // NABLA
+          boxlines(false, 12, 22, 12 - nabdel, 2, 12 + nabdel, 2);
+          boxlines(false, 12, 22, 12 + nabdel, 2, -1, -1);
+
+        // Private Use geometric Powerline symbols (U+E0B0-U+E0BF, not 5, 7)
+        // 
+        //      - -
         when 0xE0B0:
           triangle(0, 0, 8, 4, 0, 8);
         when 0xE0B1:
@@ -4049,104 +4492,135 @@ draw:;
           triangle(0, 0, 8, 0, 8, 8);
         when 0xE0BF:
           lines(0, 0, 8, 8, -1, -1);
-      } else switch (graph) {
+
+        // Block Elements (U+2580-U+259F)
         // ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔▕▖▗▘▙▚▛▜▝▞▟
-        when 0x80: rect(0, 0, 8, 4); // UPPER HALF BLOCK
-        when 0x81 ... 0x88: rect(0, 0x88 - graph, 8, 8); // LOWER EIGHTHS
-        when 0x89 ... 0x8F: rect(0, 0, 0x90 - graph, 8); // LEFT EIGHTHS
-        when 0x90: rect(4, 0, 8, 8); // RIGHT HALF BLOCK
-        when 0x91: rectsolcol(0, 0, 8, 8, 2); // ░ LIGHT SHADE
-        when 0x92: rectsolcol(0, 0, 8, 8, 3); // ▒ MEDIUM SHADE
-        when 0x93: rectsolcol(0, 0, 8, 8, 5); // ▓ DARK SHADE
-        when 0x94: rect(0, 0, 8, 1); // UPPER ONE EIGHTH BLOCK
-        when 0x95: rect(7, 0, 8, 8); // RIGHT ONE EIGHTH BLOCK
-        when 0x96: rect(0, 4, 4, 8);
-        when 0x97: rect(4, 4, 8, 8);
-        when 0x98: rect(0, 0, 4, 4);
+        when 0x2580: rect(0, 0, 8, 4); // UPPER HALF BLOCK
+        when 0x2581 ... 0x2588: rect(0, 0x2588 - origtext[i], 8, 8); // LOWER EIGHTHS
+        when 0x2589 ... 0x258F: rect(0, 0, 0x2590 - origtext[i], 8); // LEFT EIGHTHS
+        when 0x2590: rect(4, 0, 8, 8); // RIGHT HALF BLOCK
+        when 0x2591: rectsolcol(0, 0, 8, 8, 2); // ░ LIGHT SHADE
+        when 0x2592: rectsolcol(0, 0, 8, 8, 3); // ▒ MEDIUM SHADE
+        when 0x2593: rectsolcol(0, 0, 8, 8, 5); // ▓ DARK SHADE
+        when 0x2594: rect(0, 0, 8, 1); // UPPER ONE EIGHTH BLOCK
+        when 0x2595: rect(7, 0, 8, 8); // RIGHT ONE EIGHTH BLOCK
+        when 0x2596: rect(0, 4, 4, 8);
+        when 0x2597: rect(4, 4, 8, 8);
+        when 0x2598: rect(0, 0, 4, 4);
         // solid 0b1111 top right bottom left
-        when 0x99: rectsolid(0, 4, 4, 8, 0xF);
+        when 0x2599: rectsolid(0, 4, 4, 8, 0xF);
                    rectsolid(0, 0, 4, 4, 0xB);
                    rectsolid(4, 4, 8, 8, 0x7);
-        when 0x9A: rect(0, 0, 4, 4); rect(4, 4, 8, 8);
-        when 0x9B: rectsolid(0, 0, 4, 4, 0xF);
+        when 0x259A: rect(0, 0, 4, 4); rect(4, 4, 8, 8);
+        when 0x259B: rectsolid(0, 0, 4, 4, 0xF);
                    rectsolid(4, 0, 8, 4, 0xD);
                    rectsolid(0, 4, 4, 8, 0xB);
-        when 0x9C: rectsolid(4, 0, 8, 4, 0xF);
+        when 0x259C: rectsolid(4, 0, 8, 4, 0xF);
                    rectsolid(0, 0, 4, 4, 0xD);
                    rectsolid(4, 4, 8, 8, 0xE);
-        when 0x9D: rect(4, 0, 8, 4);
-        when 0x9E: rect(4, 0, 8, 4); rect(0, 4, 4, 8);
-        when 0x9F: rectsolid(4, 4, 8, 8, 0xF);
+        when 0x259D: rect(4, 0, 8, 4);
+        when 0x259E: rect(4, 0, 8, 4); rect(0, 4, 4, 8);
+        when 0x259F: rectsolid(4, 4, 8, 8, 0xF);
                    rectsolid(4, 0, 8, 4, 0xE);
                    rectsolid(0, 4, 4, 8, 0x7);
       }
 
+      clearclipr();
+
       xi += char_width;
     }
+
+    // remove Box Drawing resources
+    SelectObject(dc, oldpen);
+    DeleteObject(pen);
+    DeleteObject(roundpen);
+    DeleteObject(heavypen);
+    DeleteObject(br);
   }
-  else if (graph >> 4) {  // VT100/VT52 horizontal "scanlines"
-    int parts = graph_vt52 ? 8 : 5;
+  else if (boxcoded && origtext) {  // VT100/VT52 box drawing and scanlines
     HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, 0, fg));
-    int yoff = (cell_height - line_width) * (graph >> 4) / parts;
-    if (lattr >= LATTR_TOP)
-      yoff *= 2;
-    if (lattr == LATTR_BOT)
-      yoff -= cell_height;
-    for (int l = 0; l < line_width; l++) {
-      MoveToEx(dc, x, y + yoff + l, null);
-      LineTo(dc, x + len * char_width, y + yoff + l);
-    }
-    oldpen = SelectObject(dc, oldpen);
-    DeleteObject(oldpen);
-  }
-  else if (graph) {  // VT100 box drawing characters ┘┐┌└┼ ─ ├┤┴┬│
-    HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, 0, fg));
-    int y0 = (lattr == LATTR_BOT) ? y - cell_height : y;
-    int yoff = (cell_height - line_width) * 3 / 5;
-    if (lattr >= LATTR_TOP)
-      yoff *= 2;
-    int xoff = (char_width - line_width) / 2;
+
+    int xi = x;
     for (int i = 0; i < len; i++) {
-      if (graph & DRAW_HORIZ) {
-        int xl, xr;
-        if (graph & DRAW_LEFT)
-          xl = x + i * char_width;
-        else
-          xl = x + i * char_width + xoff;
-        if (graph & DRAW_RIGHT)
-          xr = x + (i + 1) * char_width;
-        else
-          xr = x + i * char_width + xoff + line_width;
+      setclipr(xi, y, 1);
+
+      int graph = origtext[i];
+      bool graph_vt52 = false;
+      if (graph > 0x500) {
+        graph_vt52 = true;
+        graph &= 0xF;
+        graph <<= 4;  // indicate VT52 scanlines where expected
+      }
+      else {
+        graph -= 0x100;
+      }
+      if (graph >> 4) {  // VT100/VT52 horizontal "scanlines"
+        int parts = graph_vt52 ? 8 : 5;
+        int yoff = (cell_height - line_width) * (graph >> 4) / parts;
+        if (lattr >= LATTR_TOP)
+          yoff *= 2;
+        if (lattr == LATTR_BOT)
+          yoff -= cell_height;
         for (int l = 0; l < line_width; l++) {
-          MoveToEx(dc, xl, y0 + yoff + l, null);
-          LineTo(dc, xr, y0 + yoff + l);
+          MoveToEx(dc, x, y + yoff + l, null);
+          LineTo(dc, x + len * char_width, y + yoff + l);
         }
       }
-      if (graph & DRAW_VERT) {
-        int xi = x + i * char_width + xoff;
-        int yt, yb;
-        if (graph & DRAW_UP)
-          yt = y0;
-        else
-          yt = y0 + yoff;
-        if (graph & DRAW_DOWN)
-          yb = y0 + (lattr >= LATTR_TOP ? 2 : 1) * cell_height;
-        else
-          yb = y0 + yoff + line_width;
-        for (int l = 0; l < line_width; l++) {
-          MoveToEx(dc, xi + l, yt, null);
-          LineTo(dc, xi + l, yb);
+      else {  // VT100 box drawing characters ┘┐┌└┼ ─ ├┤┴┬│
+        int y0 = (lattr == LATTR_BOT) ? y - cell_height : y;
+        int yoff = (cell_height - line_width) * 3 / 5;
+        if (lattr >= LATTR_TOP)
+          yoff *= 2;
+        int xoff = (char_width - line_width) / 2;
+
+        if (graph & DRAW_HORIZ) {
+          int xl, xr;
+          if (graph & DRAW_LEFT)
+            xl = x + i * char_width;
+          else
+            xl = x + i * char_width + xoff;
+          if (graph & DRAW_RIGHT)
+            xr = x + (i + 1) * char_width;
+          else
+            xr = x + i * char_width + xoff + line_width;
+          for (int l = 0; l < line_width; l++) {
+            MoveToEx(dc, xl, y0 + yoff + l, null);
+            LineTo(dc, xr, y0 + yoff + l);
+          }
+        }
+        if (graph & DRAW_VERT) {
+          int xi = x + i * char_width + xoff;
+          int yt, yb;
+          if (graph & DRAW_UP)
+            yt = y0;
+          else
+            yt = y0 + yoff;
+          if (graph & DRAW_DOWN)
+            yb = y0 + (lattr >= LATTR_TOP ? 2 : 1) * cell_height;
+          else
+            yb = y0 + yoff + line_width;
+          for (int l = 0; l < line_width; l++) {
+            MoveToEx(dc, xi + l, yt, null);
+            LineTo(dc, xi + l, yb);
+          }
         }
       }
+
+      clearclipr();
+
+      xi += char_width;
     }
+
     oldpen = SelectObject(dc, oldpen);
     DeleteObject(oldpen);
   }
 
  /* Strikeout */
   if ((attr.attr & ATTR_STRIKEOUT)
+      //&& !ldisp1
       && (cfg.underl_manual || cfg.underl_colour != (colour)-1
           || (attr.attr & ATTR_ULCOLOUR)
+          || origtext  // apply strikeout to self-drawn characters
          )
      )
   {
@@ -4162,8 +4636,10 @@ draw:;
 
   _return:
 
-  if (origtext)
-    free(origtext);
+  if (origtext) {
+    // we transfered the orig text pointer to origtext, so we free text
+    free(text);
+  }
 
   show_curchar_info('w');
 
@@ -4171,13 +4647,13 @@ draw:;
     int cursor_size(int cell_size)
     {
       switch (term.cursor_size) {
-        when 1: return -2;
-        when 2: return line_width - 1;
-        when 3: return cell_size / 3 - 1;
-        when 4: return cell_size / 2;
-        when 5: return cell_size * 2 / 3;
-        when 6: return cell_size - 2;
-        otherwise: return 0;
+        when 1: return -2;                // invisible
+        when 2: return line_width - 1;    // underscore
+        when 3: return cell_size / 3 - 1; // ⅓
+        when 4: return cell_size / 2;     // ½
+        when 5: return cell_size * 2 / 3; // ⅔
+        when 6: return cell_size - 2;     // full block
+        otherwise: return 0;              // default
       }
     }
 
@@ -4189,18 +4665,18 @@ draw:;
 #endif
     HPEN oldpen = SelectObject(dc, CreatePen(PS_SOLID, 0, _cc));
     switch (term_cursor_type()) {
-      when CUR_BLOCK:
+      when CUR_BLOCK:  // solid block cursor
         if (attr.attr & TATTR_PASCURS) {
           HBRUSH oldbrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
           Rectangle(dc, x, y, x + char_width, y + cell_height);
           SelectObject(dc, oldbrush);
         }
-      when CUR_BOX: {
+      when CUR_BOX: {  // hollow box cursor
         HBRUSH oldbrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
         Rectangle(dc, x, y, x + char_width, y + cell_height);
         SelectObject(dc, oldbrush);
       }
-      when CUR_LINE: {
+      when CUR_LINE: {  // vertical line cursor
         int caret_width = cursor_size(cell_width);
         if (caret_width <= 0) {
           caret_width = (3 + (lattr >= LATTR_WIDE ? 2 : 0)) * cell_width / 40;
@@ -4241,7 +4717,7 @@ draw:;
               dc, (POINT[]){{xx, y + dy}, {xx + caret_width, y + dy}}, 2);
         }
       }
-      when CUR_UNDERSCORE: {
+      when CUR_UNDERSCORE: {  // horizontal line cursor
         int yy = yt + min(ff->descent, cell_height - 2);
         yy += ff->row_spacing * 3 / 8;
         if (lattr >= LATTR_TOP) {
@@ -4359,6 +4835,7 @@ win_check_glyphs(wchar *wcs, uint num, cattrflags attr)
   // recheck for characters affected by FontChoice
   for (uint i = 0; i < num; i++) {
     uchar cf = scriptfont(wcs[i]);
+    cf &= 0xF;  // mask glyph shift / glyph centering flag
 #ifdef debug_scriptfonts
     if (wcs[i] && cf)
       printf("scriptfont %04X: %d\n", wcs[i], cf);
@@ -4742,6 +5219,7 @@ win_char_width(xchar c, cattrflags attr)
       if (ff->cpcache[font4index][i].ch == c) {
         if (ff->cpcache[font4index][i].width) {
           ReleaseDC(wnd, dc);
+          //printf(" win_char_width %04X (cache) -> %d\n", c, ff->cpcache[font4index][i].width);
           return ff->cpcache[font4index][i].width;
         }
         else {

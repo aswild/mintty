@@ -1,3 +1,6 @@
+// visual tabbar implementation (part of mintty)
+// initially provided 2020 by Xiaohui Duan (#944)
+
 #include "winpriv.h"
 #include "wintab.h"
 #if CYGWIN_VERSION_API_MINOR < 74
@@ -17,22 +20,31 @@ static bool initialized = false;
 static const int max_tab_width = 300;
 static const int min_tab_width = 20;
 static int prev_tab_width = 0;
+static int curr_tab_width;
+static int xoff;
 
 #define TABFONTSCALE 9/10
 
-static int
-fit_title(HDC dc, int tab_width, wchar_t *title_in, wchar_t *title_out, int olen)
+static void
+fit_title(HDC dc, int tab_width, wchar_t *title_in, wchar_t *title_out, int obuflen)
 {
+#ifdef debug_title_str
+  // reveal bug of previous wcsncpy usage
+  wcscpy(title_out, W("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"));
+  obuflen = 25;
+#endif
   int title_len = wcslen(title_in);
   SIZE text_size;
   GetTextExtentPoint32W(dc, title_in, title_len, &text_size);
   int text_width = text_size.cx;
   if (text_width <= tab_width) {
-    wcsncpy(title_out, title_in, olen);
-    return title_len;
+    title_out[0] = 0;
+    wcsncat(title_out, title_in, obuflen - 1);
+    return;
   }
-  wcsncpy(title_out, W("\u2026\u2026"), olen);
   title_out[0] = title_in[0];
+  title_out[1] = L'\u2026';
+  title_out[2] = 0;
   GetTextExtentPoint32W(dc, title_out, 2, &text_size);
   text_width = text_size.cx;
   int i;
@@ -44,8 +56,7 @@ fit_title(HDC dc, int tab_width, wchar_t *title_in, wchar_t *title_out, int olen
     else
       break;
   }
-  wcsncpy(title_out + 2, title_in + i + 1, olen - 2);
-  return wcsnlen(title_out, olen);
+  wcsncat(title_out + 2, title_in + i + 1, obuflen - 3);
 }
 
 static void
@@ -61,18 +72,24 @@ tabbar_update()
   int tab_width = (win_width - 2 * tab_height) / ntabinfo;
   tab_width = min(tab_width, max_tab_width);
   tab_width = max(tab_width, min_tab_width);
+  curr_tab_width = tab_width;
   //printf("width: %d %d %d\n", win_width, tab_width, ntabinfo);
   SendMessage(tab_wnd, TCM_SETITEMSIZE, 0, tab_width | tab_height << 16);
   TCITEMW tie;
-  tie.mask = TCIF_TEXT | TCIF_IMAGE | TCIF_PARAM;
+  tie.mask = TCIF_TEXT | TCIF_PARAM;
+#if 0
+  tie.mask |= TCIF_IMAGE;
+  //ImageList_Create, ImageList_AddIcon..., TCM_SETIMAGELIST
   tie.iImage = -1;
+#endif
   wchar_t title_fit[256];
   HDC tabdc = GetDC(tab_wnd);
+  //printf("tab DC %p\n", tabdc);
   SelectObject(tabdc, tabbar_font);
   tie.pszText = title_fit;
   SendMessage(tab_wnd, TCM_DELETEALLITEMS, 0, 0);
   for (int i = 0; i < ntabinfo; i ++) {
-    fit_title(tabdc, tab_width, tabinfo[i].title, title_fit, 256);
+    fit_title(tabdc, tab_width, tabinfo[i].title, title_fit, lengthof(title_fit));
     tie.lParam = (LPARAM)tabinfo[i].wnd;
     SendMessage(tab_wnd, TCM_INSERTITEMW, i, (LPARAM)&tie);
     if (tabinfo[i].wnd == wnd) {
@@ -83,6 +100,10 @@ tabbar_update()
 }
 
 #if CYGWIN_VERSION_API_MINOR >= 74
+#define unflicker
+#endif
+
+#ifdef unflicker
 // To prevent heavy flickers.
 static LRESULT CALLBACK
 tab_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR uid, DWORD_PTR data)
@@ -116,12 +137,143 @@ tab_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR uid, DWORD_PTR data
 }
 #endif
 
+static void
+create_tabbar_font()
+{
+  if (tabbar_font)
+    DeleteObject(tabbar_font);
+  tabbar_font = 0;
+  if (*cfg.tab_font)
+    tabbar_font = CreateFontW(cell_height * TABFONTSCALE, cell_width * TABFONTSCALE, 0, 0, FW_DONTCARE, false, false, false,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              DEFAULT_QUALITY, FIXED_PITCH | FF_DONTCARE,
+                              cfg.tab_font);
+  if (!tabbar_font) {
+    tabbar_font = CreateFontW(cell_height * TABFONTSCALE, cell_width * TABFONTSCALE, 0, 0, FW_DONTCARE, false, false, false,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              DEFAULT_QUALITY, FIXED_PITCH | FF_DONTCARE,
+                              cfg.font.name);
+  }
+  SendMessage(tab_wnd, WM_SETFONT, (WPARAM)tabbar_font, 1);
+}
+
+// visual feedback during tab movement? could be made a configuration option
+#define swipe_tab true
+
 // We need to make a container for the tabbar for handling WM_NOTIFY, also for further extensions
 static LRESULT CALLBACK
 container_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
   //printf("tabbar con_proc %03X\n", msg);
-  if (msg == WM_NOTIFY) {
+static int dragidx = -1;
+static int dragini = -1;  // initial drag tab, where it was clicked on
+static int targpro = -1;
+static int xstart = 0;  // origin position of moved tab
+static int xswipe = 0;  // swipe offset with swipe_tab feature
+static HCURSOR hcursor = NULL;
+
+  if (msg == WM_MOUSEACTIVATE) {
+    //printf("WM_MOUSEACTIVATE lo %02X hi %02X\n", LOWORD(lp), HIWORD(lp));
+    if (LOWORD(lp) == HTCLIENT && HIWORD(lp) == WM_LBUTTONDOWN) {
+      WORD dragmsg = 0;
+      // begin drag-and-drop tab reordering
+#ifdef determine_tab_index_by_wnd_in_item
+      // get tab wnd from TCITEM lParam, lookup tab index (not implemented)
+      int isel = SendMessage(tab_wnd, TCM_GETCURSEL, 0, 0);
+      TCITEMW tie;
+      tie.mask = TCIF_PARAM;
+      SendMessage(tab_wnd, TCM_GETITEM, isel, (LPARAM)&tie);
+      //dragidx = index_in_tabinfo(tie.lParam);
+      for (int i = 0; i < ntabinfo; i ++)
+        if (tabinfo[i].wnd == (HWND)tie.lParam) {
+          dragidx = i;
+          break;
+        }
+      //printf("i %d lp %p drag %d\n", isel, (void*)tie.lParam, dragidx);
+#endif
+      // enquire cursor position; derive click-and-drag item index
+      POINT p;
+      if (GetCursorPos(&p) && ScreenToClient(hwnd, &p)) {
+        int x = p.x - xoff;
+        xstart = p.x;
+        xswipe = 0;  // init swipe_tab offset
+        dragidx = x / curr_tab_width;
+        if (dragidx < ntabinfo)
+          dragmsg = HIWORD(lp);
+        else
+          dragidx = -1;
+        //printf("%d:%d (pw %d) x %d drag %d\n", (int)p.y, (int)p.x, curr_tab_width, x, dragidx);
+      }
+      dragini = dragidx; // suppress highlighting on initial drag position
+      if (dragmsg) {
+        SetCapture(hwnd);
+        hcursor = GetCursor();
+      }
+    }
+  }
+  else if (msg == WM_MOUSEMOVE) {
+    if ((GetCapture() == hwnd) && ((wp & MK_LBUTTON) != 0)) {
+      // dragging tab
+      POINT p;
+      if (GetCursorPos(&p) && ScreenToClient(hwnd, &p)) {
+        xswipe = p.x - xstart;  // adjust swipe_tab offset
+
+        if (abs(p.x - xstart) > GetSystemMetrics(SM_CXDRAG)) {
+          SetCursor(LoadCursor(NULL, IDC_SIZEWE));
+
+          // drop tab while dragging for tab reordering
+
+          // derive drop target item index
+          int x = p.x - xoff;
+          int dropidx = x / curr_tab_width;
+          //printf("%d:%d (pw %d) x %d: drag %d -> drop %d\n", (int)p.y, (int)p.x, curr_tab_width, x, dragidx, dropidx);
+
+          // act on drop target item
+          if (dropidx < ntabinfo && dropidx >= 0) {
+            // visual indication of tab dragging: highlight the dragging
+            RECT tr; // enquire tab rect
+            SendMessage(tab_wnd, TCM_GETITEMRECT, dropidx, (LPARAM)&tr);
+            //printf("drop RECT %d %d %d %d\n", tr.left, tr.right, tr.top, tr.bottom);
+            // calculate relative cursor position
+            int w = tr.right - tr.left;
+            int c = (tr.left + tr.right) / 2;
+            targpro = 100 - abs(x - c) * 100 / (w / 2);
+            //printf("drop %d [%d] %d: %d%%\n", tr.left, x, tr.right, targpro);
+
+            // move the tab (before swipe_tab adaptation!)
+            win_tab_move(dropidx - dragidx);
+
+            // update index of tab being dragged
+            //printf("dragini %d dragidx %d dropidx %d\n", dragini, dragidx, dropidx);
+            dragidx = dropidx;
+            if (dragidx != dragini) {
+              // enable dynamic highlighting when changed drag tab position
+              dragini = -1;
+
+              // rebase reference for swipe_tab visualisation feature
+              dragini = dragidx;
+              xstart = p.x;
+            }
+
+            // draw tab drag indication, shifted with swipe_tab feature
+            RedrawWindow(tab_wnd, 0, 0, RDW_INVALIDATE | RDW_UPDATENOW);
+          }
+        }
+      }
+    }
+  }
+  else if (msg == WM_SETCURSOR) {  // release cursor after tab moving
+    if (swipe_tab)
+      // clear swipe artefacts for proper swipe_tab visualisation
+      RedrawWindow(tab_wnd, 0, 0, RDW_INVALIDATE | RDW_UPDATENOW);
+  }
+  else if (msg == WM_LBUTTONUP && GetCapture() == hwnd) {
+    SetCursor(hcursor);
+    ReleaseCapture();
+    dragidx = -1;
+    SetFocus(wnd);
+  }
+  else if (msg == WM_NOTIFY) {
     //printf("tabbar con_proc WM_NOTIFY\n");
     LPNMHDR lpnmhdr = (LPNMHDR)lp;
     //printf("notify %lld %d %d\n", lpnmhdr->idFrom, lpnmhdr->code, TCN_SELCHANGE);
@@ -131,8 +283,8 @@ container_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       tie.mask = TCIF_PARAM;
       SendMessage(tab_wnd, TCM_GETITEM, isel, (LPARAM)&tie);
       //printf("%p\n", (void*)tie.lParam);
-      RECT rect_me;
-      GetWindowRect(wnd, &rect_me);
+      //RECT rect_me;
+      //GetWindowRect(wnd, &rect_me);
       //printf("%d %d %d %d\n", rect_me.left, rect_me.right, rect_me.top, rect_me.bottom);
       //ShowWindow((HWND)tie.lParam, SW_RESTORE);
       //ShowWindow((HWND)tie.lParam, SW_SHOW);
@@ -157,16 +309,10 @@ container_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   else if (msg == WM_CREATE) {
     //printf("tabbar con_proc WM_CREATE\n");
     tab_wnd = CreateWindowExA(0, WC_TABCONTROLA, "", WS_CHILD | TCS_FIXEDWIDTH | TCS_OWNERDRAWFIXED, 0, 0, 0, 0, hwnd, 0, inst, NULL);
-#if CYGWIN_VERSION_API_MINOR >= 74
+#ifdef unflicker
     SetWindowSubclass(tab_wnd, tab_proc, 0, 0);
 #endif
-    if (tabbar_font)
-      DeleteObject(tabbar_font);
-    tabbar_font = CreateFontW(cell_height * TABFONTSCALE, cell_width * TABFONTSCALE, 0, 0, FW_DONTCARE, false, false, false,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              DEFAULT_QUALITY, FIXED_PITCH | FF_DONTCARE,
-                              cfg.font.name);
-    SendMessage(tab_wnd, WM_SETFONT, (WPARAM)tabbar_font, 1);
+    create_tabbar_font();
   }
   else if (msg == WM_SHOWWINDOW) {
     //printf("tabbar con_proc WM_SHOWWINDOW\n");
@@ -179,13 +325,7 @@ container_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   }
   else if (msg == WM_SIZE) {
     //printf("tabbar con_proc WM_SIZE\n");
-    if (tabbar_font)
-      DeleteObject(tabbar_font);
-    tabbar_font = CreateFontW(cell_height * TABFONTSCALE, cell_width * TABFONTSCALE, 0, 0, FW_DONTCARE, false, false, false,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              DEFAULT_QUALITY, FIXED_PITCH | FF_DONTCARE,
-                              cfg.font.name);
-    SendMessage(tab_wnd, WM_SETFONT, (WPARAM)tabbar_font, 1);
+    create_tabbar_font();
 
     SetWindowPos(tab_wnd, 0,
                  0, 0,
@@ -196,10 +336,15 @@ container_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   else if (msg == WM_DRAWITEM) {
     //printf("tabbar con_proc WM_DRAWITEM\n");
     LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lp;
+    int itemID = dis->itemID;
+
     HDC hdc = dis->hDC;
-    //printf("container received drawitem %llx %p\n", wp, dis);
-    int hcenter = (dis->rcItem.left + dis->rcItem.right) / 2;
-    int vcenter = (dis->rcItem.top + dis->rcItem.bottom) / 2;
+    //printf("WM_DRAWITEM %d DC %p RECT %d %d %d %d\n", itemID, hdc, dis->rcItem.left, dis->rcItem.right, dis->rcItem.top, dis->rcItem.bottom);
+
+    // copy RECT for dynamic swipe offset adaptation (swipe_tab feature)
+    RECT rcitem = dis->rcItem;
+    int hcenter = (rcitem.left + rcitem.right) / 2;
+    int vcenter = (rcitem.top + rcitem.bottom) / 2;
 
     SetTextAlign(hdc, TA_CENTER | TA_TOP);
     TCITEMW tie;
@@ -207,11 +352,11 @@ container_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     tie.mask = TCIF_TEXT;
     tie.pszText = buf;
     tie.cchTextMax = 256;
-    SendMessage(tab_wnd, TCM_GETITEMW, dis->itemID, (LPARAM)&tie);
+    SendMessage(tab_wnd, TCM_GETITEMW, itemID, (LPARAM)&tie);
 
     HBRUSH tabbr;
     colour tabbg = (colour)-1;
-    if (tabinfo[dis->itemID].wnd == wnd) {
+    if (tabinfo[itemID].wnd == wnd) {
       //tabbr = GetSysColorBrush(COLOR_ACTIVECAPTION);
       //SetTextColor(hdc, GetSysColor(COLOR_CAPTIONTEXT));
       tabbr = GetSysColorBrush(COLOR_HIGHLIGHT);
@@ -219,12 +364,50 @@ container_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       SetTextColor(hdc, GetSysColor(COLOR_HIGHLIGHTTEXT));
       //printf("TAB fg %06X\n", GetSysColor(COLOR_HIGHLIGHTTEXT));
 
-      // override active tab colours if configured
-      tabbg = cfg.tab_bg_colour;
-      if (tabbg != (colour)-1) {
-        //printf("TAB bg %06X\n", tabbg);
+      // override active tab colours
+      // if tab position changed, or always with feature swipe_tab
+      if (dragidx >= 0 && (swipe_tab || dragidx != dragini)) {
+        // dynamic highlighting of tab being dragged (not initially)
+        colour bg1 = cfg.tab_bg_colour;
+        if (bg1 == (colour)-1)
+          bg1 = GetSysColor(COLOR_HIGHLIGHT);
+        colour bg0 = GetSysColor(COLOR_3DFACE);
+
+        // fix unset target hit percentage for swipe_tab feature
+        if (targpro < 0)
+          targpro = 100;
+        //int p = targpro * 80 / 100 + 10;
+        int p = (100 - sqr(100 - targpro) / 100) * 80 / 100 + 10;
+        int r = red(bg0) + p * (red(bg1) - red(bg0)) / 100;
+        int g = green(bg0) + p * (green(bg1) - green(bg0)) / 100;
+        int b = blue(bg0) + p * (blue(bg1) - blue(bg0)) / 100;
+
+        // set dynamic highlighting colour, depending on tab middle focus
+        tabbg = RGB(r, g, b);
+        // could use a different colour, or even configurable:
+        //tabbg = RGB(b, g, r);
+        //tabbg = RGB(g, b, r);
+        tabbg = RGB(g, r, b);
+        //tabbg = RGB(b, r, g);
+
         tabbr = CreateSolidBrush(tabbg);
+
+        if (swipe_tab) {
+          // dynamic swipe offset shifting
+          rcitem.left += xswipe;
+          rcitem.right += xswipe;
+          hcenter += xswipe;
+        }
       }
+      else {
+        // override active tab colours if configured
+        tabbg = cfg.tab_bg_colour;
+        if (tabbg != (colour)-1) {
+          //printf("TAB bg %06X\n", tabbg);
+          tabbr = CreateSolidBrush(tabbg);
+        }
+      }
+      // foreground colour
       colour tabfg = cfg.tab_fg_colour;
       if (tabfg != (colour)-1) {
         //printf("TAB fg %06X\n", tabfg);
@@ -238,7 +421,9 @@ container_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       SetTextColor(hdc, GetSysColor(COLOR_CAPTIONTEXT));
       //printf("tab fg %06X\n", GetSysColor(COLOR_CAPTIONTEXT));
     }
-    FillRect(hdc, &dis->rcItem, tabbr);
+
+    // paint tab contents, shifted as set up by swipe_tab feature
+    FillRect(hdc, &rcitem, tabbr);
     if (tabbg != (colour)-1)
       DeleteObject(tabbr);
     SetBkMode(hdc, TRANSPARENT);
@@ -267,6 +452,12 @@ tabbar_init()
   bar_wnd = CreateWindowExA(WS_EX_STATICEDGE, TABBARCLASS, "",
                             WS_CHILD | WS_BORDER,
                             0, 0, 0, 0, wnd, 0, inst, NULL);
+  // determine tab margin/offset for tab position/index calculation
+  RECT wr;
+  GetWindowRect(tab_wnd, &wr);
+  xoff = wr.left;
+  GetWindowRect(bar_wnd, &wr);
+  xoff -= wr.left;
 
   initialized = true;
 }

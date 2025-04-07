@@ -1,5 +1,5 @@
 // config.c (part of mintty)
-// Copyright 2008-2022 Andy Koppe, 2015-2022 Thomas Wolff
+// Copyright 2008-2023 Andy Koppe, 2015-2025 Thomas Wolff
 // Based on code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -62,6 +62,7 @@ const config default_cfg = {
   .search_bg_colour = 0x00DDDD,
   .search_current_colour = 0x0099DD,
   .theme_file = W(""),
+  .dark_theme = W(""),
   .background = W(""),
   .colour_scheme = "",
   .transparency = 0,
@@ -87,7 +88,8 @@ const config default_cfg = {
   .show_hidden_fonts = false,
   .font_smoothing = FS_DEFAULT,
   .font_render = FR_UNISCRIBE,
-  .bold_as_font = false,
+  .dim_as_font = true,
+  .bold_as_font = true,
   .bold_as_colour = true,
   .allow_blinking = false,
   .locale = "",
@@ -96,12 +98,14 @@ const config default_cfg = {
   .old_locale = false,
   .fontmenu = -1,
   .tek_font = W(""),
+  .tab_font = W(""),
   // Keys
   .backspace_sends_bs = CERASE == '\b',
   .delete_sends_del = false,
   .ctrl_alt_is_altgr = false,
   .altgr_is_alt = false,
   .ctrl_alt_delay_altgr = 0,
+  .key_alpha_mode = true,
   .old_altgr_detection = false,
   .old_modify_keys = 0,
   .format_other_keys = 1,
@@ -140,6 +144,7 @@ const config default_cfg = {
   .lines_per_notch = 0,
   .mouse_pointer = W("ibeam"),
   .appmouse_pointer = W("arrow"),
+  .pixmouse_pointer = W("cross"),
   // Selection
   .input_clears_selection = true,
   .copy_on_select = true,
@@ -150,6 +155,7 @@ const config default_cfg = {
   .copy_as_rtf_font_size = 0,
   .trim_selection = true,
   .allow_set_selection = false,
+  .allow_paste_selection = false,
   .selection_show_size = false,
   // Window
   .cols = 80,
@@ -159,6 +165,7 @@ const config default_cfg = {
   .scrollback_lines = 10000,
   .max_scrollback_lines = 250000,
   .scroll_mod = MDK_SHIFT,
+  .border_style = BORDER_NORMAL,
   .pgupdn_scroll = false,
   .lang = W(""),
   .search_bar = W(""),
@@ -181,6 +188,10 @@ const config default_cfg = {
   .play_tone = 2,
   .printer = W(""),
   .confirm_exit = true,
+  .confirm_reset = false,
+  .confirm_multi_line_pasting = false,
+  .status_line = false,
+  .status_debug = 0,
   // Command line
   .class = W(""),
   .hold = HOLD_START,
@@ -204,7 +215,8 @@ const config default_cfg = {
   .suppress_osc = "",
   .suppress_nrc = "",  // unused
   .suppress_wheel = "",
-  .filter_paste = "",
+  .filter_paste = "STTY",
+  .guard_path = 7,
   .bracketed_paste_split = 0,
   .suspbuf_max = 8080,
   .printable_controls = 0,
@@ -241,6 +253,7 @@ const config default_cfg = {
   .padding = 1,
   .ligatures = 1,
   .ligatures_support = 0,
+  .box_drawing = 1,
   .handle_dpichanged = 2,
   .check_version_update = 0,
   .word_chars = "",
@@ -252,7 +265,6 @@ const config default_cfg = {
   .progress_bar = 0,
   .progress_scan = 1,
   .dim_margins = false,
-  .status_line = false,
   .old_bold = false,
   .ime_cursor_colour = DEFAULT_COLOUR,
   .ansi_colours = {
@@ -292,6 +304,7 @@ const config default_cfg = {
     [BOLD_WHITE_I]   = { RGB(255, 255, 255), RGB(255, 255, 255) }
 #endif
   },
+  .max_image_size = 4444444,
   .sixel_clip_char = W(" "),
   .baud = 0,
   .bloom = 0,
@@ -305,7 +318,8 @@ config cfg, new_cfg, file_cfg;
 
 typedef enum {
   OPT_BOOL, OPT_MOD, OPT_TRANS, OPT_CURSOR, OPT_FONTSMOOTH, OPT_FONTRENDER,
-  OPT_MIDDLECLICK, OPT_RIGHTCLICK, OPT_SCROLLBAR, OPT_WINDOW, OPT_HOLD,
+  OPT_MIDDLECLICK, OPT_RIGHTCLICK, OPT_SCROLLBAR, OPT_BORDER, OPT_WINDOW,
+  OPT_HOLD,
   OPT_INT, OPT_COLOUR, OPT_COLOUR_PAIR, OPT_STRING, OPT_WSTRING,
   OPT_CHARWIDTH, OPT_EMOJIS, OPT_EMOJI_PLACEMENT,
   OPT_COMPOSE_KEY,
@@ -353,6 +367,7 @@ options[] = {
   {"SearchBackgroundColour", OPT_COLOUR, offcfg(search_bg_colour)},
   {"SearchCurrentColour", OPT_COLOUR, offcfg(search_current_colour)},
   {"ThemeFile", OPT_WSTRING, offcfg(theme_file)},
+  {"ThemeDark", OPT_WSTRING, offcfg(dark_theme)},
   {"Background", OPT_WSTRING, offcfg(background)},
   {"ColourScheme", OPT_STRING, offcfg(colour_scheme)},
   {"Transparency", OPT_TRANS, offcfg(transparency)},
@@ -373,6 +388,7 @@ options[] = {
   {"FontIsBold", OPT_BOOL, offcfg(font.isbold)},
   {"ShowHiddenFonts", OPT_BOOL, offcfg(show_hidden_fonts)},
   {"FontSmoothing", OPT_FONTSMOOTH, offcfg(font_smoothing)},
+  {"DimAsFont", OPT_BOOL, offcfg(dim_as_font)},
   {"BoldAsFont", OPT_BOOL, offcfg(bold_as_font)},
   {"BoldAsColour", OPT_BOOL, offcfg(bold_as_colour)},
   {"AllowBlinking", OPT_BOOL, offcfg(allow_blinking)},
@@ -406,6 +422,7 @@ options[] = {
   {"FontRTL", OPT_WSTRING, offcfg(fontfams[11].name)},
   {"FontRTLWeight", OPT_INT, offcfg(fontfams[11].weight)},
   {"TekFont", OPT_WSTRING, offcfg(tek_font)},
+  {"TabFont", OPT_WSTRING, offcfg(tab_font)},
 
   // Keys
   {"BackspaceSendsBS", OPT_BOOL, offcfg(backspace_sends_bs)},
@@ -413,6 +430,7 @@ options[] = {
   {"CtrlAltIsAltGr", OPT_BOOL, offcfg(ctrl_alt_is_altgr)},
   {"AltGrIsAlsoAlt", OPT_BOOL, offcfg(altgr_is_alt)},
   {"CtrlAltDelayAltGr", OPT_INT, offcfg(ctrl_alt_delay_altgr)},
+  {"KeyAlphaMode", OPT_BOOL, offcfg(key_alpha_mode)},
   {"OldAltGrDetection", OPT_BOOL, offcfg(old_altgr_detection)},
   {"OldModifyKeys", OPT_INT, offcfg(old_modify_keys)},
   {"FormatOtherKeys", OPT_INT, offcfg(format_other_keys)},
@@ -454,6 +472,7 @@ options[] = {
   {"LinesPerMouseWheelNotch", OPT_INT, offcfg(lines_per_notch)},
   {"MousePointer", OPT_WSTRING, offcfg(mouse_pointer)},
   {"AppMousePointer", OPT_WSTRING, offcfg(appmouse_pointer)},
+  {"PixMousePointer", OPT_WSTRING, offcfg(pixmouse_pointer)},
 
   // Selection
   {"ClearSelectionOnInput", OPT_BOOL, offcfg(input_clears_selection)},
@@ -466,6 +485,7 @@ options[] = {
   {"CopyAsRTFFontHeight", OPT_INT, offcfg(copy_as_rtf_font_size)},
   {"TrimSelection", OPT_BOOL, offcfg(trim_selection)},
   {"AllowSetSelection", OPT_BOOL, offcfg(allow_set_selection)},
+  {"AllowPasteSelection", OPT_BOOL, offcfg(allow_paste_selection)},
   {"SelectionShowSize", OPT_INT, offcfg(selection_show_size)},
 
   // Window
@@ -476,6 +496,7 @@ options[] = {
   {"MaxScrollbackLines", OPT_INT, offcfg(max_scrollback_lines)},
   {"Scrollbar", OPT_SCROLLBAR, offcfg(scrollbar)},
   {"ScrollMod", OPT_MOD, offcfg(scroll_mod)},
+  {"BorderStyle", OPT_BORDER, offcfg(border_style)},
   {"PgUpDnScroll", OPT_BOOL, offcfg(pgupdn_scroll)},
   {"Language", OPT_WSTRING, offcfg(lang)},
   {"SearchBar", OPT_WSTRING, offcfg(search_bar)},
@@ -505,6 +526,8 @@ options[] = {
   {"PlayTone", OPT_INT, offcfg(play_tone)},
   {"Printer", OPT_WSTRING, offcfg(printer)},
   {"ConfirmExit", OPT_BOOL, offcfg(confirm_exit)},
+  {"ConfirmReset", OPT_BOOL, offcfg(confirm_reset)},
+  {"ConfirmMultiLinePasting", OPT_BOOL, offcfg(confirm_multi_line_pasting)},
 
   // Command line
   {"Class", OPT_WSTRING, offcfg(class)},
@@ -534,6 +557,7 @@ options[] = {
   {"SuppressNRC", OPT_STRING, offcfg(suppress_nrc)},  // unused
   {"SuppressMouseWheel", OPT_STRING, offcfg(suppress_wheel)},
   {"FilterPasteControls", OPT_STRING, offcfg(filter_paste)},
+  {"GuardNetworkPaths", OPT_INT, offcfg(guard_path)},
   {"BracketedPasteByLine", OPT_INT, offcfg(bracketed_paste_split)},
   {"SuspendWhileSelecting", OPT_INT, offcfg(suspbuf_max)},
   {"PrintableControls", OPT_INT, offcfg(printable_controls)},
@@ -572,11 +596,13 @@ options[] = {
   {"Padding", OPT_INT, offcfg(padding)},
   {"Ligatures", OPT_INT, offcfg(ligatures)},
   {"LigaturesSupport", OPT_INT, offcfg(ligatures_support)},
+  {"BoxDrawing", OPT_BOOL, offcfg(box_drawing)},
   {"HandleDPI", OPT_INT, offcfg(handle_dpichanged)},
   {"CheckVersionUpdate", OPT_INT, offcfg(check_version_update)},
   {"WordChars", OPT_STRING, offcfg(word_chars)},
   {"WordCharsExcl", OPT_STRING, offcfg(word_chars_excl)},
   {"IMECursorColour", OPT_COLOUR, offcfg(ime_cursor_colour)},
+  {"MaxImageSize", OPT_INT, offcfg(max_image_size)},
   {"SixelClipChars", OPT_WSTRING, offcfg(sixel_clip_char)},
   {"OldBold", OPT_BOOL, offcfg(old_bold)},
   {"ShortLongOpts", OPT_BOOL, offcfg(short_long_opts)},
@@ -588,6 +614,7 @@ options[] = {
   {"Bloom", OPT_INT, offcfg(bloom)},
   {"DimMargins", OPT_BOOL, offcfg(dim_margins)},
   {"StatusLine", OPT_BOOL, offcfg(status_line)},
+  {"StatusDebug", OPT_INT, offcfg(status_debug)},
   {"OldXButtons", OPT_BOOL, offcfg(old_xbuttons)},
   {"OptionsFont", OPT_WSTRING, offcfg(options_font)},
   {"OptionsFontSize", OPT_INT | OPT_LEGACY, offcfg(options_fontsize)},
@@ -690,6 +717,7 @@ static opt_val * const opt_vals[] = {
     {"ctrl", MDK_CTRL},
     {"super", MDK_SUPER},
     {"hyper", MDK_HYPER},
+    {"capslock", MDK_CAPSLOCK},
     {0, 0}
   },
   [OPT_TRANS] = (opt_val[]) {
@@ -737,6 +765,12 @@ static opt_val * const opt_vals[] = {
     {"left", -1},
     {"right", 1},
     {"none", 0},
+    {0, 0}
+  },
+  [OPT_BORDER] = (opt_val[]) {
+    {"normal", BORDER_NORMAL},
+    {"frame", BORDER_FRAME},
+    {"void", BORDER_VOID},
     {0, 0}
   },
   [OPT_WINDOW] = (opt_val[]){
@@ -836,9 +870,9 @@ find_option(bool from_file, string name)
 #define MAX_COMMENTS (lengthof(options) * 3)
 static struct {
   char * comment;
-  uchar opti;
+  ushort opti;
 } file_opts[lengthof(options) + MAX_COMMENTS];
-static uchar arg_opts[lengthof(options)];
+static ushort arg_opts[lengthof(options)];
 static uint file_opts_num = 0;
 static uint arg_opts_num;
 
@@ -865,7 +899,10 @@ seen_file_option(uint i)
 static bool
 seen_arg_option(uint i)
 {
-  return memchr(arg_opts, i, arg_opts_num);
+  for (uint k = 0; k < arg_opts_num; k++)
+    if (arg_opts[k] == i)
+      return true;
+  return false;
 }
 
 static void
@@ -1177,7 +1214,7 @@ init_config_dirs(void)
     sprintf(appdata, "%s/mintty", getenv("APPDATA"));
     config_dirs[++last_config_dir] = appdata;
   }
-  if (!support_wsl) {
+  if (!support_wsl && access(home, X_OK) == 0) {
     char * xdgconf = newn(char, strlen(home) + 16);
     sprintf(xdgconf, "%s/.config/mintty", home);
     config_dirs[++last_config_dir] = xdgconf;
@@ -1208,7 +1245,7 @@ get_resource_file(wstring sub, wstring res, bool towrite)
     char * resfn = path_win_w_to_posix(rf);
     free(rf);
     fd = open(resfn, towrite ? O_CREAT | O_EXCL | O_WRONLY | O_BINARY : O_RDONLY | O_BINARY, 0644);
-#if CYGWIN_VERSION_API_MINOR >= 74
+#if CYGWIN_VERSION_API_MINOR >= 194
     if (towrite && fd < 0 && errno == ENOENT) {
       // try to create resource subdirectories
       int dd = open(config_dirs[i], O_RDONLY | O_DIRECTORY);
@@ -1564,6 +1601,10 @@ load_config(string filename, int to_save)
   if (access(filename, R_OK) == 0 && access(filename, W_OK) < 0)
     to_save = false;
 
+  // prevent saving to /etc/minttyrc
+  if (strstr(filename, "/etc/") == filename)
+    to_save = false;
+
   FILE * file = fopen(filename, "r");
   //printf("load_config <%s> ok %d save %d\n", filename, !!file, to_save);
   if (report_config && file)
@@ -1855,10 +1896,15 @@ apply_config(bool save)
   fix_config();
   if (save)
     save_config();
-  bool had_theme = !!*cfg.theme_file;
+  bool had_theme = !!*cfg.theme_file || !!*cfg.dark_theme;
 
   if (*cfg.colour_scheme) {
     load_scheme(cfg.colour_scheme);
+    win_reset_colours();
+    win_invalidate_all(false);
+  }
+  else if (*cfg.dark_theme && is_win_dark_mode()) {
+    load_theme(cfg.dark_theme);
     win_reset_colours();
     win_invalidate_all(false);
   }
@@ -1937,69 +1983,6 @@ closemuicache()
   }
 }
 
-wchar *
-getregstr(HKEY key, wstring subkey, wstring attribute)
-{
-#if CYGWIN_VERSION_API_MINOR < 74
-  (void)key;
-  (void)subkey;
-  (void)attribute;
-  return 0;
-#else
-  // RegGetValueW is easier but not supported on Windows XP
-  HKEY sk = 0;
-  RegOpenKeyW(key, subkey, &sk);
-  if (!sk)
-    return 0;
-  DWORD type;
-  DWORD len;
-  int res = RegQueryValueExW(sk, attribute, 0, &type, 0, &len);
-  if (res)
-    return 0;
-  if (!(type == REG_SZ || type == REG_EXPAND_SZ || type == REG_MULTI_SZ))
-    return 0;
-  wchar * val = malloc (len);
-  res = RegQueryValueExW(sk, attribute, 0, &type, (void *)val, &len);
-  RegCloseKey(sk);
-  if (res) {
-    free(val);
-    return 0;
-  }
-  return val;
-#endif
-}
-
-uint
-getregval(HKEY key, wstring subkey, wstring attribute)
-{
-#if CYGWIN_VERSION_API_MINOR < 74
-  (void)key;
-  (void)subkey;
-  (void)attribute;
-  return 0;
-#else
-  // RegGetValueW is easier but not supported on Windows XP
-  HKEY sk = 0;
-  RegOpenKeyW(key, subkey, &sk);
-  if (!sk)
-    return 0;
-  DWORD type;
-  DWORD len;
-  int res = RegQueryValueExW(sk, attribute, 0, &type, 0, &len);
-  if (res)
-    return 0;
-  if (type == REG_DWORD) {
-    DWORD val;
-    len = sizeof(DWORD);
-    res = RegQueryValueExW(sk, attribute, 0, &type, (void *)&val, &len);
-    RegCloseKey(sk);
-    if (!res)
-      return (uint)val;
-  }
-  return 0;
-#endif
-}
-
 static wchar *
 muieventlabel(wchar * event)
 {
@@ -2061,6 +2044,8 @@ do_file_resources(control *ctrl, wstring pattern, bool list_dirs, str_fn fnh)
 
   for (int i = last_config_dir; i >= 0; i--) {
 #ifdef use_findfile
+    (void)fnh;  // CYGWIN_VERSION_API_MINOR < 74
+
     wstring suf = wcsrchr(pattern, L'.');
     int sufl = suf ? wcslen(suf) : 0;
 
@@ -2094,8 +2079,6 @@ do_file_resources(control *ctrl, wstring pattern, bool list_dirs, str_fn fnh)
             ffd.cFileName[len - sufl] = 0;
             if (ctrl)
               dlg_listbox_add_w(ctrl, ffd.cFileName);
-            else
-              (void)fnh;  // CYGWIN_VERSION_API_MINOR < 74
           }
         }
         ok = FindNextFileW(hFind, &ffd);
@@ -2122,7 +2105,7 @@ do_file_resources(control *ctrl, wstring pattern, bool list_dirs, str_fn fnh)
     DIR * dir = opendir(rcpat);
     if (dir) {
       struct dirent * direntry;
-      while ((direntry = readdir (dir)) != 0) {
+      while ((direntry = readdir(dir)) != 0) {
         if (patsuf && !strstr(direntry->d_name, patsuf))
           continue;
 
@@ -2765,7 +2748,65 @@ download_scheme(char * url)
     }
   }
   else {
+    int l = 0;
+    char linebuf[22222];  // in case of json, pull in the whole stuff
     while (fgets(linebuf, sizeof(linebuf) - 1, sf)) {
+#if defined(debug_scheme) && debug_scheme > 1
+      printf("linebuf <%s>\n", linebuf);
+#endif
+
+      if (!l++ && *linebuf == '{') {
+        // handle drag-and-drop json formats that contain colour specs like 
+        // "Red=190,70,120" (https://github.com/mskyaxl/wsl-terminal) or
+        // "Red=220,50,47\r" (https://github.com/oumu/mintty-color-schemes)
+        void schapp(char * name)
+        {
+          char specbuf[30];
+          sprintf(specbuf, "\"%s=", name);
+          char * colspec = strstr(linebuf, specbuf);
+          if (!colspec)
+            return;
+          colspec++;
+          char * cpoi = colspec + strlen(name) + 1;
+          while (isdigit((uchar)*cpoi) || *cpoi == ',')
+            cpoi++;
+          int collen = cpoi - colspec;
+          int len = sch ? strlen(sch) : 0;
+          sch = renewn(sch, len + collen + 2);
+          snprintf(&sch[len], collen + 1, "%s", colspec);
+          sprintf(&sch[len + collen], ";");
+#if defined(debug_scheme) && debug_scheme > 1
+          printf("%s\n", &sch[len]);
+#endif
+        }
+        schapp("ForegroundColour");
+        schapp("BackgroundColour");
+        schapp("BoldColour");
+        schapp("BlinkColour");
+        schapp("CursorColour");
+        schapp("UnderlineColour");
+        schapp("HoverColour");
+        schapp("HighlightBackgroundColour");
+        schapp("HighlightForegroundColour");
+        schapp("Black");
+        schapp("Red");
+        schapp("Green");
+        schapp("Yellow");
+        schapp("Blue");
+        schapp("Magenta");
+        schapp("Cyan");
+        schapp("White");
+        schapp("BoldBlack");
+        schapp("BoldRed");
+        schapp("BoldGreen");
+        schapp("BoldYellow");
+        schapp("BoldBlue");
+        schapp("BoldMagenta");
+        schapp("BoldCyan");
+        schapp("BoldWhite");
+        goto scheme_return;
+      }
+
       char * eq = linebuf;
       while ((eq = strchr(++eq, '='))) {
         int dum;
@@ -2807,6 +2848,9 @@ download_scheme(char * url)
       }
     }
   }
+
+scheme_return:
+
 #ifdef use_curl
   pclose(sf);
 #else
@@ -2835,6 +2879,7 @@ theme_handler(control *ctrl, int event)
   // to steer enabled state of Store button properly
   const wstring CFG_DOWNLOADED = W("@/@");
   wstring theme_name = new_cfg.theme_file;
+
   if (event == EVENT_REFRESH) {
     dlg_listbox_clear(ctrl);
     dlg_listbox_add_w(ctrl, NONE);
@@ -3811,10 +3856,19 @@ setup_config_box(controlbox * b)
         //__ Options - Text:
         s, _("Show bold"),
         50, showbold_handler, 0);
+
+      ctrl_columns(s, 1, 100);  // reset column stuff so we can rearrange them
+      ctrl_columns(s, 2, 50, 50);
       ctrl_checkbox(
         //__ Options - Text:
         s, _("&Allow blinking"),
-        dlg_stdcheckbox_handler, &new_cfg.allow_blinking);
+        dlg_stdcheckbox_handler, &new_cfg.allow_blinking
+      )->column = 0;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("Show dim as font"),
+        dlg_stdcheckbox_handler, &new_cfg.dim_as_font
+      )->column = 1;
      }
     }
   }
@@ -3900,15 +3954,25 @@ setup_config_box(controlbox * b)
       ctrl_combobox(
         s, _("Font smoothing"), 50, smoothing_handler, 0);
 
+#ifdef separate_font_attributes
       s = ctrl_new_set(b, _("Text"), null, null);
+#endif
       ctrl_combobox(
         //__ Options - Text:
         s, _("Show bold"),
         50, showbold_handler, 0);
+
+      ctrl_columns(s, 2, 50, 50);
       ctrl_checkbox(
         //__ Options - Text:
         s, _("&Allow blinking"),
-        dlg_stdcheckbox_handler, &new_cfg.allow_blinking);
+        dlg_stdcheckbox_handler, &new_cfg.allow_blinking
+      )->column = 0;
+      ctrl_checkbox(
+        //__ Options - Text:
+        s, _("Show dim as font"),
+        dlg_stdcheckbox_handler, &new_cfg.dim_as_font
+      )->column = 1;
      }
     }
   }
@@ -3976,6 +4040,11 @@ setup_config_box(controlbox * b)
     //__ Options - Keys:
     s, _("AltGr is also Alt"),
     dlg_stdcheckbox_handler, &new_cfg.altgr_is_alt
+  );
+  ctrl_checkbox(
+    //__ Options - Keys:
+    s, _("&Esc/Enter reset IME to alphanumeric"),
+    dlg_stdcheckbox_handler, &new_cfg.key_alpha_mode
   );
 
   s = ctrl_new_set(b, _("Keys"), null, 
@@ -4240,13 +4309,11 @@ setup_config_box(controlbox * b)
       dlg_stdcheckbox_handler, &new_cfg.input_clears_selection
     );
 
-#define copy_as_html_single_line
-
     //__ Options - Selection: treeview label
     s = ctrl_new_set(b, _("Selection"), null,
     //__ Options - Selection: section title
                         _("Clipboard"));
-    ctrl_columns(s, 2, 50, 50);
+    ctrl_columns(s, 2, 100, 0);
     ctrl_checkbox(
       //__ Options - Selection:
       s, _("Cop&y on select"),
@@ -4257,14 +4324,15 @@ setup_config_box(controlbox * b)
       s, _("Copy with TABs"),
       dlg_stdcheckbox_handler, &new_cfg.copy_tabs
     )->column = 0;
-    ctrl_columns(s, 1, 100);  // reset column stuff so we can rearrange them
-    ctrl_columns(s, 2, 50, 50);
     ctrl_checkbox(
       //__ Options - Selection:
       s, _("Copy as &rich text"),
       dlg_stdcheckbox_handler, &new_cfg.copy_as_rtf
     )->column = 0;
-#ifndef copy_as_html_single_line
+#ifdef copy_as_html_right_block
+    // HTML selection as 2×2 block in right column, with previous:
+    ctrl_columns(s, 1, 100);  // reset column stuff so we can rearrange them
+    ctrl_columns(s, 2, 50, 50);
     ctrl_radiobuttons(
       //__ Options - Selection:
       s, _("Copy as &HTML"), 2,
@@ -4297,11 +4365,13 @@ setup_config_box(controlbox * b)
       s, _("Trim space from selection"),
       dlg_stdcheckbox_handler, &new_cfg.trim_selection
     );
+#ifdef options_menu_allow_selection
     ctrl_checkbox(
       //__ Options - Selection:
       s, _("Allow setting selection"),
       dlg_stdcheckbox_handler, &new_cfg.allow_set_selection
     );
+#endif
 
     //__ Options - Selection: treeview label
     s = ctrl_new_set(b, _("Selection"), null,
@@ -4354,10 +4424,10 @@ setup_config_box(controlbox * b)
   );
 
   s = ctrl_new_set(b, _("Window"), null, null);
-  ctrl_columns(s, 2, 66, 34);
+  ctrl_columns(s, 2, 80, 20);
   ctrl_editbox(
     //__ Options - Window:
-    s, _("Scroll&back lines"), 50,
+    s, _("Scroll&back lines"), 40,
     dlg_stdintbox_handler, &new_cfg.scrollback_lines
   )->column = 0;
   ctrl_radiobuttons(

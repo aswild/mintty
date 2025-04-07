@@ -82,9 +82,9 @@ ifndef RELEASE
   endif
 endif
 
-version := \
+srcversion := \
   $(shell echo $(shell echo VERSION | cpp -P $(CPPFLAGS) --include appinfo.h))
-name_ver := $(NAME)-$(version)
+name_ver := $(NAME)-$(srcversion)
 
 #############################################################################
 # compilation parameters
@@ -100,12 +100,12 @@ ifneq ($(platform), msys)
   SECUR=-Wtrampolines
 endif
 # support cygwin debug package (use += to accept injected options)
-CFLAGS += -std=gnu99 -include std.h -Wall -Wextra -Wundef -Werror $(SECUR)
+CFLAGS += -std=gnu99 -include std.h -Wall -Wextra -Wundef -Werror
 # verify additional flags that are also injected into pkg build by cygport
 CFLAGS += -Wformat-security
 
-ifeq ($(shell VER=`$(CC) -dumpversion`; expr $${VER%.*} '>=' 4.5), 1)
-  CFLAGS += -march=native -mtune=native
+ifeq ($(shell VER=`$(CC) -dumpversion`; expr $${VER%%.*} '>=' 5), 1)
+  CFLAGS += -mtune=atom $(SECUR)
 endif
 
 scriptlib=-lusp10
@@ -115,7 +115,7 @@ downldlib=
 ifneq ($(platform), msys)
   emojilib=-lgdiplus
 endif
-extralibs=$(scriptlib) $(downldlib) $(emojilib)
+extralibs=$(scriptlib) $(downldlib) $(emojilib) -lshlwapi
 LDFLAGS := -L$(shell $(CC) -print-file-name=w32api) -static-libgcc
 LDLIBS := -mwindows $(extralibs) -lcomctl32 -limm32 -lwinmm -lwinspool -lole32 -luuid -lmpr
 #override LDFLAGS += -L$(shell $(CC) -print-file-name=w32api) -static-libgcc
@@ -159,6 +159,9 @@ $(BINDIR)/term.o: term.c emojibase.t emojiseqs.t
 $(BINDIR)/wintext.o: wintext.c
 	$(CC) -c $(DEPOPT) $(CCFLAGS) -O0 $(CPPFLAGS) -fstack-check $< -o $(BINDIR)/wintext.o
 
+$(BINDIR)/appinfo.o: appinfo.c appinfo.h appinfo.t
+	$(CC) -c $(DEPOPT) -O0 $(CPPFLAGS) -fstack-check $< -o $(BINDIR)/appinfo.o
+
 $(BINDIR)/%.o: %.c
 	$(CC) -c $(DEPOPT) $(CCFLAGS) $(CPPFLAGS) -fstack-check $< -o $(BINDIR)/$*.o
 
@@ -168,6 +171,14 @@ $(BINDIR)/%.o: %.rc %.h %.mft
 	$(CC) -E -xc -DRC_INVOKED $(DEPOPT) $(CPPFLAGS) $< | $(RC) -c 65001 -o $(BINDIR)/$*.o
 	-mv $*.d $(BINDIR)/
 
+gitversion := $(shell ./mkvertag "$(srcversion)")
+
+appinfo.t:	stamp
+
+stamp:
+	echo "#define VERSION_STAMP \"$(gitversion)\"" > appinfo.n
+	cmp appinfo.n appinfo.t && rm -f appinfo.n || /bin/mv appinfo.n appinfo.t
+
 exe := $(NAME).exe
 exe: $(exe)
 $(exe): $(objs)
@@ -175,7 +186,7 @@ $(exe): $(objs)
 	#-du -b $@
 
 bin := $(BINDIR)/$(NAME).exe
-bin: $(BINDIR) $(bin)
+bin: stamp $(BINDIR) $(bin)
 $(BINDIR):
 	mkdir -p $(BINDIR)
 $(bin): $(bins)
@@ -217,6 +228,8 @@ clean-unicode:
 
 clean-unicode-data:	clean-unicode
 	rm -f $(unicodedata) $(unicodeemoji)
+
+unicode-update:	clean-unicode-data bin
 
 combining.t:	# UnicodeData.txt Blocks.txt
 	uniset +cat=Me +cat=Mn +cat=Cf -00AD +1160-11FF +200B +D7B0-D7C6 +D7CB-D7FB c > combining.t
@@ -278,9 +291,11 @@ univer = `sed -e '/^\# Blocks-/ s,[^0-9]*\([0-9]*\)\.\([0-9]\)\.\([0-9]\)[^0-9]*
 unibasever = `sed -e '/^\# Blocks-/ s,[^0-9]*\([0-9]*\)\..*,\1.0,' -e t -e d Blocks.txt`
 
 # Emoji version may advance Unicode version
-emojiver = $(unibasever)
-# override Emoji version if not in sync (or extract from emoji-data.txt)
-emojiver = 15.0
+#emojiver = $(unibasever)
+# extract Emoji version from emoji-data.txt
+emojiver = `sed -e 's,^\#.*Emoji Version \([0-9][0-9.]*\).*,\1,' -e t -e d emoji-data.txt`
+# override Emoji version if not in sync
+##emojiver = 15.0
 
 # until 12.0:
 #emoji-%.txt:	Blocks.txt
@@ -297,15 +312,22 @@ emoji-data.txt:	Blocks.txt
 emoji-variation-sequences.txt:	Blocks.txt
 	$(WGET) http://www.unicode.org/Public/$(univer)/ucd/emoji/$@
 
-unicodever = `sed -e '/^\# Blocks-/ s,[^0-9]*\([0-9]*\)\.\([0-9]\)\.\([0-9]\)[^0-9]*,\1\2\3,' -e t -e d Blocks.txt`
+unicodever = $(shell sed -e '/^\# Blocks-/ s,[^0-9]*\([0-9]*\)\.\([0-9]\)\.\([0-9]\)[^0-9]*,\1\2\3,' -e t -e d Blocks.txt)
+univer = $(shell sed -e '/^\# Blocks-/ s,[^0-9]*\([0-9]*\)\.\([0-9]\)\.\([0-9]\)[^0-9]*,\1.\2.\3,' -e t -e d Blocks.txt)
+x11ver = $(shell cygcheck -f /usr/share/X11/locale/en_US.UTF-8/Compose | sed -e "s,^[^-]*-,," -e "s,-.*,,")
 
-unicodever.t:	# Blocks.txt
+releasever:
+	sed -e 's,\(Mintty .*\)`.*`,\1`$(srcversion)`,' -i ../wiki/Versions.md
+
+unicodever.t:	Blocks.txt
 	echo "#define UNICODE_VERSION $(unicodever)" > unicodever.t
+	sed -e 's,\(Unicode .*\)`.*`,\1`$(univer)`,' -i ../wiki/Versions.md
 
 univer:	Blocks.txt
-	echo $(univer)
-	echo $(unibasever)
-	echo $(unicodever)
+	echo univer: $(univer)
+	echo unibasever: $(unibasever)
+	echo unicodever: $(unicodever)
+	echo emojiver: $(emojiver)
 
 %.txt:
 	$(WGET) http://www.unicode.org/Public/UNIDATA/$@
@@ -321,8 +343,9 @@ emojiseqs.t:	# emoji-sequences.txt emoji-zwj-sequences.txt emoji-test.txt
 
 composed.t:	# $(compose_list) $(keysymdefs)
 	sh ./mkcomposedt > composed.t
+	sed -e 's,\(X11 .*\)`.*`,\1`$(x11ver)`,' -i ../wiki/Versions.md
 
-XGETTEXT_OPTS=--package-name=mintty #--package-version=$(version)
+XGETTEXT_OPTS=--package-name=mintty #--package-version=$(srcversion)
 XGETTEXT_OPTS+=--msgid-bugs-address=https://github.com/mintty/mintty/issues/700
 
 _:	localization checkloc
@@ -364,12 +387,12 @@ $(zip): $(exe) $(zip_files)
 pdf := $(DIST)/$(name_ver).pdf
 pdf: $(pdf)
 $(pdf): ../docs/$(NAME).1
-	groff -t -man -Tps $< | ps2pdf - $@
+	(echo .fp 5 CR; echo .fp 7 CB; cat $<) | groff -t -man -Tps | ps2pdf - $@
 
 html := ../docs/$(NAME).1.html
 html: $(html)
 $(html): ../docs/$(NAME).1 htmlroff.sed htmlhtml.sed
-	sed -f htmlroff.sed $< | groff -t -man -mwww -Thtml | sed -f htmlhtml.sed > $@
+	sed -f htmlroff.sed $< | groff -t -man -mwww -Thtml | sed -f htmlhtml.sed | tr -d '\003\004' > $@
 
 clean:
 	#rm -rf *.d *.o $(NAME)*
@@ -423,7 +446,10 @@ _vk.t:	# Windows Virtual Key Code names, only for debugging
 	sed -e 's/^#define \(VK_[^ ]*\) \(0x[0-9A-Fa-f]*\)$$/	{\2, "\1"},/' -e t -e d /usr/include/w32api/winuser.h > _vk.t
 
 _winidm.t:	winids.h
-	sed -e 's/#define *\(IDM_[^ ]*\).*/	{\1, "\1"},/' -e t -e d winids.h > _winidm.t
+	sed -e '$$ d' -e '/#ifdef/ b' -e '/#endif/ b' -e 's/#define *\(IDM_[^ ]*\).*/	{\1, "\1"},/' -e t -e d winids.h > _winidm.t
+
+_wstyles.t:	# Windows GWL_STYLE and GWL_EXSTYLE values
+	./mkstyles > $@
 
 target:
 	echo TARGET $(TARGET)
@@ -438,7 +464,8 @@ ver:
 	echo "$(call getappinfo,POINT_VERSION)"
 	echo "$(call getappinfo,COMMA_VERSION)"
 	echo "$(call getappinfo,DECIMAL_VERSION)"
-	echo version $(version)
+	echo src version $(srcversion)
+	echo version_stamp $(gitversion)
 
 #############################################################################
 # end

@@ -1,5 +1,5 @@
 // winmain.c (part of mintty)
-// Copyright 2008-13 Andy Koppe, 2015-2022 Thomas Wolff
+// Copyright 2008-13 Andy Koppe, 2015-2025 Thomas Wolff
 // Based on code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -23,6 +23,7 @@ char * mintty_debug;
 #include "child.h"
 #include "charset.h"
 #include "tek.h"
+#include "print.h"  // list_printers
 
 #include <locale.h>
 #include <getopt.h>
@@ -38,6 +39,7 @@ typedef UINT_PTR uintptr_t;
 #include <mmsystem.h>  // PlaySound for MSys
 #include <shellapi.h>
 #include <windowsx.h>  // GET_X_LPARAM, GET_Y_LPARAM
+#include <shlwapi.h>  // PathIsNetworkPathW
 
 #ifdef __CYGWIN__
 #include <sys/cygwin.h>  // cygwin_internal
@@ -59,6 +61,7 @@ typedef UINT_PTR uintptr_t;
 #ifndef GWL_USERDATA
 #define GWL_USERDATA -21
 #endif
+#define GWL_TIMEMASK ~1
 
 
 char * home;
@@ -103,16 +106,24 @@ static bool default_size_token = false;
 bool clipboard_token = false;
 bool keep_screen_on = false;
 bool force_opaque = false;
+#ifdef sanitize_min_restore_via_sync
+// multi-tab minimise/restore management:
+static bool restoring = false;
+static bool focus_here = false;
+static bool focus_inhibit = false;
+#endif
+// cleared when changing primary monitor:
+bool checked_desktop_config = false;
 
 // Options
 bool title_settable = true;
-static string border_style = 0;
 static string report_geom = 0;
 static bool report_moni = false;
 bool report_config = false;
 bool report_child_pid = false;
 bool report_child_tty = false;
 static bool report_winpid = false;
+static bool report_winid = false;
 static int monitor = 0;
 static bool center = false;
 static bool right = false;
@@ -135,6 +146,7 @@ static bool wsltty_appx = true;
 #else
 static bool wsltty_appx = false;
 #endif
+OSVERSIONINFO winver;
 
 
 static HBITMAP caretbm;
@@ -204,12 +216,342 @@ static BOOL (WINAPI * pSystemParametersInfo)(UINT, UINT, PVOID, UINT) = 0;
 
 static BOOLEAN (WINAPI * pShouldAppsUseDarkMode)(void) = 0; /* undocumented */
 static DWORD (WINAPI * pSetPreferredAppMode)(DWORD) = 0; /* undocumented */
-static HRESULT (WINAPI * pSetWindowTheme)(HWND, const wchar_t *, const wchar_t *) = 0;
+static HRESULT (WINAPI * pSetWindowTheme)(HWND, const wchar *, const wchar *) = 0;
 
 #define HTHEME HANDLE
 static COLORREF (WINAPI * pGetThemeSysColor)(HTHEME hth, int colid) = 0;
 static HTHEME (WINAPI * pOpenThemeData)(HWND, LPCWSTR pszClassList) = 0;
 static HRESULT (WINAPI * pCloseThemeData)(HTHEME) = 0;
+
+static BOOL (WINAPI * pGetLayeredWindowAttributes)(HWND, COLORREF *, BYTE *, DWORD *) = 0;
+
+
+#define dont_debug_guardpath
+
+#ifdef debug_guardpath
+#define trace_guard(p)	printf p
+#else
+#define trace_guard(p)	
+#endif
+
+
+wchar *
+getregstr(HKEY key, wstring subkey, wstring attribute)
+{
+#if CYGWIN_VERSION_API_MINOR < 74
+  (void)key;
+  (void)subkey;
+  (void)attribute;
+  return 0;
+#else
+  // RegGetValueW is easier but not supported on Windows XP
+  HKEY sk = 0;
+  RegOpenKeyW(key, subkey, &sk);
+  if (!sk)
+    return 0;
+  DWORD type;
+  DWORD len;
+  int res = RegQueryValueExW(sk, attribute, 0, &type, 0, &len);
+  if (res)
+    return 0;
+  if (!(type == REG_SZ || type == REG_EXPAND_SZ || type == REG_MULTI_SZ))
+    return 0;
+  wchar * val = malloc (len);
+  res = RegQueryValueExW(sk, attribute, 0, &type, (void *)val, &len);
+  RegCloseKey(sk);
+  if (res) {
+    free(val);
+    return 0;
+  }
+  return val;
+#endif
+}
+
+uint
+getregval(HKEY key, wstring subkey, wstring attribute, uint def)
+{
+#if CYGWIN_VERSION_API_MINOR < 74
+  (void)key;
+  (void)subkey;
+  (void)attribute;
+  return def;
+#else
+  // RegGetValueW is easier but not supported on Windows XP
+  HKEY sk = 0;
+  RegOpenKeyW(key, subkey, &sk);
+  if (!sk)
+    return def;
+  DWORD type;
+  DWORD len;
+  int res = RegQueryValueExW(sk, attribute, 0, &type, 0, &len);
+  if (res)
+    return def;
+  if (type == REG_DWORD) {
+    DWORD val;
+    len = sizeof(DWORD);
+    res = RegQueryValueExW(sk, attribute, 0, &type, (void *)&val, &len);
+    RegCloseKey(sk);
+    if (!res)
+      return (uint)val;
+  }
+  return def;
+#endif
+}
+
+bool
+is_win_dark_mode(void)
+{
+  // or return pShouldAppsUseDarkMode && pShouldAppsUseDarkMode()
+  return 0 == getregval(HKEY_CURRENT_USER, 
+              W("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+              W("AppsUseLightTheme"), -1);
+}
+
+
+// WSL path conversion, using wsl.exe
+static char *
+wslwinpath(string path)
+{
+  char * wslpath(char * path)
+  {
+    char * wslcmd;
+    // do the actual conversion with WSL wslpath -m
+    // wslpath -w fails in some cases during pathname postprocessing
+    // ~ needs to be unquoted to be expanded by sh
+    // other paths should be quoted; pathnames with quotes are not handled
+    if (*path == '~')
+      wslcmd = asform("wsl -d %ls sh -c 'wslpath -m ~ 2>/dev/null'", wslname);
+    else
+      wslcmd = asform("wsl -d %ls sh -c 'wslpath -m \"%s\" 2>/dev/null'", wslname, path);
+    FILE * wslpopen = popen(wslcmd, "r");
+    char line[MAX_PATH + 1];
+    char * got = fgets(line, sizeof line, wslpopen);
+    pclose(wslpopen);
+    free(wslcmd);
+    if (!got)
+      return 0;
+    // adjust buffer
+    int len = strlen(line);
+    if (line[len - 1] == '\n')
+      line[len - 1] = 0;
+    // return path string
+    if (*line)
+      return strdup(line);
+    else  // file does not exist
+      return 0;
+  }
+
+  trace_guard(("wslwinpath %s\n", path));
+  if (0 == strcmp("~", path))
+    return wslpath("~");
+  else if (0 == strncmp("~/", path, 2)) {
+    char * wslhome = wslpath("~");
+    if (!wslhome)
+      return 0;
+    char * ret = asform("%s/%s", wslhome, path + 2);
+    free(wslhome);
+    return ret;
+  }
+  else {
+    char * abspath;
+    if (*path != '/') {
+      // if we have a relative pathname, let's prefix it with 
+      // the current working directory if possible (and check again);
+      // we cannot determine it via foreground_cwd through wslbridge, 
+      // so let's check OSC 7 in this case
+      if (child_dir && *child_dir)
+        abspath = asform("%s/%s", child_dir, path);
+      else
+        abspath = strdup(path);
+      trace_guard(("wslwinpath abspath %s\n", abspath));
+      if (*abspath != '/') {
+        // failed to determine an absolute path
+        free(abspath);
+        return 0;
+      }
+    }
+    else
+      abspath = strdup(path);
+    char * winpath = wslpath(abspath);
+    trace_guard(("wslwinpath -> %s\n", winpath));
+    free(abspath);
+    return winpath;
+  }
+}
+
+// Safeguard checking path to guard against unexpected network access
+char *
+guardpath(string path, int level)
+{
+  if (!path)
+    return 0;
+
+  if (0 == strncmp(path, "file:", 5))
+    path += 5;
+
+  // path transformations
+  char * expath;
+  if (support_wsl) {
+    expath = wslwinpath(path);
+    if (!expath)
+      return 0;
+  }
+  else if (0 == strcmp("~", path))
+    expath = strdup(home);
+  else if (0 == strncmp("~/", path, 2))
+    expath = asform("%s/%s", home, path + 2);
+  else if (*path != '/' && !(*path && path[1] == ':')) {
+    char * fgd = foreground_cwd();
+    if (fgd) {
+      if (0 == strcmp("/", fgd))
+        expath = asform("/%s", path);
+      else
+        expath = asform("%s/%s", fgd, path);
+    }
+    else
+      return 0;
+  }
+  else
+    expath = strdup(path);
+
+  if (!(level & cfg.guard_path))
+    // use case level is not in configured guarding bitmask
+    return expath;
+
+  wchar * wpath;
+
+  if ((expath[0] == '/' || expath[0] == '\\') && (expath[1] == '/' || expath[1] == '\\')) {
+    wpath = cs__mbstowcs(expath);
+    // transform network path to Windows syntax (\ separators)
+    for (wchar * p = wpath; *p; p++)
+      if (*p == '/')
+        *p = '\\';
+  }
+  else {
+    // transform cygwin path to Windows drive path
+    wpath = path_posix_to_win_w(expath);  // implies realpath()
+  }
+  trace_guard(("guardpath <%s>\n       ex <%s>\n        w <%ls>\n", path, expath ?: "(null)", wpath ?: W("(null)")));
+  if (!wpath) {
+    free(expath);
+    return 0;
+  }
+
+  bool guard = false;
+
+  // guard access if its target is a network path ...
+  if (PathIsNetworkPathW(wpath))
+    guard = true;
+  else {
+    char drive[] = "@:\\";
+    *drive = *wpath;
+    if (GetDriveTypeA(drive) == DRIVE_REMOTE)
+      guard = true;
+  }
+  trace_guard(("   guard %d <%ls>\n", guard, wpath));
+  int plen = wcslen(wpath);
+
+  // ... but do not guard if it is in $HOME or $APPDATA
+  if (guard) {
+    void unguard(char * env) {
+      if (env) {
+        wchar * prepath = path_posix_to_win_w(env);
+        if (prepath && *prepath) {
+          int envlen = wcslen(prepath);
+          if (0 == wcsncmp(prepath, wpath, envlen))
+            if (prepath[envlen - 1] == '\\' || 
+                plen <= envlen || wpath[envlen] == '\\'
+               )
+              guard = false;
+        }
+        trace_guard(("         %d <%s>\n        -> <%ls>\n", guard, env, prepath ?: W("(null)")));
+        if (prepath)
+          free(prepath);
+      }
+      else {
+        trace_guard(("         null\n"));
+      }
+    }
+    unguard(getenv("APPDATA"));
+    if (support_wsl) {
+      //char * rootdir = path_win_w_to_posix(wsl_basepath);
+      char * rootdir = wslwinpath("/");
+      unguard(rootdir);
+      free(rootdir);
+      // in case WSL ~ is outside WSL /
+      char * homedir = wslwinpath("~");
+      if (homedir) {
+        unguard(homedir);
+        free(homedir);
+      }
+#ifdef consider_WSL_OSC7
+#warning exemption from path guarding is not proper
+      // if the WSL bridge/gateway could be used to transport the 
+      // current working directory back to mintty, we could enable this
+      if (child_dir && *child_dir) {
+        char * cwd = wslwinpath(child_dir);
+        if (cwd) {
+          unguard(cwd);
+          free(cwd);
+        }
+      }
+#endif
+    }
+    else {
+      unguard(getenv("HOME"));
+      char * fg_cwd = foreground_cwd();
+      if (fg_cwd) {
+        unguard(fg_cwd);
+        free(fg_cwd);
+      }
+      else {
+        // if tcgetpgrp / foreground_pid() / foreground_cwd() fails,
+        // check for processes $p where /proc/$p/ctty is child_tty()
+        // whether the checked filename is below their /proc/$p/cwd
+#include <dirent.h>
+        DIR * d = opendir("/proc");
+        if (d) {
+          char * tty = child_tty();
+          struct dirent * e;
+          while (guard && (e = readdir(d))) {
+            char * pn = e->d_name;
+            int thispid = atoi(pn);
+            if (thispid) {
+              char * ctty = procres(thispid, "ctty");
+              if (ctty) {
+                if (0 == strcmp(ctty, tty)) {
+                  // check cwd
+                  char * fn = asform("/proc/%d/%s", thispid, "cwd");
+                  char target [MAX_PATH + 1];
+                  int ret = readlink (fn, target, sizeof (target) - 1);
+                  free(fn);
+                  if (ret >= 0) {
+                    target [ret] = '\0';
+                    unguard(target);
+                  }
+                }
+                free(ctty);
+              }
+            }
+          }
+          closedir(d);
+        }
+      }
+    }
+  }
+  delete(wpath);
+
+  trace_guard(("   -> %d -> <%s>\n", guard, expath));
+  if (guard) {
+    free(expath);
+    if (level & 0xF)  // could choose to beep or not to beep in future...
+      win_bell(&cfg);
+    return 0;
+  }
+  else
+    return expath;
+}
+
 
 // Helper for loading a system library. Using LoadLibrary() directly is insecure
 // because Windows might be searching the current working directory first.
@@ -249,6 +591,8 @@ load_dwm_funcs(void)
       (void *)GetProcAddress(user32, "SetWindowCompositionAttribute");
     pSystemParametersInfo =
       (void *)GetProcAddress(user32, "SystemParametersInfoW");
+    pGetLayeredWindowAttributes =
+      (void *)GetProcAddress(user32, "GetLayeredWindowAttributes");
   }
   if (uxtheme) {
     DWORD win_version = GetVersion();
@@ -491,6 +835,7 @@ sort_tabinfo()
 static void
 win_hide_other_tabs(HWND to_top)
 {
+  //printf("[%p] win_hide_other_tabs\n", wnd);
   BOOL CALLBACK wnd_hide_tab(HWND curr_wnd, LPARAM lp)
   {
     HWND to_top = (HWND)lp;
@@ -500,6 +845,12 @@ win_hide_other_tabs(HWND to_top)
     if (class_atom == curr_wnd_info.atomWindowType) {
       //printf("[%p] hiding %p (unless top %p)\n", wnd, curr_wnd, to_top);
       if (curr_wnd != to_top && !IsIconic(curr_wnd)) {
+#ifdef debug_hiding
+        int len = GetWindowTextLengthW(curr_wnd);
+        wchar t[len + 1];
+        GetWindowTextW(curr_wnd, t, len + 1);
+        printf("hiding <%ls>\n", t);
+#endif
         // do not use either of 
         // ShowWindow(SW_HIDE) or SetWindowPos(SWP_HIDEWINDOW);
         // it is hard to restore from those states and window handling 
@@ -512,6 +863,8 @@ win_hide_other_tabs(HWND to_top)
         // pseudo-hide background tabs by max transparency
         LONG style = GetWindowLong(curr_wnd, GWL_EXSTYLE);
         style |= WS_EX_LAYERED;
+        // improve hiding other tab, also hide it from taskbar:
+        style |= WS_EX_TOOLWINDOW;
         SetWindowLong(curr_wnd, GWL_EXSTYLE, style);
         SetLayeredWindowAttributes(curr_wnd, 0, 0, LWA_ALPHA);
       }
@@ -534,15 +887,37 @@ sync_level(void)
 static bool
 manage_tab_hiding(void)
 {
-  /* The mechanism of hiding non-foreground tabs in order to support 
-     transparency for tabbed windows is disabled because it does not 
-     work properly and causes inconsistent and buggy behaviour in various 
-     window management situations, e.g. switching the tab on maximising 
+  /* Trigger the mechanism of hiding non-foreground tabs in order to support
+     transparency for tabbed windows.
+     It was previously disabled because it did not work properly 
+     and caused inconsistent and buggy behaviour in various
+     window management situations, e.g. switching the tab on maximising
      or even looping tab switching when restoring from fullscreen.
    */
-  return false;
-  //return sync_level() > 1;
+  return sync_level() > 1;
 }
+
+/*
+  Fix instable tab set behaviour (#1242). There are 3 changes below;
+  a weird set of 4 combinations of them fixes the issue while the others don't.
+  Def. fix1242 chooses among the set of working fixes, 
+  0 (none, default), 1 (a and b), 2 (b), 3 (c)
+  As they might interfere with future changes related to tabs, these options 
+  are kept in the source for documentation.
+ */
+#ifndef fix1242
+#define fix1242 0
+#endif
+#if fix1242 == 1
+#define fix1242a
+#define fix1242b
+#endif
+#if fix1242 == 2
+#define fix1242b
+#endif
+#if fix1242 == 3
+#define fix1242c
+#endif
 
 /*
   Notify tab focus. Manage hidden tab status.
@@ -551,9 +926,17 @@ static void
 win_set_tab_focus(char tag)
 {
   (void)tag;
+  //printf("win_set_tab_focus %d %d\n", is_init, manage_tab_hiding());
 
   // guard by is_init to avoid hiding background tabs by early WM_ACTIVATE
   if (is_init && manage_tab_hiding()) {
+    // hide background tabs; rather here than below?
+#ifdef fix1242a
+    if (cfg.window)  // not hidden explicitly
+      // attempt to suppresses initial Ctrl+TAB
+      win_hide_other_tabs(wnd);
+#endif
+
     //printf("[%p] set_tab_focus %c focus %d\n", wnd, tag, GetFocus() == wnd);
     // don't need to unhide as we don't hide above
     //ShowWindow(wnd, SW_SHOW);  // in case it was a hidden tab
@@ -561,10 +944,25 @@ win_set_tab_focus(char tag)
     // restore by clearing pseudo-hidden state
     win_update_transparency(cfg.transparency, cfg.opaque_when_focused);
 
+    // unhide this tab from tool window mode, propagate it to taskbar
+    LONG style = GetWindowLong(wnd, GWL_EXSTYLE);
+    style &= ~WS_EX_TOOLWINDOW;
+    SetWindowLong(wnd, GWL_EXSTYLE, style);
+
+#ifndef fix1242a
     // hide background tabs
     if (cfg.window)  // not hidden explicitly
       win_hide_other_tabs(wnd);
+#endif
   }
+}
+
+void
+strip_title(wchar * title)
+{
+  wchar * tp = title + wcslen(title) - 1;
+  while (tp > title && *tp == L'\u00A0')
+    *tp-- = 0;
 }
 
 /*
@@ -573,11 +971,12 @@ win_set_tab_focus(char tag)
   To be used for tab bar display.
  */
 static void
-refresh_tab_titles(bool trace)
+refresh_tabinfo(bool trace)
 {
   BOOL CALLBACK wnd_enum_tabs(HWND curr_wnd, LPARAM lp)
   {
     bool trace = (bool)lp;
+    (void)trace;
 
     WINDOWINFO curr_wnd_info;
     curr_wnd_info.cbSize = sizeof(WINDOWINFO);
@@ -586,7 +985,7 @@ refresh_tab_titles(bool trace)
       int len = GetWindowTextLengthW(curr_wnd);
       if (!len) {
         // check whether already terminating
-        LONG fini = GetWindowLong(curr_wnd, GWL_USERDATA);
+        LONG fini = GetWindowLong(curr_wnd, GWL_USERDATA) & 1;
         if (fini) {
 #ifdef debug_tabbar
           printf("[%8p] get tab %8p: fini\n", wnd, curr_wnd);
@@ -596,37 +995,14 @@ refresh_tab_titles(bool trace)
       }
       wchar title[len + 1];
       GetWindowTextW(curr_wnd, title, len + 1);
+      strip_title(title);
 #ifdef debug_tabbar
       printf("[%8p] get tab %8p: <%ls>\n", wnd, curr_wnd, title);
 #endif
 
-      static bool sort_tabs_by_time = true;
-
-      if (sort_tabs_by_time) {
-        DWORD pid;
-        GetWindowThreadProcessId(curr_wnd, &pid);
-        HANDLE ph = OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid);
-        // PROCESS_QUERY_LIMITED_INFORMATION ?
-        FILETIME cr_time, dummy;
-        if (GetProcessTimes(ph, &cr_time, &dummy, &dummy, &dummy)) {
-          unsigned long long crtime = ((unsigned long long)cr_time.dwHighDateTime << 32) | cr_time.dwLowDateTime;
-          add_tabinfo(crtime, curr_wnd, title);
-          if (trace) {
-#ifdef debug_tabbar
-            SYSTEMTIME start_time;
-            if (FileTimeToSystemTime(&cr_time, &start_time))
-              printf("  %04d-%02d-%02d_%02d:%02d:%02d.%03d\n",
-                     start_time.wYear, start_time.wMonth, start_time.wDay,
-                     start_time.wHour, start_time.wMinute, 
-                     start_time.wSecond, start_time.wMilliseconds);
-#endif
-          }
-        }
-        CloseHandle(ph);
-      }
-      else
-        add_tabinfo((unsigned long)curr_wnd, curr_wnd, title);
-
+      // tag tab with mark stored in userdata, for sorting the tabbar order
+      LONG crtime = GetWindowLong(curr_wnd, GWL_USERDATA) & GWL_TIMEMASK;
+      add_tabinfo(crtime, curr_wnd, title);
     }
     return true;
   }
@@ -664,12 +1040,107 @@ update_tab_titles()
   }
   if (sync_level() || win_tabbar_visible()) {
     // update my own list
-    refresh_tab_titles(true);
+    refresh_tabinfo(true);
     // support tabbar
     win_update_tabbar();
     // tell the others to update theirs
     EnumWindows(wnd_enum_tabs, 0);
   }
+}
+
+static bool
+win_tabinfo_left(void)
+{
+  for (int w = ntabinfo - 1; w > 0; w--)
+    if (tabinfo[w].wnd == wnd) {
+      HWND wnd1 = tabinfo[w - 1].wnd;
+      // prepare exchange of the two timestamps
+      LONG ud0 = GetWindowLong(wnd, GWL_USERDATA);
+      LONG cr0 = ud0 & GWL_TIMEMASK;
+      LONG _ud0 = ud0 & ~GWL_TIMEMASK;
+      LONG ud1 = GetWindowLong(wnd1, GWL_USERDATA);
+      LONG cr1 = ud1 & GWL_TIMEMASK;
+      LONG _ud1 = ud1 & ~GWL_TIMEMASK;
+      // exchange the two timestamps
+      LONG __ud0 = cr1 | _ud0;
+      LONG __ud1 = cr0 | _ud1;
+      SetWindowLong(wnd, GWL_USERDATA, __ud0);
+      SetWindowLong(wnd1, GWL_USERDATA, __ud1);
+
+      // refresh every time to make win_tab_move(n) work
+      refresh_tabinfo(false);
+
+      return true;
+    }
+  return false;
+}
+
+static bool
+win_tabinfo_right(void)
+{
+  for (int w = 0; w < ntabinfo - 1; w++)
+    if (tabinfo[w].wnd == wnd) {
+      HWND wnd1 = tabinfo[w + 1].wnd;
+      // prepare exchange of the two timestamps
+      LONG ud0 = GetWindowLong(wnd, GWL_USERDATA);
+      LONG cr0 = ud0 & GWL_TIMEMASK;
+      LONG _ud0 = ud0 & ~GWL_TIMEMASK;
+      LONG ud1 = GetWindowLong(wnd1, GWL_USERDATA);
+      LONG cr1 = ud1 & GWL_TIMEMASK;
+      LONG _ud1 = ud1 & ~GWL_TIMEMASK;
+      // exchange the two timestamps
+      LONG __ud0 = cr1 | _ud0;
+      LONG __ud1 = cr0 | _ud1;
+      SetWindowLong(wnd, GWL_USERDATA, __ud0);
+      SetWindowLong(wnd1, GWL_USERDATA, __ud1);
+
+      refresh_tabinfo(false);
+      return true;
+    }
+  return false;
+}
+
+static void
+win_update_tabset()
+{
+  // update tabbar of current window
+  //refresh_tabinfo(false);  // already done in win_tabinfo_*
+  win_update_tabbar();
+
+  // update tabbar of other windows of tabset
+  for (int w = 0; w < ntabinfo; w++)
+    if (tabinfo[w].wnd != wnd)
+      PostMessage(tabinfo[w].wnd, WM_USER, 0, WIN_TITLE);
+}
+
+void
+win_tab_left(void)
+{
+  if (win_tabinfo_left())
+    win_update_tabset();
+}
+
+void
+win_tab_right(void)
+{
+  if (win_tabinfo_right())
+    win_update_tabset();
+}
+
+void
+win_tab_move(int n)
+{
+  bool moved = false;
+  while (n < 0) {
+    moved |= win_tabinfo_left();
+    n ++;
+  }
+  while (n > 0) {
+    moved |= win_tabinfo_right();
+    n --;
+  }
+  if (moved)
+    win_update_tabset();
 }
 
 
@@ -772,32 +1243,58 @@ win_set_scrollview(int pos, int len, int height)
    Window title functions.
  */
 
+// set window icon;
+// this is only used for OSC I / OSC 7773
 void
 win_set_icon(char * s, int icon_index)
 {
   HICON large_icon = 0, small_icon = 0;
-  wstring icon_file = path_posix_to_win_w(s);
-  //printf("win_set_icon <%ls>,%d\n", icon_file, icon_index);
-  ExtractIconExW(icon_file, icon_index, &large_icon, &small_icon, 1);
-  delete(icon_file);
-  SetClassLongPtr(wnd, GCLP_HICONSM, (LONG_PTR)small_icon);
-  SetClassLongPtr(wnd, GCLP_HICON, (LONG_PTR)large_icon);
-  //SendMessage(wnd, WM_SETICON, ICON_SMALL, (LPARAM)small_icon);
-  //SendMessage(wnd, WM_SETICON, ICON_BIG, (LPARAM)large_icon);
+
+  char * iconpath = guardpath(s, 1);
+  if (iconpath) {
+    wstring icon_file = path_posix_to_win_w(iconpath);
+    //printf("win_set_icon <%ls>,%d\n", icon_file, icon_index);
+    if (icon_file) {
+      ExtractIconExW(icon_file, icon_index, &large_icon, &small_icon, 1);
+      delete(icon_file);
+      SetClassLongPtr(wnd, GCLP_HICONSM, (LONG_PTR)small_icon);
+      SetClassLongPtr(wnd, GCLP_HICON, (LONG_PTR)large_icon);
+      //SendMessage(wnd, WM_SETICON, ICON_SMALL, (LPARAM)small_icon);
+      //SendMessage(wnd, WM_SETICON, ICON_BIG, (LPARAM)large_icon);
+    }
+    free(iconpath);
+  }
 }
+
+static wchar * iconlabelpad = W("                                                  ");
 
 void
 win_set_title(char *title)
 {
   //printf("win_set_title settable %d <%s>\n", title_settable, title);
+static int padlen = -1;
+  if (padlen < 0) {
+    if (winver.dwMajorVersion >= 10 && winver.dwBuildNumber >= 22000)
+      // Windows 11
+      padlen = wcslen(iconlabelpad);
+    else {
+      padlen = 0;
+      iconlabelpad = 0;
+    }
+  }
+
   if (title_settable) {
-    wchar wtitle[strlen(title) + 1];
+    wchar wtitle[strlen(title) + 1 + padlen];
     if (cs_mbstowcs(wtitle, title, lengthof(wtitle)) >= 0) {
       // check current title to suppress unnecessary update_tab_titles()
       int len = GetWindowTextLengthW(wnd);
       wchar oldtitle[len + 1];
       GetWindowTextW(wnd, oldtitle, len + 1);
+      strip_title(oldtitle);
       if (0 != wcscmp(wtitle, oldtitle)) {
+        if (padlen > 0)
+          // Windows 11: pad title with trailing non-break space
+          wcscat(wtitle, iconlabelpad);
         SetWindowTextW(wnd, wtitle);
         usleep(1000);
         update_tab_titles();
@@ -812,7 +1309,8 @@ win_copy_title(void)
   int len = GetWindowTextLengthW(wnd);
   wchar title[len + 1];
   len = GetWindowTextW(wnd, title, len + 1);
-  win_copy(title, 0, len + 1);
+  strip_title(title);
+  win_copy(title, 0, wcslen(title) + 1);
 }
 
 char *
@@ -821,23 +1319,8 @@ win_get_title(void)
   int len = GetWindowTextLengthW(wnd);
   wchar title[len + 1];
   GetWindowTextW(wnd, title, len + 1);
+  strip_title(title);
   return cs__wcstombs(title);
-}
-
-void
-win_copy_text(const char *s)
-{
-  unsigned int size;
-  wchar *text = cs__mbstowcs(s);
-
-  if (text == NULL) {
-    return;
-  }
-  size = wcslen(text);
-  if (size > 0) {
-    win_copy(text, 0, size + 1);
-  }
-  free(text);
 }
 
 void
@@ -881,6 +1364,7 @@ win_save_title(void)
   int len = GetWindowTextLengthW(wnd);
   wchar *title = newn(wchar, len + 1);
   GetWindowTextW(wnd, title, len + 1);
+  // don't strip_title; fill the stack transparently, with the padding
   delete(titles[titles_i]);
   titles[titles_i++] = title;
   if (titles_i == lengthof(titles))
@@ -894,6 +1378,7 @@ win_restore_title(void)
     titles_i = lengthof(titles);
   wstring title = titles[--titles_i];
   if (title) {
+    // don't pad title; stack is filled transparently, with the padding
     SetWindowTextW(wnd, title);
     update_tab_titles();
     delete(title);
@@ -915,6 +1400,19 @@ win_post_sync_msg(HWND target, int level)
       PostMessage(target, WM_USER, 0, WIN_MAXIMIZE);
     else if (level >= 3 && IsIconic(wnd))
       PostMessage(target, WM_USER, 0, WIN_MINIMIZE);
+#ifdef sanitize_min_restore_via_sync
+    else if (level >= 3 && restoring) {
+      //printf("[%p] sending RESTORE -> %p; focus_here %d\n", wnd, target, focus_here);
+      // set token to focus on this window after restoring other 
+      // windows of the tab set
+      focus_here = true;
+      if (focus_here) {
+        //ShowWindow(target, SW_RESTORE);
+        //SendMessage(target, WM_USER, 0, WIN_RESTORE);
+        SendMessage(target, WM_SYSCOMMAND, IDM_RESTORE, ' ');
+      }
+    }
+#endif
     else {
       RECT r;
       GetWindowRect(wnd, &r);
@@ -963,9 +1461,10 @@ win_to_top(HWND top_wnd)
   // this does not work properly (see comments at when WM_USER:)
   // PostMessage(top_wnd, WM_USER, 0, WIN_TOP);
 
-  // one of these works:
+  // this used to work but fails in multiple tabs:
+  // bool fgok = SetActiveWindow(top_wnd);
+  // this works:
   int fgok = SetForegroundWindow(top_wnd);
-  // SetActiveWindow(top_wnd);
 
   if (IsIconic(top_wnd))
     ShowWindow(top_wnd, SW_RESTORE);
@@ -996,6 +1495,7 @@ wnd_enum_proc(HWND curr_wnd, LPARAM unused(lp))
     int len = GetWindowTextLengthW(curr_wnd);
     wchar title[len + 1];
     GetWindowTextW(curr_wnd, title, len + 1);
+    strip_title(title);
     printf("[%8p.%d]%1s %2s %8p %ls\n", wnd, (int)unused_lp,
            curr_wnd == wnd ? "=" : IsIconic(curr_wnd) ? "i" : "",
            !first_wnd && curr_wnd != wnd && !IsIconic(curr_wnd) ? "->" : "",
@@ -1067,7 +1567,8 @@ win_switch(bool back, bool alternate)
     win_to_top(first_wnd);
   }
 #else
-  refresh_tab_titles(false);
+  refresh_tabinfo(false);
+
   win_to_top(back ? get_prev_tab(alternate) : get_next_tab(alternate));
   // support tabbar
   if (sync_level())
@@ -1246,21 +1747,29 @@ static long current_monitor = 1 - 1;  // assumption for MonitorFromWindow
      returns number of monitors;
        stores smallest width/height of all monitors
        stores info of current monitor
+       used by user function new-key
    search_monitors(&x, &y, 0, true, &moninfo)
      returns number of monitors;
        stores smallest width/height of all monitors
        stores info of primary monitor
+       used by user function new-key
    search_monitors(&x, &y, mon, false/true, 0)
      returns index of given monitor (0/primary if not found)
+       used by user function new-key (true)
+       used by function win_launch (true), IDM_SESSIONCOMMAND, launcher
+       used by IDM_NEW*, IDM_TAB* (true)
    search_monitors(&x, &y, 0, false, 0)
      returns number of monitors;
        stores virtual screen size
+       used by CSI 15/19 t Report screen size
    search_monitors(&x, &y, 0, 2, &moninfo)
      returns number of monitors;
        stores virtual screen top left corner
        stores virtual screen size
+       used by function win_get_scrpos, save_win_pos, win_maximise
    search_monitors(&x, &y, 0, true, 0)
      prints information about all monitors
+       used by option -Rm
  */
 int
 search_monitors(int * minx, int * miny, HMONITOR lookup_mon, int get_primary, MONITORINFO *mip)
@@ -1315,6 +1824,7 @@ search_monitors(int * minx, int * miny, HMONITOR lookup_mon, int get_primary, MO
   struct data_search_monitors data = {
     .moni = 0,
     .moni_found = 0,
+    .lookup_mon = lookup_mon,
     .minx = minx,
     .miny = miny,
     .vscr = (RECT){0, 0, 0, 0},
@@ -1330,13 +1840,18 @@ search_monitors(int * minx, int * miny, HMONITOR lookup_mon, int get_primary, MO
   data.print_monitors = !lookup_mon;
 #endif
 
+  /*
+     Enumerate monitors for various use cases 
+     (see invocation descriptions of search_monitors above);
+     this code is obscure and needs revision
+   */
   BOOL CALLBACK
   monitor_enum(HMONITOR hMonitor, HDC hdcMonitor, LPRECT monp, LPARAM dwData)
   {
     struct data_search_monitors *data = (struct data_search_monitors *)dwData;
     (void)hdcMonitor, (void)monp;
 
-    (data->moni) ++;
+    data->moni ++;
     if (hMonitor == data->lookup_mon) {
       // looking for index of specific monitor
       data->moni_found = data->moni;
@@ -1367,7 +1882,7 @@ search_monitors(int * minx, int * miny, HMONITOR lookup_mon, int get_primary, MO
       uint x, dpi = 0;
       if (pGetDpiForMonitor)
         pGetDpiForMonitor(hMonitor, 0, &x, &dpi);  // MDT_EFFECTIVE_DPI
-      printf("Monitor %d %s %s (%3d dpi) w,h %4d,%4d (%4d,%4d...%4d,%4d)\n", 
+      printf("Monitor %d %s %s (%3d dpi) w,h %4d,%4d (l %4d,t %4d .. r %4d,b %4d)\n", 
              data->moni,
              hMonitor == data->curmon ? "current" : "       ",
              mi.dwFlags & MONITORINFOF_PRIMARY ? "primary" : "       ",
@@ -1386,7 +1901,7 @@ search_monitors(int * minx, int * miny, HMONITOR lookup_mon, int get_primary, MO
     *miny = data.vscr.bottom - data.vscr.top;
     return data.moni;
   }
-  else if (lookup_mon) {
+  else if (data.lookup_mon) {
     return data.moni_found;
   }
   else if (mip) {
@@ -1621,6 +2136,13 @@ win_set_iconic(bool iconic)
 {
   if (iconic ^ IsIconic(wnd))
     ShowWindow(wnd, iconic ? SW_MINIMIZE : SW_RESTORE);
+  /* possible enhancements:
+     - avoid force-to-top on restore - implementation attempt failed
+       - using SW_HIDE/SW_SHOWNA instead seems to work initially
+       - but would need to be amended to ensure window accessibility,
+       - also SW_MINIMIZE/SW_RESTORE would have to be adapted throughout
+     - remember/preset maximize/fullscreen while minimize (xterm)
+   */
 }
 
 /*
@@ -1631,7 +2153,9 @@ win_set_pos(int x, int y)
 {
   trace_resize(("--- win_set_pos %d %d\n", x, y));
   if (!IsZoomed(wnd))
-    SetWindowPos(wnd, null, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    SetWindowPos(wnd, null, x, y, 0, 0,
+                 SWP_NOACTIVATE |
+                 SWP_NOSIZE | SWP_NOZORDER);
 }
 
 /*
@@ -1939,24 +2463,61 @@ win_update_glass(bool opaque)
 void
 win_dark_mode(HWND w)
 {
-  if (pShouldAppsUseDarkMode) {
-    HIGHCONTRASTW hc;
-    hc.cbSize = sizeof hc;
-    pSystemParametersInfo(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0);
-    //printf("High Contrast scheme <%ls>\n", hc.lpszDefaultScheme);
+  if (pDwmSetWindowAttribute) {
+    BOOL dark = is_win_dark_mode();
 
-    if (!(hc.dwFlags & HCF_HIGHCONTRASTON) && pShouldAppsUseDarkMode()) {
-      pSetWindowTheme(w, W("DarkMode_Explorer"), NULL);
+    // DwmSetWindowAttribute needs to be called to adjust the title bar
+    // set DWMWA_USE_IMMERSIVE_DARK_MODE (20)
+    if (S_OK != pDwmSetWindowAttribute(w, 20, &dark, sizeof dark)) {
+      // this would be the call before Windows build 18362
+      pDwmSetWindowAttribute(w, 19, &dark, sizeof dark);
+    }
 
-      // set DWMWA_USE_IMMERSIVE_DARK_MODE; needed for titlebar
-      BOOL dark = 1;
-      if (S_OK != pDwmSetWindowAttribute(w, 20, &dark, sizeof dark)) {
-        // this would be the call before Windows build 18362
-        pDwmSetWindowAttribute(w, 19, &dark, sizeof dark);
-      }
+    // SetWindowTheme needs to be called to adjust the scrollbar
+    // it causes WM_THEMECHANGED sent
+    if (pSetWindowTheme) {
+      if (dark)
+        pSetWindowTheme(w, W("DarkMode_Explorer"), NULL);
+      else
+        pSetWindowTheme(w, 0, NULL);
     }
   }
 }
+
+
+#define dont_debug_win_status
+
+#ifdef debug_win_status
+
+static void
+show_win_status(char * tag, HWND wnd)
+{
+  WINDOWPLACEMENT pl;
+  pl.length = sizeof(WINDOWPLACEMENT);
+  GetWindowPlacement(wnd, &pl);
+  RECT fr = pl.rcNormalPosition;
+  LONG style = GetWindowLong(wnd, GWL_STYLE);
+  int h, w;
+  win_get_pixels(&h, &w, false);
+  printf("%s[%d:%p] show %d y normal %dx%d (%dx%d @%d:%d) max %d zoom %d\n", 
+         tag, getpid(), wnd, 
+         pl.showCmd, 
+         h / cell_height, w / cell_width,
+         fr.bottom - fr.top, fr.right - fr.left, fr.top, fr.left,
+         style & WS_MAXIMIZE,
+         IsZoomed(wnd)
+        );
+  bool layered = GetWindowLong(wnd, GWL_EXSTYLE) & WS_EX_LAYERED;
+  BYTE b;
+  GetLayeredWindowAttributes(wnd, 0, &b, 0);
+  bool hidden = layered && !b;
+  bool tooled = GetWindowLong(wnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW;
+  printf("%s[%d:%p] tooled %d layered %d attr %d hidden %d\n", tag, getpid(), wnd, tooled, layered, b, hidden);
+}
+
+#else
+#define show_win_status(tag, wnd)	
+#endif
 
 /*
  * Go full-screen. This should only be called when we are already maximised.
@@ -1964,6 +2525,7 @@ win_dark_mode(HWND w)
 static void
 make_fullscreen(void)
 {
+  show_win_status("make_full", wnd);
   win_is_fullscreen = true;
 
  /* Remove the window furniture. */
@@ -1980,7 +2542,8 @@ make_fullscreen(void)
   RECT fr = mi.rcMonitor;
   // set window size
   SetWindowPos(wnd, HWND_TOP, fr.left, fr.top,
-               fr.right - fr.left, fr.bottom - fr.top, SWP_FRAMECHANGED);
+               fr.right - fr.left, fr.bottom - fr.top,
+               SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER);
 }
 
 /*
@@ -1989,13 +2552,14 @@ make_fullscreen(void)
 static void
 clear_fullscreen(void)
 {
+  show_win_status("clear_full", wnd);
   win_is_fullscreen = false;
   win_update_glass(cfg.opaque_when_focused);
 
  /* Reinstate the window furniture. */
   LONG style = GetWindowLong(wnd, GWL_STYLE);
-  if (border_style) {
-    if (strcmp(border_style, "void") != 0) {
+  if (cfg.border_style != BORDER_NORMAL) {
+    if (cfg.border_style == BORDER_VOID) {
       style |= WS_THICKFRAME;
     }
   }
@@ -2004,8 +2568,13 @@ clear_fullscreen(void)
   }
   SetWindowLong(wnd, GWL_STYLE, style);
   SetWindowPos(wnd, null, 0, 0, 0, 0,
+               SWP_NOACTIVATE |
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
+
+#ifdef debug_clear_fullscreen
+#define clear_fullscreen() printf("calling cl_fs %s:%d\n", __FUNCTION__, __LINE__), clear_fullscreen()
+#endif
 
 void
 win_set_geom(int y, int x, int height, int width)
@@ -2067,6 +2636,17 @@ win_set_chars_zoom(int rows, int cols)
   trace_winsize("win_set_chars > win_fix_position");
 }
 
+static void
+win_set_chars_keep_fullscreen(int rows, int cols)
+{
+  // workaround against dropping fullscreen on DPI change (#1226);
+  // suppressing clear_fullscreen in win_set_chars does not suffice
+  bool was_fullscreen = win_is_fullscreen;
+  win_set_chars(rows, cols);
+  if (was_fullscreen)
+    make_fullscreen();
+}
+
 void
 win_set_pixels(int height, int width)
 {
@@ -2086,6 +2666,11 @@ win_set_chars(int rows, int cols)
 // allow font zooming if called below
 #define win_set_pixels(height, width) win_set_pixels_zoom(height, width)
 #define win_set_chars(rows, cols) win_set_chars_zoom(rows, cols)
+
+#ifdef debug_win_set_chars
+#undef win_set_chars
+#define win_set_chars(rows, cols) printf("calling wsc %s:%d\n", __FUNCTION__, __LINE__), win_set_chars_zoom(rows, cols)
+#endif
 
 
 void
@@ -2211,7 +2796,11 @@ static struct {
 
   wchar * sound_file = 0;
   if (strchr(sound_name, '/') || strchr(sound_name, '\\')) {
-    sound_file = path_posix_to_win_w(sound_name);
+    char * soundfn = guardpath(sound_name, 1);
+    if (!soundfn)
+      return;
+    sound_file = path_posix_to_win_w(soundfn);
+    free(soundfn);
   }
   else {
     wchar * sound_name_w = cs__mbstowcs(sound_name);
@@ -2228,9 +2817,11 @@ static struct {
     }
   }
 
-  if (sound_file && PlaySoundW(sound_file, NULL, options)) {
-    free(sound_file);
-  }
+  if (!sound_file)
+    return;
+
+  PlaySoundW(sound_file, NULL, options);
+  free(sound_file);
 }
 
 /*
@@ -2581,8 +3172,9 @@ print_system_metrics(int dpi, string tag)
          "        frame  %d/%d %d/%d size %d/%d %d/%d\n"
          "        padded %d/%d\n"
          "        caption %d/%d\n"
-         "        scrollbar %d/%d\n",
-         dpi, tag,
+         "        scrollbar %d/%d\n"
+         "        drag %d/%d\n"
+         , dpi, tag,
          GetSystemMetrics(SM_CXBORDER), pGetSystemMetricsForDpi(SM_CXBORDER, dpi),
          GetSystemMetrics(SM_CYBORDER), pGetSystemMetricsForDpi(SM_CYBORDER, dpi),
          GetSystemMetrics(SM_CXEDGE), pGetSystemMetricsForDpi(SM_CXEDGE, dpi),
@@ -2593,7 +3185,8 @@ print_system_metrics(int dpi, string tag)
          GetSystemMetrics(SM_CYSIZEFRAME), pGetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi),
          GetSystemMetrics(SM_CXPADDEDBORDER), pGetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi),
          GetSystemMetrics(SM_CYCAPTION), pGetSystemMetricsForDpi(SM_CYCAPTION, dpi),
-         GetSystemMetrics(SM_CXVSCROLL), pGetSystemMetricsForDpi(SM_CXVSCROLL, dpi)
+         GetSystemMetrics(SM_CXVSCROLL), pGetSystemMetricsForDpi(SM_CXVSCROLL, dpi),
+         GetSystemMetrics(SM_CXDRAG), pGetSystemMetricsForDpi(SM_CXDRAG, dpi)
          );
 }
 #endif
@@ -2606,8 +3199,8 @@ win_adjust_borders(int t_width, int t_height)
   RECT cr = {0, 0, term_width + 2 * PADDING, term_height + OFFSET + 2 * PADDING};
   RECT wr = cr;
   window_style = WS_OVERLAPPEDWINDOW;
-  if (border_style) {
-    if (strcmp(border_style, "void") == 0)
+  if (cfg.border_style != BORDER_NORMAL) {
+    if (cfg.border_style == BORDER_VOID)
       window_style &= ~(WS_CAPTION | WS_BORDER | WS_THICKFRAME);
     else
       window_style &= ~(WS_CAPTION | WS_BORDER);
@@ -2644,8 +3237,8 @@ win_adjust_borders(int t_width, int t_height)
   norm_extra_height = extra_height;
 }
 
-void
-win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
+static void
+do_win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size, bool quick_reflow)
 {
   trace_resize(("--- win_adapt_term_size sync_size %d scale_font %d (full %d Zoomed %d)\n", sync_size_with_font, scale_font_with_size, win_is_fullscreen, IsZoomed(wnd)));
   if (IsIconic(wnd))
@@ -2751,7 +3344,7 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
   int rows = max(1, term_height / cell_height - term.st_rows);
   int save_st_rows = term.st_rows;
   if (rows != term.rows || cols != term.cols) {
-    term_resize(rows, cols);
+    term_resize(rows, cols, quick_reflow);
     if (save_st_rows) {
       // handle potentially resized status area;
       // better, rows would be calculated already considering 
@@ -2804,10 +3397,16 @@ win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
   }
 }
 
+void
+win_adapt_term_size(bool sync_size_with_font, bool scale_font_with_size)
+{
+  do_win_adapt_term_size(sync_size_with_font, scale_font_with_size, false);
+}
+
 static int
 win_fix_taskbar_max(int show_cmd)
 {
-  if (border_style && show_cmd == SW_SHOWMAXIMIZED) {
+  if (cfg.border_style != BORDER_NORMAL && show_cmd == SW_SHOWMAXIMIZED) {
     // (SW_SHOWMAXIMIZED == SW_MAXIMIZE)
     // workaround for Windows failing to consider the taskbar properly 
     // when maximizing without WS_CAPTION in style (#732)
@@ -2836,29 +3435,143 @@ win_fix_taskbar_max(int show_cmd)
 void
 win_maximise(int max)
 {
-//printf("win_max %d is_full %d IsZoomed %d\n", max, win_is_fullscreen, IsZoomed(wnd));
+  //printf("win_max %d is_full %d IsZoomed %d dpi %d\n", max, win_is_fullscreen, IsZoomed(wnd), dpi);
+  show_win_status("win_max", wnd);
+
   if (max == -2) // toggle full screen
     max = win_is_fullscreen ? 0 : 2;
-  if (IsZoomed(wnd)) {
-    if (!max)
-      ShowWindow(wnd, SW_RESTORE);
-    else if (max == 2 && !win_is_fullscreen)
-      make_fullscreen();
+
+#ifdef broken_fix_for_normal_position_resilience
+static short normal_rows = 0;
+static short normal_cols = 0;
+static int normal_y, normal_x;
+static uint normal_dpi;
+#endif
+  void save_win_pos(void) {
+#ifdef broken_fix_for_normal_position_resilience
+    normal_rows = term.rows;
+    normal_cols = term.cols;
+    win_get_scrpos(&normal_x, &normal_y, false);
+    normal_dpi = dpi;
+#endif
   }
-  else if (max) {
-    if (max == 2) {  // full screen
-      go_fullscr_on_max = true;
-      ShowWindow(wnd, SW_MAXIMIZE);
+
+  /* for some weird reason, changes to avoid ShowWindow in commit 113286
+     make initial interactive fullscreen or win-max toggle fail;
+     mysteriously, requesting the WindowPlacement apparently fixes this
+   */
+  if (max) {
+    WINDOWPLACEMENT pl;
+    pl.length = sizeof(WINDOWPLACEMENT);
+    GetWindowPlacement(wnd, &pl);
+  }
+
+  /* avoid ShowWindow (or SetWindowPlacement) esp. with SW_MAXIMIZE
+     so we can prevent the window from also being activated
+   */
+  if (IsZoomed(wnd)) {
+    if (!max) {  // restore max/fullscreen -> normal
+     /* Resize to normal position; order is important:
+        1. determine old "normal position" as it may get forgotton 
+           by subsequent operations (esp after removing WS_MAXIMIZE)
+        2. restore the window title, or the reference for the 
+           subsequent SetWindowPos resizing will be wrong 
+           (and even window size and terminal size inconsistent)
+        3. perform the actual resizing to "normal position"
+        4. correct the position to locally saved normal position
+      */
+     /* Retrieve the previous unmaximised "normal" size */
+      WINDOWPLACEMENT pl;
+      pl.length = sizeof(WINDOWPLACEMENT);
+      GetWindowPlacement(wnd, &pl);
+      RECT fr = pl.rcNormalPosition;
+
+     /* Reinstate the window furniture. */
+      LONG style = GetWindowLong(wnd, GWL_STYLE);
+      if (cfg.border_style != BORDER_NORMAL) {
+        if (cfg.border_style == BORDER_VOID) {
+          style |= WS_THICKFRAME;
+        }
+      }
+      else {
+        style |= WS_CAPTION | WS_BORDER | WS_THICKFRAME;
+      }
+      style &= ~(WS_MINIMIZE | WS_MAXIMIZE);
+      SetWindowLong(wnd, GWL_STYLE, style);
+
+     /* Restore to normal size and position */
+      SetWindowPos(wnd, null, fr.left, fr.top,
+                   fr.right - fr.left, fr.bottom - fr.top,
+                   SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER);
+#ifdef broken_fix_for_normal_position_resilience
+#warning this would not keep window on same monitor after 2× Alt+F11
+      // after screen size changes or DPI changes, the previous size 
+      // is no longer remembered in rcNormalPosition 
+      // (maybe it got cleared after multiple induced window operations),
+      // so we keep our own "normal position" to be restored
+      if (normal_rows && normal_cols) {
+        win_set_chars(normal_rows, normal_cols);
+        win_set_pos(normal_x * normal_dpi / dpi, normal_y * normal_dpi / dpi);
+        (void)normal_dpi;
+        win_fix_position(false);
+      }
+#endif
+
+      win_is_fullscreen = false;
     }
-    else if (max == 1) {  // maximize
-      // this would apply the workaround to consider the taskbar
-      // but it would make maximizing irreversible, so let's not do it here
-      //ShowWindow(wnd, win_fix_taskbar_max(SW_MAXIMIZE));
-      // rather let Windows maximize as it prefers, including the bug
-      ShowWindow(wnd, SW_MAXIMIZE);
-    }
-    else
-      ShowWindow(wnd, SW_MAXIMIZE);
+    else if (max == 2 && !win_is_fullscreen)  // max -> fullscreen
+      make_fullscreen();
+    else if (max == 1)  // fullscreen -> max
+      clear_fullscreen();
+  }
+  else if (max == 2) {  // normal -> fullscreen
+    save_win_pos();
+
+#if 0
+    LONG style = GetWindowLong(wnd, GWL_STYLE);
+    style |= WS_MAXIMIZE;
+    style &= ~(WS_CAPTION | WS_BORDER | WS_THICKFRAME);
+    SetWindowLong(wnd, GWL_STYLE, style);
+
+    win_update_glass(cfg.opaque_when_focused);
+
+   /* Resize ourselves to exactly cover the nearest monitor. */
+    MONITORINFO mi;
+    get_my_monitor_info(&mi);
+    RECT fr = mi.rcMonitor;
+    // set window size
+    SetWindowPos(wnd, HWND_TOP, fr.left, fr.top,
+                 fr.right - fr.left, fr.bottom - fr.top,
+                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER);
+
+    win_is_fullscreen = true;
+#else
+    LONG style = GetWindowLong(wnd, GWL_STYLE);
+    style |= WS_MAXIMIZE;
+    SetWindowLong(wnd, GWL_STYLE, style);
+
+    SetWindowPos(wnd, null, 0, 0, 0, 0,
+               SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+               | SWP_FRAMECHANGED);
+
+    make_fullscreen();
+#endif
+  }
+  else if (max == 1) {  // normal -> max
+    save_win_pos();
+
+    LONG style = GetWindowLong(wnd, GWL_STYLE);
+    style |= WS_MAXIMIZE;
+    //style &= ~WS_MINIMIZE;  // ??
+    SetWindowLong(wnd, GWL_STYLE, style);
+   /* Resize ourselves to exactly cover the nearest monitor. */
+    MONITORINFO mi;
+    get_my_monitor_info(&mi);
+    RECT fr = mi.rcMonitor;
+    // set window size
+    SetWindowPos(wnd, HWND_TOP, fr.left, fr.top,
+                 fr.right - fr.left, fr.bottom - fr.top,
+                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER);
   }
 }
 
@@ -2879,19 +3592,55 @@ win_update_transparency(int trans, bool opaque)
   //printf("win_update_transparency %d opaque %d\n", trans, opaque);
   if (trans == TR_GLASS)
     trans = 0;
+
   LONG style = GetWindowLong(wnd, GWL_EXSTYLE);
-  style = trans ? style | WS_EX_LAYERED : style & ~WS_EX_LAYERED;
-  SetWindowLong(wnd, GWL_EXSTYLE, style);
-  if (trans) {
-    if (opaque && term.has_focus)
-      trans = 0;
-    if (force_opaque)
-      trans = 0;
-    SetLayeredWindowAttributes(wnd, 0, 255 - (uchar)trans, LWA_ALPHA);
+
+  // check whether this is actually a background tab that should be hidden
+#ifdef fix1242b
+  if (style & WS_EX_TOOLWINDOW) {
+    //printf("[%p] SetLayeredWindowAttributes\n", wnd);
+    // for virtual hiding, set max transparency
+    SetWindowLong(wnd, GWL_EXSTYLE, style | WS_EX_LAYERED);
+    SetLayeredWindowAttributes(wnd, 0, 0, LWA_ALPHA);
+  }
+  else
+#endif
+  {
+    // otherwise, set actual transparency
+    style = trans ? style | WS_EX_LAYERED : style & ~WS_EX_LAYERED;
+    SetWindowLong(wnd, GWL_EXSTYLE, style);
+    if (trans) {
+      if (opaque && term.has_focus)
+        trans = 0;
+      if (force_opaque)
+        trans = 0;
+      // set the alpha value to opaque first, then back, 
+      // in order to catch weird behaviour of Windows;
+      // if the window is resized while it does not have focus, 
+      // as via Windows 11 grid snap resizing 
+      // (mintty/wsltty#348, transferred to #1256), 
+      // transparency is lost although configuration settings 
+      // (GWL_EXSTYLE, Layered alpha attribute) do not get changed;
+      // this workaround at least recovers the configured mintty setting 
+      // after the window gets focus again; it is, however, not called 
+      // immediately during this resize
+      SetLayeredWindowAttributes(wnd, 0, 255, LWA_ALPHA);
+      SetLayeredWindowAttributes(wnd, 0, 255 - (uchar)trans, LWA_ALPHA);
+    }
   }
 
   win_update_blur(opaque);
   win_update_glass(opaque);
+}
+
+static void
+win_adjust_background(void)
+{
+  if (*cfg.background) {
+    //term_invalidate(0, 0, term.cols - 1, term.rows - 1);
+    // rather, more smoothly:
+    win_invalidate_all(true);
+  }
 }
 
 void
@@ -3179,16 +3928,27 @@ static struct {
   {IDC_WAIT, W("wait")},
 };
 
-static HCURSOR cursors[2] = {0, 0};
+static HCURSOR cursors[3] = {0, 0, 0};
+
+bool
+is_mouse_mode_by_pixels(void)
+{
+  return (term.mouse_mode && term.mouse_enc == ME_PIXEL_CSI)
+         || (term.locator_by_pixels && 
+             (term.mouse_mode == MM_LOCATOR || term.locator_1_enabled));
+}
 
 HCURSOR
 win_get_cursor(bool appmouse)
 {
-  return cursors[appmouse];
+  int cursidx = appmouse;
+  if (cursidx && is_mouse_mode_by_pixels())
+    cursidx = 2;
+  return cursors[cursidx];
 }
 
 void
-set_cursor_style(bool appmouse, wchar * style)
+set_cursor_style(int appmouse, wstring style)
 {
   HCURSOR c = 0;
   if (wcschr(style, '.')) {
@@ -3213,11 +3973,17 @@ set_cursor_style(bool appmouse, wchar * style)
         break;
       }
   if (!c)
-    c = LoadCursor(null, appmouse ? IDC_ARROW : IDC_IBEAM);
+    c = LoadCursor(null, appmouse 
+                         ? (is_mouse_mode_by_pixels() ? IDC_CROSS : IDC_ARROW)
+                         : IDC_IBEAM);
 
-  if (!IS_INTRESOURCE(cursors[appmouse]))
-    DestroyCursor(cursors[appmouse]);
-  cursors[appmouse] = c;
+  int cursidx = appmouse;
+  if (cursidx && is_mouse_mode_by_pixels())
+    cursidx = 2;
+
+  if (!IS_INTRESOURCE(cursors[cursidx]))
+    DestroyCursor(cursors[cursidx]);
+  cursors[cursidx] = c;
   SetClassLongPtr(wnd, GCLP_HCURSOR, (LONG_PTR)c);
   SetCursor(c);
 }
@@ -3225,8 +3991,19 @@ set_cursor_style(bool appmouse, wchar * style)
 static void
 win_init_cursors()
 {
-  set_cursor_style(true, W("arrow"));
-  set_cursor_style(false, W("ibeam"));
+  if (*cfg.appmouse_pointer)
+    set_cursor_style(1, cfg.appmouse_pointer);
+  else
+    set_cursor_style(1, W("arrow"));
+  if (*cfg.pixmouse_pointer)
+    set_cursor_style(2, cfg.pixmouse_pointer);
+  else
+    set_cursor_style(2, W("cross"));
+  // this must be last:
+  if (*cfg.mouse_pointer)
+    set_cursor_style(0, cfg.mouse_pointer);
+  else
+    set_cursor_style(0, W("ibeam"));
 }
 
 
@@ -3359,6 +4136,7 @@ show_iconwarn(wchar * winmsg)
 #define dont_debug_only_focus_messages
 #define dont_debug_only_sizepos_messages
 #define dont_debug_mouse_messages
+#define dont_debug_minor_messages
 #define dont_debug_hook
 
 static void win_global_keyboard_hook(bool on);
@@ -3404,6 +4182,9 @@ static struct {
 # ifndef debug_mouse_messages
       && message != WM_SETCURSOR
       && message != WM_MOUSEMOVE && message != WM_NCMOUSEMOVE
+# endif
+# ifndef debug_minor_messages
+      && !strstr(wm_name, "_GET") && !strstr(wm_name, "_IME")
 # endif
      )
 # ifdef debug_only_sizepos_messages
@@ -3506,9 +4287,16 @@ static struct {
 
         ShowWindow(wnd, SW_RESTORE);
       }
+#ifdef sanitize_min_restore_via_sync
+      else if (!wp && lp == WIN_RESTORE) {
+        //printf("[%p] WIN_RESTORE\n", wnd);
+        //ShowWindow(wnd, SW_RESTORE);  // only if we used SW_MINIMIZE
+        ShowWindow(wnd, SW_SHOWNA);
+      }
+#endif
       else if (!wp && lp == WIN_TITLE) {
         if (sync_level() || win_tabbar_visible()) {
-          refresh_tab_titles(false);
+          refresh_tabinfo(false);
           // support tabbar
           win_update_tabbar();
         }
@@ -3567,7 +4355,7 @@ static struct {
       wm_user = false;
 
     when WM_COMMAND or WM_SYSCOMMAND: {
-# ifdef debug_messages
+# if defined(debug_messages) || defined(debug_tabs)
       static struct {
         uint idm_;
         char * idm_name;
@@ -3615,7 +4403,7 @@ static struct {
         when IDM_PASTE: win_paste();
         when IDM_SELALL: term_select_all(); win_update(false);
         when IDM_RESET or IDM_RESET_NOASK:
-          if ((wp & ~0xF) == IDM_RESET_NOASK || confirm_reset()) {
+          if ((wp & ~0xF) == IDM_RESET_NOASK || !cfg.confirm_reset || confirm_reset()) {
             winimgs_clear();
             term_reset(true);
             win_update(false);
@@ -3710,6 +4498,28 @@ static struct {
           //printf("IDM_KEY_DOWN_UP -> do_win_key_toggle %02X\n", vk);
           do_win_key_toggle(vk, on);
         }
+#ifdef sanitize_min_restore_via_sync
+#ifdef IDM_RESTORE
+        when IDM_RESTORE: {
+          focus_inhibit = true;
+          //printf("[%p] IDM_RESTORE restoring %d focus_here %d\n", wnd, restoring, focus_here);
+          //ShowWindow(wnd, SW_RESTORE);  // only if we used SW_MINIMIZE
+          ShowWindow(wnd, SW_SHOWNA);
+          //printf("[%p] IDM_RESTORE >restore focus_here %d\n", wnd, focus_here);
+        }
+#endif
+#ifdef IDM_FOCUS
+        when IDM_FOCUS: {
+          //printf("[%p] IDM_FOCUS restoring %d focus_here %d\n", wnd, restoring, focus_here);
+          // set focus to raised tab 
+          // after having restored other tab windows of a tab set
+          //BringWindowToTop(wnd);
+          //SetForegroundWindow(wnd);
+          SetActiveWindow(wnd);
+          SetFocus(wnd);
+        }
+#endif
+#endif
       }
     }
 
@@ -4041,6 +4851,9 @@ static struct {
       }
 
     when WM_THEMECHANGED or WM_WININICHANGE or WM_SYSCOLORCHANGE:
+      // keep image background updated while moving/resizing
+      win_adjust_background();
+
       // Size of window border (border, title bar, scrollbar) changed by:
       //   Personalization of window geometry (e.g. Title Bar Size)
       //     -> Windows sends WM_SYSCOLORCHANGE
@@ -4057,11 +4870,20 @@ static struct {
       win_update_tabbar();
       // update dark mode
       if (message == WM_WININICHANGE) {
-        // SetWindowTheme will cause an asynchronous WM_THEMECHANGED message,
-        // so guard it by WM_WININICHANGE;
-        // this will switch from Light to Dark mode immediately but not back!
-        //win_dark_mode(wnd);
+        // adapt window frame colours
+        win_dark_mode(wnd);  // causes WM_THEMECHANGED sent
+
+        // adapt mintty theme (do not apply_config(false); it would crash)
+        if (*cfg.dark_theme && is_win_dark_mode())
+          load_theme(cfg.dark_theme);
+        else if (*cfg.theme_file)
+          load_theme(cfg.theme_file);
+        win_reset_colours();
+        win_invalidate_all(false);
       }
+
+    when WM_DISPLAYCHANGE:
+      checked_desktop_config = false;
 
     when WM_FONTCHANGE:
       font_cs_reconfig(true);
@@ -4104,6 +4926,7 @@ static struct {
       } else {
         term_set_focus(false, true);
       }
+
       win_update_transparency(cfg.transparency, cfg.opaque_when_focused);
       win_key_reset();
 #ifdef adapt_term_size_on_activate
@@ -4217,13 +5040,99 @@ static int olddelta;
         return 0;
 #endif
 
+    /*
+      When restoring a window from minimized/iconized which is part 
+      of a virtual tabs tabset, there were some problems:
+      • Tabsets did not support transparency as opacity used to cumulate 
+        (handled since 3.6.5).
+      • Every tab had its own taskbar icon (grouped since 3.6.5).
+      • After taskbar grouping of the tabset, window switching behaved 
+        eratically (fixed in f1712).
+      • After taskbar grouping of the tabset, restoring the tab shown there 
+        did not restore the background tabs, so they were not accessible 
+        as usual; while they could be activated on the mintty tabbar, 
+        a noticeable delay exposed that they were just being restored; also 
+        it was not possible to switch to them with Ctrl+TAB (#1242 step 5).
+        To fix this, 4 strategies have been considered:
+        1. when restoring, also restore all background tabs 
+           (selected via #ifdef sanitize_min_restore_via_sync);
+           however, after the procedure, either the wrong tab was brought 
+           to the foreground, or the right foreground tab did not get 
+           the keyboard focus; all attempts to sort this out are still 
+           documented in the code but the approach was finally given up;
+           one problem appeared to be mutual restoring taking place, 
+           which was tried to be inhibited by sending the background 
+           tabs inhibit tokens (see IDM_RESTORE handling) but when that 
+           worked tabs still did not get restored properly
+        2. the current foreground tab could be marked using GWL_USERDATA 
+           and thus maintained while minimized, and a distributed 
+           procedure could use that information to focus the proper tab -
+           (not implemented)
+        3. given that background tabs are hidden anyway (using full 
+           transparency), they are not minimized in the first place;
+           this is enabled below by #ifndef sanitize_min_restore_via_sync 
+           and appears to be working; background tabs are kept hidden 
+           in order to simulate minimized state
+        4. monitor all tabs for being hidden or minimized 
+           and ensure at least one tab is accessible in case the 
+           actual foreground tab gets killed 
+           (selected via #ifdef sanitize_min_restore_via_monitoring, 
+           concept outlined but not fully implemented)
+     */
+#ifdef sanitize_min_restore_via_sync
+      if (wp == SIZE_RESTORED && manage_tab_hiding()) {
+        // sync tab set by spreading RESTORED to all background tabs
+        // to restore all windows of a tab set (see Ctrl+TAB issue above)
+
+        if (!focus_inhibit) {
+          restoring = true;
+          //printf("[%p=%s] restoring/sync focus_here %d focus_inhibit %d\n", wnd, foreground_cwd(), focus_here, focus_inhibit);
+          win_synctabs(3);
+          restoring = false;
+        }
+
+        // after restoring a tab set, the focus must be set to the 
+        // actually restored foreground window;
+        // to distinguish it from the other (hidden) tabs, it was 
+        // marked with the flag focus_here
+        if (focus_here && !focus_inhibit) {
+          // after restoring the tab set, (try to) make sure we get the 
+          // focus into the primary restored window;
+#ifdef IDM_FOCUS
+          // set focus asynchronously
+          //printf("[%p] sending IDM_FOCUS restoring %d focus_here %d\n", wnd, restoring, focus_here);
+          PostMessage(wnd, WM_SYSCOMMAND, IDM_FOCUS, ' ');
+#else
+          // set focus now
+          //BringWindowToTop(wnd);	// prepare SetFocus? doesn't work...
+          //SetForegroundWindow(wnd);	// prepare SetFocus? doesn't work...
+          //SetActiveWindow(wnd);	// prepare SetFocus? doesn't work...
+          SetFocus(wnd);
+#endif
+        }
+
+        focus_here = false;
+        focus_inhibit = false;
+      }
+      else
+#endif
       if (wp == SIZE_RESTORED && win_is_fullscreen)
         clear_fullscreen();
       else if (wp == SIZE_MAXIMIZED && go_fullscr_on_max) {
         go_fullscr_on_max = false;
         make_fullscreen();
       }
-      else if (wp == SIZE_MINIMIZED) {
+      else if (wp == SIZE_MINIMIZED
+#ifndef sanitize_min_restore_via_sync
+               // in multi-tab mode, do not minimise background tabs;
+               // this seems to work also in single-tab mode, but 
+               // keep it anyway ("never change a running system");
+               // side effects of this change are still possible...
+               && !manage_tab_hiding()
+#endif
+              )
+      {
+        // sync tab set by spreading MINIMIZED to all background tabs
         win_synctabs(3);
       }
 
@@ -4260,6 +5169,12 @@ static int olddelta;
         if (zoom_token > 0)
           zoom_token = zoom_token >> 1;
         default_size_token = false;
+      }
+      else if (cfg.rewrap_on_resize == 2) {
+        // support continuous reflow while resizing;
+        // for this to work at acceptable speed (esp. with long scrollback) 
+        // a partial/lazy version of the reflow procedure is required
+        do_win_adapt_term_size(false, false, true);
       }
 
       return 0;
@@ -4340,8 +5255,11 @@ static int olddelta;
     when WM_WINDOWPOSCHANGED: {
       poschanging = false;
       if (disable_poschange)
-        // avoid premature Window size adaptation (#649?)
+        // avoid premature Window size adaptation (#649?) during startup
         break;
+
+      // keep image background updated while moving/resizing
+      win_adjust_background();
 
       trace_resize(("# WM_WINDOWPOSCHANGED %3X (resizing %d) %d %d @ %d %d\n", WP->flags, resizing, WP->cy, WP->cx, WP->y, WP->x));
       if (per_monitor_dpi_aware == DPI_AWAREV1) {
@@ -4418,7 +5336,7 @@ static int olddelta;
           printf("term w/h %d/%d -> %d/%d, fixing\n", x, y, term.cols, term.rows);
 #endif
           // win_fix_position also clips the window to desktop size
-          win_set_chars(y, x);
+          win_set_chars_keep_fullscreen(y, x);
         }
 
         is_in_dpi_change = false;
@@ -4465,7 +5383,7 @@ static int olddelta;
           // try to stabilize terminal size roundtrip
           if (term.rows != y || term.cols != x) {
             // win_fix_position also clips the window to desktop size
-            win_set_chars(y, x);
+            win_set_chars_keep_fullscreen(y, x);
           }
 #ifdef debug_dpi
           printf("SM_CXVSCROLL %d\n", GetSystemMetrics(SM_CXVSCROLL));
@@ -4478,10 +5396,40 @@ static int olddelta;
       break;
     }
 
-#ifdef debug_stylestuff
-    when WM_STYLECHANGING: {
-      printf("STYLE %08X -> %08X\n", ((STYLESTRUCT *)lp)->styleOld, ((STYLESTRUCT *)lp)->styleNew);
-      //return 0;
+#if defined(debug_stylestuff) || defined(debug_messages)
+    when /* WM_STYLECHANGING or */ WM_STYLECHANGED: {
+      string what = message == WM_STYLECHANGING ? "CHNGING" : "CHANGED";
+      string which = (int)wp == GWL_EXSTYLE ? "EX" : (int)wp == GWL_STYLE ? "" : "?";
+      DWORD old = ((STYLESTRUCT *)lp)->styleOld;
+      DWORD new = ((STYLESTRUCT *)lp)->styleNew;
+      DWORD off = old & ~new;
+      DWORD on = new & ~old;
+      printf("%sSTYLE%s %08X -> %08X, off %08X on %08X\n", which, what, old, new, off, on);
+
+typedef struct {
+  DWORD st;
+  string style;
+} style_desc;
+#ifndef WS_EX_NOREDIRECTIONBITMAP
+#define WS_EX_NOREDIRECTIONBITMAP 0x00200000
+#endif
+#include "_wstyles.t"
+      void stylebits(bool off, DWORD bits, style_desc * styles, int len)
+      {
+        for (int i = 0; i < len; i++)
+          if (styles[i].st && (bits & styles[i].st) == styles[i].st)
+            printf("               %c %s\n", off ? '-' : '+', styles[i].style);
+      }
+      if ((int)wp == GWL_EXSTYLE) {
+        stylebits(true, off, ws_ex_styles, lengthof(ws_ex_styles));
+        stylebits(false, on, ws_ex_styles, lengthof(ws_ex_styles));
+      }
+      else if ((int)wp == GWL_STYLE) {
+        stylebits(true, off, ws_styles, lengthof(ws_styles));
+        stylebits(false, on, ws_styles, lengthof(ws_styles));
+      }
+
+      //if (message == WM_STYLECHANGING) return 0;
     }
 
     when WM_ERASEBKGND:
@@ -4684,7 +5632,8 @@ exit_mintty(void)
   // so we'd have to add a safeguard here...
   SetWindowTextA(wnd, "");
   // indicate "terminating"
-  SetWindowLong(wnd, GWL_USERDATA, -1);
+  LONG ud = GetWindowLong(wnd, GWL_USERDATA);
+  SetWindowLong(wnd, GWL_USERDATA, ud | 1);
   // flush properties cache
   SetWindowPos(wnd, null, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
@@ -4964,6 +5913,10 @@ getlxssinfo(bool list, wstring wslname, uint * wsl_ver,
         wcscat(icon, W("\\WindowsApps\\"));
         wcscat(icon, pfn);
         wcscat(icon, W("\\images\\icon.ico"));
+        // alternatively, icons can also be in Assets/*.png but those
+        // are not in .ico file format, or in *.exe;
+        // however, as the whole directory is not readable for non-admin,
+        // mintty cannot check that here
       }
     }
     else {  // legacy
@@ -5005,7 +5958,7 @@ getlxssinfo(bool list, wstring wslname, uint * wsl_ver,
     if (list) {
       printf("WSL distribution name [7m%ls[m\n", name);
       printf("-- guid %ls\n", guid);
-      printf("-- flag %u\n", getregval(lxss, guid, W("Flags")));
+      printf("-- flag %u\n", getregval(lxss, guid, W("Flags"), -1));
       printf("-- root %ls\n", rootfs);
       if (pn)
         printf("-- pack %ls\n", pn);
@@ -5015,7 +5968,7 @@ getlxssinfo(bool list, wstring wslname, uint * wsl_ver,
     }
 
     *wsl_icon = icon;
-    *wsl_ver = 1 + ((getregval(lxss, guid, W("Flags")) >> 3) & 1);
+    *wsl_ver = 1 + ((getregval(lxss, guid, W("Flags"), 0) >> 3) & 1);
     *wsl_guid = cs__wcstoutf(guid);
     char * rootdir = path_win_w_to_posix(rootfs);
     struct stat fstat_buf;
@@ -5571,6 +6524,10 @@ main(int argc, char *argv[])
     fflush(mtlog);
   }
 #endif
+
+  winver.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
+  GetVersionEx(&winver);
+
   init_config();
   cs_init();
 
@@ -5669,7 +6626,7 @@ main(int argc, char *argv[])
     load_config(rc_file, true);
     delete(rc_file);
   }
-  if (!support_wsl) {
+  if (!support_wsl && access(home, X_OK) == 0) {
     // try XDG config base directory default location (#525)
     string rc_file = asform("%s/.config/mintty/config", home);
     load_config(rc_file, true);
@@ -5841,7 +6798,7 @@ main(int argc, char *argv[])
         set_arg_option("TabBar", strdup("1"));
         set_arg_option("SessionGeomSync", optarg ?: strdup("2"));
       when 'B':
-        border_style = strdup(optarg);
+        set_arg_option("BorderStyle", strdup(optarg));
       when 'R':
         switch (*optarg) {
           when 's' or 'o':
@@ -5850,6 +6807,9 @@ main(int argc, char *argv[])
             report_moni = true;
           when 'f':
             list_fonts(true);
+            exit(0);
+          when 'R':
+            list_printers();
             exit(0);
 #if CYGWIN_VERSION_API_MINOR >= 74
           when 'W': {
@@ -5862,6 +6822,8 @@ main(int argc, char *argv[])
             report_child_pid = true;
           when 'P':
             report_winpid = true;
+          when 'w':
+            report_winid = true;
           when 't':
             report_child_tty = true;
           otherwise:
@@ -5990,6 +6952,8 @@ main(int argc, char *argv[])
   copy_config("main after -o", &file_cfg, &cfg);
   if (*cfg.colour_scheme)
     load_scheme(cfg.colour_scheme);
+  else if (*cfg.dark_theme && is_win_dark_mode())
+    load_theme(cfg.dark_theme);
   else if (*cfg.theme_file)
     load_theme(cfg.theme_file);
 
@@ -6087,22 +7051,26 @@ main(int argc, char *argv[])
 #endif
 
 #define dont_debug_wsl
-#define wslbridge2
+
+  bool wslbridge2 = access("/bin/wslbridge2", X_OK) == 0
+                 || access("/bin/wslbridge", X_OK) < 0;
 
   // Work out what to execute.
   argv += optind;
   if (wsl_guid && wsl_launch) {
     argc -= optind;
-#ifdef wslbridge2
+    char * cmd0;
+    if (wslbridge2) {
 # ifndef __x86_64__
-    argc += 2;  // -V 1/2
+      argc += 2;  // -V 1/2
 # endif
-    cmd = "/bin/wslbridge2";
-    char * cmd0 = "-wslbridge2";
-#else
-    cmd = "/bin/wslbridge";
-    char * cmd0 = "-wslbridge";
-#endif
+      cmd = "/bin/wslbridge2";
+      cmd0 = "-wslbridge2";
+    }
+    else {
+      cmd = "/bin/wslbridge";
+      cmd0 = "-wslbridge";
+    }
     bool login_dash = false;
     if (*argv && !strcmp(*argv, "-") && !argv[1]) {
       login_dash = true;
@@ -6110,9 +7078,8 @@ main(int argc, char *argv[])
       //argc--;
       //argc++; // for "-l"
     }
-#ifdef wslbridge2
-    argc += start_home;
-#endif
+    if (wslbridge2)
+      argc += start_home;
     argc += 10;  // -e parameters
 
     char ** new_argv = newn(char *, argc + 8 + start_home + (wsltty_appx ? 2 : 0));
@@ -6126,31 +7093,38 @@ main(int argc, char *argv[])
     }
     else
       *pargv++ = cmd;
-#ifdef wslbridge2
 # ifndef __x86_64__
-    *pargv++ = "-V";
-    if (wsl_ver > 1)
-      *pargv++ = "2";
-    else
-      *pargv++ = "1";
+    if (wslbridge2) {
+      *pargv++ = "-V";
+      if (wsl_ver > 1)
+        *pargv++ = "2";
+      else
+        *pargv++ = "1";
+    }
 # endif
-#endif
     if (*wsl_guid) {
-#ifdef wslbridge2
-      if (*wslname) {
-        *pargv++ = "-d";
-        *pargv++ = cs__wcstombs(wslname);
+      if (wslbridge2) {
+        if (*wslname) {
+          *pargv++ = "-d";
+          *pargv++ = cs__wcstombs(wslname);
+        }
       }
-#else
-      *pargv++ = "--distro-guid";
-      *pargv++ = wsl_guid;
-#endif
+      else {
+        *pargv++ = "--distro-guid";
+        *pargv++ = wsl_guid;
+      }
     }
 #ifdef wslbridge_t
     *pargv++ = "-t";
 #endif
+#ifdef propagate_TERM_to_WSL
     *pargv++ = "-e";
     *pargv++ = "TERM";
+#else
+    setenv("HOSTTERM", cfg.term, true);
+    *pargv++ = "-e";
+    *pargv++ = "HOSTTERM";
+#endif
     *pargv++ = "-e";
     *pargv++ = "APPDATA";
     if (!cfg.old_locale) {
@@ -6162,12 +7136,12 @@ main(int argc, char *argv[])
       *pargv++ = "LC_ALL";
     }
     if (start_home) {
-#ifdef wslbridge2
-      *pargv++ = "--wsldir";
-      *pargv++ = "~";
-#else
-      *pargv++ = "-C~";
-#endif
+      if (wslbridge2) {
+        *pargv++ = "--wsldir";
+        *pargv++ = "~";
+      }
+      else
+        *pargv++ = "-C~";
     }
 
 #if CYGWIN_VERSION_API_MINOR >= 74
@@ -6207,15 +7181,15 @@ main(int argc, char *argv[])
     }
 
     if (wsltty_appx && lappdata && *lappdata) {
-#ifdef wslbridge2
-      char * wslbridge_backend = asform("%s/wslbridge2-backend", lappdata);
-      char * bin_backend = "/bin/wslbridge2-backend";
-      bool ok = copyfile(bin_backend, wslbridge_backend, true);
-#else
-      char * wslbridge_backend = asform("%s/wslbridge-backend", lappdata);
-      bool ok = copyfile("/bin/wslbridge-backend", wslbridge_backend, true);
-#endif
-      (void)ok;
+      char * wslbridge_backend;
+      if (wslbridge2) {
+        wslbridge_backend = asform("%s/wslbridge2-backend", lappdata);
+        copyfile("/bin/wslbridge2-backend", wslbridge_backend, true);
+      }
+      else {
+        wslbridge_backend = asform("%s/wslbridge-backend", lappdata);
+        copyfile("/bin/wslbridge-backend", wslbridge_backend, true);
+      }
 
       *pargv++ = "--backend";
       *pargv++ = wslbridge_backend;
@@ -6363,6 +7337,15 @@ main(int argc, char *argv[])
   wstring wclass = W(APPNAME);
   if (*cfg.class)
     wclass = group_id(cfg.class);
+  if (cfg.geom_sync > 1) {
+    char * class = cs__wcstoutf(wclass);
+    char * syncclass = asform("%s_%d", class, cfg.geom_sync);
+    free(class);
+    set_arg_option("Class", syncclass);
+    wclass = cs__utftowcs(syncclass);
+    free(syncclass);
+  }
+
 #ifdef prevent_grouping_hidden_tabs
   // should an explicitly hidden window not be grouped with a "class" of tabs?
   if (!cfg.window)
@@ -6501,6 +7484,15 @@ static int dynfonts = 0;
   else if (horbar == 2 && horsqueeze())
     window_style |= WS_HSCROLL;
 
+  // Avoid twitching taskbar icon (#1263)
+  if (winver.dwMajorVersion >= 10 && winver.dwBuildNumber >= 22000) {
+    // Windows 11: pad title with trailing non-break space
+    wchar * labelbuf = newn(wchar, wcslen(wtitle) + wcslen(iconlabelpad) + 1);
+    wcscpy(labelbuf, wtitle);
+    wcscat(labelbuf, iconlabelpad);
+    wtitle = labelbuf;
+  }
+
   // Create initial window.
   term.show_scrollbar = cfg.scrollbar;  // hotfix #597
   wnd = CreateWindowExW(cfg.scrollbar < 0 ? WS_EX_LEFTSCROLLBAR : 0,
@@ -6635,7 +7627,7 @@ static int dynfonts = 0;
           // but window size hopefully adjusted already
 
           /* Note: this used to be guarded by
-             //if (border_style)
+             //if (cfg.border_style)
              but should be done always to avoid maxheight windows to 
              be covered by the taskbar
           */
@@ -6737,9 +7729,9 @@ static int dynfonts = 0;
   }
 
 
-  if (border_style) {
+  if (cfg.border_style != BORDER_NORMAL) {
     LONG style = GetWindowLong(wnd, GWL_STYLE);
-    if (strcmp(border_style, "void") == 0) {
+    if (cfg.border_style == BORDER_VOID) {
       style &= ~(WS_CAPTION | WS_BORDER | WS_THICKFRAME);
     }
     else {
@@ -6829,9 +7821,17 @@ static int dynfonts = 0;
   }
 
   // Initialise the terminal.
-  term_reset(true);
+  // If term_reset tries to align the status line before 
+  // term.marg_bot is defined in term_resize 
+  // (as called from win_adapt_term_size after WM_SIZE), 
+  // mintty -o StatusLine=on will crash in call sequence
+  // term_reset - term_set_status_type - term_do_scroll - assert
+  // Happens with dpi == 96...
+  // So we'll have to call term_reset after term_resize:
+  //term_reset(true);
   term.show_scrollbar = !!cfg.scrollbar;
-  term_resize(term_rows, term_cols);
+  term_resize(term_rows, term_cols, false);
+  term_reset(true);
 
   // Initialise the scroll bar.
   SetScrollInfo(
@@ -6884,7 +7884,7 @@ static int dynfonts = 0;
     scale_to_image_ratio();
 
   // Adjust ConPTY support if requested
-  if (cfg.conpty_support != (uchar)-1) {
+  if (cfg.conpty_support != -1) {
     char * env = 0;
 #ifdef __MSYS__
     env = "MSYS";
@@ -6930,11 +7930,17 @@ static int dynfonts = 0;
     &(struct winsize){term_rows, term_cols, term_cols * cell_width, term_rows * cell_height}
   );
 
+#ifdef show_window_early
+  // This is now postponed to be aligned with hiding other windows 
+  // (in case of tabbed windows) 
+  // and to reduce initial white flickering (#1284).
   // Finally show the window.
   ShowWindow(wnd, show_cmd);
   // and grab focus again, just in case and for Windows 11
   // (https://github.com/mintty/mintty/issues/1113#issuecomment-1210278957)
   SetFocus(wnd);
+#endif
+
   // Cloning fullscreen window
   if (run_max == 2)
     win_maximise(2);
@@ -6961,6 +7967,9 @@ static int dynfonts = 0;
   win_synctabs(4);
 #endif
 
+  // mark userdata with timestamp, for initial tabbar ordering
+  SetWindowLong(wnd, GWL_USERDATA, mtime() & GWL_TIMEMASK);
+
   update_tab_titles();
 
 #ifdef always_hook_keyboard
@@ -6977,6 +7986,11 @@ static int dynfonts = 0;
     printf("%d %d\n", getpid(), (int)wpid);
     fflush(stdout);
   }
+  if (report_winid) {
+    printf("%p\n", wnd);
+    printf("%08lX\n", (ulong)wnd);
+    fflush(stdout);
+  }
 
 #ifdef do_check_unhide_tab_via_enumwindows
   void check_unhide_tab(void)
@@ -6989,10 +8003,10 @@ static int dynfonts = 0;
       WINDOWINFO curr_wnd_info;
       curr_wnd_info.cbSize = sizeof(WINDOWINFO);
       GetWindowInfo(curr_wnd, &curr_wnd_info);
-      if (class_atom == curr_wnd_info.atomWindowType) {
+      if (class_atom == curr_wnd_info.atomWindowType && pGetLayeredWindowAttributes) {
         bool layered = GetWindowLong(curr_wnd, GWL_EXSTYLE) & WS_EX_LAYERED;
         BYTE b;
-        GetLayeredWindowAttributes(curr_wnd, 0, &b, 0);
+        pGetLayeredWindowAttributes(curr_wnd, 0, &b, 0);
         bool hidden = layered && !b;
         if (!hidden) {
           all_hidden = false;
@@ -7015,29 +8029,52 @@ static int dynfonts = 0;
   {
     bool all_hidden = true;
     bool vanished = false;
+#ifdef sanitize_min_restore_via_monitoring
+    bool allmin = true;
+#endif
 
     for (int w = 0; w < ntabinfo; w++) {
       HWND curr_wnd = tabinfo[w].wnd;
 
+#ifdef sanitize_min_restore_via_monitoring
+      LONG style = GetWindowLong(curr_wnd, GWL_STYLE);
+      bool currmin = style & WS_MINIMIZE;
+      if (!currmin)
+        allmin = false;
+#endif
+
       WINDOWINFO curr_wnd_info;
       curr_wnd_info.cbSize = sizeof(WINDOWINFO);
       if (!GetWindowInfo(curr_wnd, &curr_wnd_info)) {
+        //printf("check [%p] min %d %p vanished %d\n", wnd, currmin, curr_wnd, vanished);
         vanished = true;
         if (!manage_tab_hiding())
           break;
       }
-      else if (manage_tab_hiding() && class_atom == curr_wnd_info.atomWindowType) {
+      else if (manage_tab_hiding()
+               && class_atom == curr_wnd_info.atomWindowType
+               && pGetLayeredWindowAttributes
+              )
+      {
         bool layered = GetWindowLong(curr_wnd, GWL_EXSTYLE) & WS_EX_LAYERED;
         BYTE b;
-        GetLayeredWindowAttributes(curr_wnd, 0, &b, 0);
+        pGetLayeredWindowAttributes(curr_wnd, 0, &b, 0);
         bool hidden = layered && !b;
+        //printf("check [%p] min %d %p hidden %d\n", wnd, currmin, curr_wnd, hidden);
         //printf("[%p] layered %d attr %d hidden %d\n", wnd, layered, b, hidden);
+
         if (!hidden) {
           all_hidden = false;
           // don't break; continue to check for vanished
         }
       }
     }
+#ifdef sanitize_min_restore_via_monitoring
+    if (allmin) {
+      //TODO: ensure a background tab is accessible;
+      // maybe also check for WS_EX_LAYERED-hidden background tabs...
+    }
+#endif
 
 #ifdef monitor_focussed_tab_on_top
     // tab management: ensure focussed tab on top
@@ -7048,8 +8085,14 @@ static int dynfonts = 0;
 #endif
 
     //printf("check all_hidden %d vanished %d\n", all_hidden, vanished);
-    if (manage_tab_hiding() && all_hidden)
+    if (manage_tab_hiding() && all_hidden) {
+#ifdef fix1242c
+      // unhide myself, hide other tabs:
+      win_set_tab_focus('U');
+#endif
+      // maybe not necessary to repeat this:
       win_update_transparency(cfg.transparency, cfg.opaque_when_focused);
+    }
     if (vanished)
       update_tab_titles();
   }
@@ -7085,6 +8128,19 @@ static int dynfonts = 0;
     win_set_timer(check_hidden_tabs, 999);
 #endif
 
+  show_win_status("init", wnd);
+
+  // Finally show the window.
+  // This is now aligned with hiding other windows (if tabbed); 
+  // also to reduce initial white flickering (#1284), 
+  // we run an initial contents update before showing the window.
+  win_paint();
+  // Finally show the window.
+  ShowWindow(wnd, show_cmd);
+  // and grab focus again, just in case and for Windows 11
+  // (https://github.com/mintty/mintty/issues/1113#issuecomment-1210278957)
+  SetFocus(wnd);
+
   is_init = true;
   // tab management: secure transparency appearance by hiding other tabs
   win_set_tab_focus('I');  // hide other tabs
@@ -7103,9 +8159,13 @@ static int dynfonts = 0;
 
       if (msg.message == WM_QUIT)
         return msg.wParam;
-      if (!IsDialogMessage(config_wnd, &msg))
+      if (!IsDialogMessage(config_wnd, &msg)) {
+#ifdef monitor_memory_leak
+        printf("[main] data segment break %p\n", sbrk(0));
+#endif
         // msg has not been processed by IsDialogMessage
         DispatchMessage(&msg);
+      }
     }
     child_proc();
   }

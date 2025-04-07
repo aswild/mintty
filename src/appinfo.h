@@ -5,14 +5,14 @@
 #define WEBSITE "http://mintty.github.io/"
 
 #define MAJOR_VERSION  3
-#define MINOR_VERSION  6
-#define PATCH_NUMBER   4
+#define MINOR_VERSION  7
+#define PATCH_NUMBER   8
 #define BUILD_NUMBER   0
 
 // needed for res.rc
 #define APPDESC "Terminal"
 #define AUTHOR  "Thomas Wolff, Andy Koppe"
-#define YEAR    "2023"
+#define YEAR    "2025"
 
 #define CONCAT_(a,b) a##b
 #define CONCAT(a,b) CONCAT_(a,b)
@@ -46,12 +46,16 @@
 
 // needed for mintty -V and Options... - About...
 #ifdef VERSION_SUFFIX
+#define VERSION_APPENDIX " (" STRINGIFY(TARGET) ") " STRINGIFY(VERSION_SUFFIX)
 #define VERSION_TEXT \
   APPNAME " " VERSION " (" STRINGIFY(TARGET) ") " STRINGIFY(VERSION_SUFFIX)
 #else
+#define VERSION_APPENDIX " (" STRINGIFY(TARGET) ")"
 #define VERSION_TEXT \
   APPNAME " " VERSION " (" STRINGIFY(TARGET) ")"
 #endif
+#undef VERSION_TEXT
+#define VERSION_TEXT version()
 
 #define LICENSE_TEXT \
   "License GPLv3+: GNU GPL version 3 or later"
