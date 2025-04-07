@@ -1,2 +1,2 @@
 _:
-	cd ../src; $(MAKE) _
+	$(MAKE) -C ../src _

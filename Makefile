@@ -60,7 +60,7 @@ gitversion=$(shell src/mkvertag)
 
 ver:
 	echo $(version) > VERSION
-	cd src; $(MAKE) releasever
+	$(MAKE) -C src releasever
 
 checkver:
 	echo checking same version in changelog, source, and git
@@ -91,25 +91,25 @@ binver:
 	$(DIST)/$(name_ver)-$(REL).$(arch)/inst/usr/bin/mintty -V | grep "mintty $(version) "
 
 check:
-	cd src; $(MAKE) check
+	$(MAKE) -C src check
 
 cop:
 	grep YEAR.*`date +%Y` src/appinfo.h
 
 _:
-	cd src; $(MAKE) _
+	$(MAKE) -C src _
 
 check-x11:	src/rgb.t src/composed.t
 
 src/rgb.t:	/usr/share/X11/rgb.txt # X11 color names, from package 'rgb'
 	rm -f src/rgb.t
-	cd src; $(MAKE) rgb.t
+	$(MAKE) -C src rgb.t
 
 compose_list=/usr/share/X11/locale/en_US.UTF-8/Compose
 keysymdefs=/usr/include/X11/keysymdef.h
 src/composed.t:	$(compose_list) $(keysymdefs)
 	rm -f src/composed.t
-	cd src; $(MAKE) composed.t
+	$(MAKE) -C src composed.t
 
 #############################################################################
 # build
